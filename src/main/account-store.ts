@@ -2,12 +2,18 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import type { AccountState } from '../shared/accounts'
-import { activateGmailAccount, addGmailAccount, parseAccountState } from './account-state'
+import {
+  activateGmailAccount,
+  addGmailAccount,
+  parseAccountState,
+  removeGmailAccount
+} from './account-state'
 
 interface AccountStore {
   getState: () => AccountState
   add: () => AccountState
   activate: (id: string) => AccountState
+  remove: (id: string) => AccountState
 }
 
 export function createAccountStore(
@@ -65,6 +71,7 @@ export function createAccountStore(
   return {
     getState: () => parseAccountState(state),
     add: () => save(addGmailAccount(state, createId())),
-    activate: (id) => save(activateGmailAccount(state, id))
+    activate: (id) => save(activateGmailAccount(state, id)),
+    remove: (id) => save(removeGmailAccount(state, id))
   }
 }

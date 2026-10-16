@@ -11,7 +11,18 @@ interface AccountStore {
 interface ViewHandle {
   view: WebContentsView
   load: () => Promise<void>
-  dispose: () => void
+  dispose: () => Promise<void>
+}
+
+interface ViewEntry {
+  handle: ViewHandle
+  loaded: boolean
+  loading: boolean
+  attached: boolean
+  blocked: boolean
+  loadNumber: number
+  timeout: ReturnType<typeof setTimeout> | null
+  disposePromise: Promise<void> | null
 }
 
 export function createAccountViewManager(
@@ -20,19 +31,13 @@ export function createAccountViewManager(
   report: (status: AccountViewStatus) => void,
   openExternal: (url: string) => Promise<void>,
   loadTimeoutMs = 30_000
-): { activate: (id: string) => void; retry: () => void; dispose: () => void } {
-  const views = new Map<
-    string,
-    {
-      handle: ViewHandle
-      loaded: boolean
-      loading: boolean
-      attached: boolean
-      blocked: boolean
-      loadNumber: number
-      timeout: ReturnType<typeof setTimeout> | null
-    }
-  >()
+): {
+  activate: (id: string) => void
+  retry: () => void
+  disposeAccount: (id: string) => Promise<void>
+  dispose: () => Promise<void>
+} {
+  const views = new Map<string, ViewEntry>()
   let activeAccountId: string | null = null
   let disposed = false
 
@@ -60,18 +65,7 @@ export function createAccountViewManager(
     if (entry?.attached) setBounds(entry.handle.view)
   })
 
-  function load(
-    id: string,
-    entry: {
-      handle: ViewHandle
-      loaded: boolean
-      loading: boolean
-      attached: boolean
-      blocked: boolean
-      loadNumber: number
-      timeout: ReturnType<typeof setTimeout> | null
-    }
-  ): void {
+  function load(id: string, entry: ViewEntry): void {
     if (entry.timeout) clearTimeout(entry.timeout)
     const loadNumber = ++entry.loadNumber
     entry.blocked = false
@@ -146,7 +140,8 @@ export function createAccountViewManager(
         attached: false,
         blocked: false,
         loadNumber: 0,
-        timeout: null
+        timeout: null,
+        disposePromise: null
       }
       entry = createdEntry
       views.set(id, createdEntry)
@@ -184,25 +179,50 @@ export function createAccountViewManager(
   }
 
   function retry(): void {
-    if (!alive() || !activeAccountId) return
-    const entry = views.get(activeAccountId)
-    if (entry) load(activeAccountId, entry)
-    else activate(activeAccountId)
+    if (!alive()) return
+    const id = activeAccountId ?? accountStore.getState().activeAccountId
+    if (!id) return
+    if (!activeAccountId) {
+      activate(id)
+      return
+    }
+    const entry = views.get(id)
+    if (entry) load(id, entry)
+    else activate(id)
+  }
+
+  function disposeAccount(id: string): Promise<void> {
+    const entry = views.get(id)
+    if (!entry) return Promise.resolve()
+    if (entry.disposePromise) return entry.disposePromise
+    if (entry.timeout) clearTimeout(entry.timeout)
+    entry.timeout = null
+    entry.loadNumber += 1
+    entry.loaded = false
+    entry.loading = false
+    if (activeAccountId === id) activeAccountId = null
+    if (entry.attached && !window.isDestroyed())
+      window.contentView.removeChildView(entry.handle.view)
+    entry.attached = false
+    const attempt = Promise.resolve(entry.handle.dispose()).then(() => {
+      if (views.get(id) === entry) views.delete(id)
+    })
+    entry.disposePromise = attempt.catch((error: unknown) => {
+      entry.disposePromise = null
+      throw error
+    })
+    return entry.disposePromise
   }
 
   return {
     activate,
     retry,
-    dispose(): void {
+    disposeAccount,
+    async dispose(): Promise<void> {
       if (disposed) return
       disposed = true
-      for (const { handle, attached, timeout } of views.values()) {
-        if (timeout) clearTimeout(timeout)
-        if (attached && !window.isDestroyed()) window.contentView.removeChildView(handle.view)
-        handle.dispose()
-      }
-      views.clear()
       activeAccountId = null
+      await Promise.all([...views.keys()].map((id) => disposeAccount(id)))
     }
   }
 }

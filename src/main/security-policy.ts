@@ -72,7 +72,7 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
     return request.args.length === 0 && request.accountExists
   }
   return (
-    request.operation === 'activate' &&
+    (request.operation === 'activate' || request.operation === 'remove') &&
     request.args.length === 1 &&
     isAccountId(request.args[0]) &&
     request.accountExists

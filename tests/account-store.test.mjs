@@ -117,3 +117,34 @@ test('a successful atomic replacement does not attempt to remove the already ren
   assert.deepEqual(structuredClone(store.add()), first)
   assert.deepEqual(structuredClone(store.getState()), first)
 })
+
+test('removing inactive, active and last accounts preserves a valid selected account', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'hantong-accounts-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const ids = [firstId, secondId, '33333333-3333-4333-8333-333333333333']
+  const store = loadTypeScript(sourceUrl).createAccountStore(directory, () => ids.shift())
+  store.add()
+  store.add()
+  store.add()
+  store.activate(secondId)
+  assert.deepEqual(structuredClone(store.remove(firstId)), {
+    version: 1,
+    accounts: [{ id: secondId }, { id: '33333333-3333-4333-8333-333333333333' }],
+    activeAccountId: secondId
+  })
+  assert.deepEqual(structuredClone(store.remove(secondId)), {
+    version: 1,
+    accounts: [{ id: '33333333-3333-4333-8333-333333333333' }],
+    activeAccountId: '33333333-3333-4333-8333-333333333333'
+  })
+  assert.deepEqual(structuredClone(store.remove('33333333-3333-4333-8333-333333333333')), empty)
+})
+
+test('removing an unknown account rejects without changing the saved state', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'hantong-accounts-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const store = loadTypeScript(sourceUrl).createAccountStore(directory, () => firstId)
+  store.add()
+  assert.throws(() => store.remove(secondId), /Invalid account data/)
+  assert.deepEqual(structuredClone(store.getState()), first)
+})

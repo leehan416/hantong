@@ -6,6 +6,7 @@ const messages = {
   ko: {
     wordmark: 'HANTONG',
     add: '계정 추가',
+    remove: '계정 삭제',
     welcome: 'Gmail 계정을 추가해 시작하세요.',
     pending: '계정을 불러오는 중…',
     loading: 'Gmail을 불러오는 중…',
@@ -13,11 +14,13 @@ const messages = {
     error: 'Gmail을 불러오지 못했습니다.',
     blocked: '허용되지 않은 페이지 이동을 차단했습니다.',
     retry: '다시 시도',
-    operationError: '요청을 완료하지 못했습니다. 다시 시도해 주세요.'
+    operationError: '요청을 완료하지 못했습니다. 다시 시도해 주세요.',
+    removeError: '계정을 삭제하지 못했습니다. 다시 시도해 주세요.'
   },
   en: {
     wordmark: 'HANTONG',
     add: 'Add account',
+    remove: 'Remove account',
     welcome: 'Add a Gmail account to get started.',
     pending: 'Loading accounts…',
     loading: 'Loading Gmail…',
@@ -25,7 +28,8 @@ const messages = {
     error: 'Unable to load Gmail.',
     blocked: 'A page navigation was blocked.',
     retry: 'Retry',
-    operationError: 'Unable to complete the request. Please try again.'
+    operationError: 'Unable to complete the request. Please try again.',
+    removeError: 'Unable to remove the account. Please try again.'
   }
 }
 
@@ -35,6 +39,7 @@ function App(): React.JSX.Element {
   const [viewStatus, setViewStatus] = useState<AccountViewStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [operationFailed, setOperationFailed] = useState(false)
+  const [removalFailed, setRemovalFailed] = useState(false)
   const locale = info?.locale ?? (navigator.language.startsWith('ko') ? 'ko' : 'en')
   const text = messages[locale]
   const activeAccountId = accounts?.activeAccountId ?? null
@@ -79,6 +84,7 @@ function App(): React.JSX.Element {
   async function addAccount(): Promise<void> {
     setBusy(true)
     setOperationFailed(false)
+    setRemovalFailed(false)
     try {
       setAccounts(await window.api.addAccount())
     } catch {
@@ -92,6 +98,7 @@ function App(): React.JSX.Element {
     if (accountId === activeAccountId) return
     setBusy(true)
     setOperationFailed(false)
+    setRemovalFailed(false)
     try {
       setAccounts(await window.api.activateAccount(accountId))
     } catch {
@@ -101,9 +108,26 @@ function App(): React.JSX.Element {
     }
   }
 
+  async function removeActiveAccount(): Promise<void> {
+    if (!activeAccountId) return
+    setBusy(true)
+    setOperationFailed(false)
+    setRemovalFailed(false)
+    try {
+      const result = await window.api.removeAccount(activeAccountId)
+      setAccounts(result.state)
+      setRemovalFailed(result.outcome === 'failed')
+    } catch {
+      setRemovalFailed(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function retry(): Promise<void> {
     setBusy(true)
     setOperationFailed(false)
+    setRemovalFailed(false)
     try {
       if (activeAccountId) {
         await window.api.retryAccount()
@@ -129,6 +153,7 @@ function App(): React.JSX.Element {
   else if (currentStatus === 'ready') statusMessage = text.ready
   else if (currentStatus === 'error') statusMessage = text.error
   else if (currentStatus === 'blocked') statusMessage = text.blocked
+  if (removalFailed) statusMessage = text.removeError
   if (operationFailed) statusMessage = text.operationError
 
   return (
@@ -160,10 +185,20 @@ function App(): React.JSX.Element {
         >
           <span aria-hidden="true">＋</span> {text.add}
         </button>
+        <button
+          className="remove-account"
+          type="button"
+          disabled={busy || activeAccountId === null}
+          onClick={() => void removeActiveAccount()}
+        >
+          {text.remove}
+        </button>
       </header>
       <div className="status-strip" role="status" aria-live="polite">
         <span className="status-text">{statusMessage}</span>
-        {(currentStatus === 'error' || currentStatus === 'blocked' || operationFailed) && (
+        {(currentStatus === 'error' ||
+          currentStatus === 'blocked' ||
+          (operationFailed && !removalFailed)) && (
           <button
             className="retry-button"
             type="button"

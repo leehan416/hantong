@@ -56,6 +56,7 @@ async function verify(window) {
     'addAccount',
     'activateAccount',
     'retryAccount',
+    'removeAccount',
     'onAccountViewStatus'
   ])
   assert.equal(result.info.name, 'Hantong')

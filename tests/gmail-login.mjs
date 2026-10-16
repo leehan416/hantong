@@ -40,8 +40,12 @@ const resize = () => {
 resize()
 window.on('resize', resize)
 window.on('closed', () => {
-  handle.dispose()
-  app.quit()
+  void handle
+    .dispose()
+    .catch(() => {
+      console.error('Unable to close the Gmail view')
+    })
+    .finally(() => app.quit())
 })
 handle.view.webContents.on('did-finish-load', () => {
   void handle.view.webContents

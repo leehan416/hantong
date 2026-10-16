@@ -54,3 +54,14 @@ export function activateGmailAccount(state: AccountState, id: string): AccountSt
   if (!state.accounts.some((account) => account.id === id)) throw new Error('Invalid account data')
   return parseAccountState({ ...state, activeAccountId: id })
 }
+
+export function removeGmailAccount(state: AccountState, id: string): AccountState {
+  const index = state.accounts.findIndex((account) => account.id === id)
+  if (index < 0) throw new Error('Invalid account data')
+  const accounts = state.accounts.filter((account) => account.id !== id)
+  const activeAccountId =
+    state.activeAccountId !== id
+      ? state.activeAccountId
+      : (accounts[index]?.id ?? accounts[index - 1]?.id ?? null)
+  return parseAccountState({ version: 1, accounts, activeAccountId })
+}

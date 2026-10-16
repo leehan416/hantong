@@ -7,6 +7,8 @@
   --color-rule: #b9c9d4;
   --color-selected: #e6edf2;
   --color-hover: #e9eef2;
+  --color-danger: #8e4141;
+  --color-danger-hover: #f5e9e9;
   --color-scrollbar: #728797;
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   color: var(--color-text);
@@ -27,6 +29,8 @@
     --color-rule: #4c6476;
     --color-selected: #2a3b49;
     --color-hover: #263744;
+    --color-danger: #e4a0a0;
+    --color-danger-hover: #3b2a30;
     --color-scrollbar: #8ba3b5;
   }
 }

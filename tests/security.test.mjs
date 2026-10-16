@@ -129,4 +129,15 @@ test('account IPC validates operation arguments and requires a stored account fo
     policy.isAllowedAccountRequest({ ...base, operation: 'retry', args: [], accountExists: false }),
     false
   )
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'remove', accountExists: true }),
+    true
+  )
+  for (const patch of [
+    { operation: 'remove', args: ['../other-session'], accountExists: true },
+    { operation: 'remove', accountExists: false },
+    { operation: 'remove', args: [base.args[0], 'extra'], accountExists: true }
+  ]) {
+    assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
+  }
 })

@@ -29,6 +29,7 @@ function fixture() {
     }
     close() {
       this.destroyed = true
+      this.emit('destroyed')
     }
   }
   class View {
@@ -109,7 +110,7 @@ test('redirects cannot launch the system browser or leave the trusted hosts', ()
   assert.equal(blocked(), 1)
 })
 
-test('authentication popups share the session and inherit the navigation guards', () => {
+test('authentication popups share the session and inherit the navigation guards', async () => {
   const { handle, webSession, opened } = fixture()
   const response = handle.view.webContents.openWindow({
     url: 'https://accounts.google.com/ServiceLogin'
@@ -126,13 +127,35 @@ test('authentication popups share the session and inherit the navigation guards'
   let destroyed = false
   child.destroy = () => {
     destroyed = true
+    child.webContents.destroyed = true
+    child.webContents.emit('destroyed')
   }
   handle.view.webContents.emit('did-create-window', child)
   assert.equal(child.webContents.openWindow({ url: 'https://example.com/' }).action, 'deny')
   assert.deepEqual(opened, ['https://example.com/'])
-  handle.dispose()
+  await handle.dispose()
   assert.equal(destroyed, true)
   assert.equal(handle.view.webContents.isDestroyed(), true)
+})
+
+test('disposing a Gmail view waits for its webContents destroyed event', async () => {
+  const { handle } = fixture()
+  let resolveClose
+  handle.view.webContents.close = () => {
+    resolveClose = () => {
+      handle.view.webContents.destroyed = true
+      handle.view.webContents.emit('destroyed')
+    }
+  }
+  let finished = false
+  const disposal = handle.dispose().then(() => {
+    finished = true
+  })
+  await Promise.resolve()
+  assert.equal(finished, false)
+  resolveClose()
+  await disposal
+  assert.equal(finished, true)
 })
 
 test('OAuth and dangerous popup targets are blocked without leaving the app', () => {

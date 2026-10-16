@@ -60,6 +60,7 @@ function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
           },
           dispose: () => {
             handle.disposeCount += 1
+            return Promise.resolve()
           }
         }
         created.push(handle)
@@ -96,7 +97,7 @@ test('views are created only when visited, reused on switch, and removed when in
   assert.equal(created[0].loads, 1)
   assert.equal(attached.length, 3)
   assert.equal(detached.length, 2)
-  manager.dispose()
+  await manager.dispose()
   assert.equal(created[0].disposeCount, 1)
   assert.equal(created[1].disposeCount, 1)
 })
@@ -117,7 +118,7 @@ test('inactive load completion is cached and the view stays below the fixed chro
     accountId: firstId,
     status: 'ready'
   })
-  fixtureData.manager.dispose()
+  await fixtureData.manager.dispose()
 })
 
 test('a closed owner suppresses stale load completion callbacks', async () => {
@@ -125,7 +126,7 @@ test('a closed owner suppresses stale load completion callbacks', async () => {
   await fixtureData.manager.activate(firstId)
   const reportedBeforeClose = fixtureData.statuses.length
   fixtureData.window.isDestroyed = () => true
-  fixtureData.manager.dispose()
+  await fixtureData.manager.dispose()
   fixtureData.resolvers[0]()
   await Promise.resolve()
   assert.equal(fixtureData.statuses.length, reportedBeforeClose)
@@ -145,7 +146,34 @@ test('renderer crash invalidates an in-flight load before its late success', asy
     accountId: firstId,
     status: 'error'
   })
-  fixtureData.manager.dispose()
+  await fixtureData.manager.dispose()
+})
+
+test('removing one account view invalidates it without disposing another account', async () => {
+  const fixtureData = fixture({ deferLoads: true })
+  await fixtureData.manager.activate(firstId)
+  await fixtureData.manager.activate(secondId)
+  await fixtureData.manager.disposeAccount(firstId)
+  assert.equal(fixtureData.created[0].disposeCount, 1)
+  assert.equal(fixtureData.created[1].disposeCount, 0)
+  await fixtureData.manager.activate(firstId)
+  assert.equal(fixtureData.created.length, 3)
+  const statusCount = fixtureData.statuses.length
+  fixtureData.resolvers[0]()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.statuses.length, statusCount)
+  await fixtureData.manager.dispose()
+})
+
+test('retry recreates a retained active account after failed cleanup disposed its view', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await fixtureData.manager.disposeAccount(firstId)
+  const priorCount = fixtureData.created.length
+  fixtureData.manager.retry()
+  assert.equal(fixtureData.created.length, priorCount + 1)
+  assert.equal(fixtureData.created.at(-1).loads, 1)
+  await fixtureData.manager.dispose()
 })
 
 test('load timeout reports an error and a late success cannot replace it', async () => {
@@ -162,5 +190,5 @@ test('load timeout reports an error and a late success cannot replace it', async
     accountId: firstId,
     status: 'error'
   })
-  fixtureData.manager.dispose()
+  await fixtureData.manager.dispose()
 })

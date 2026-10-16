@@ -1,13 +1,16 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAccountStore } from './account-store'
 import { createAccountViewManager } from './account-view-manager'
+import { createAccountRemovalController } from './account-removal'
+import { clearAccountSession } from './account-session-cleanup'
 import { is, optimizer } from '@electron-toolkit/utils'
 import {
   ACCOUNT_ACTIVATE_CHANNEL,
   ACCOUNT_ADD_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
+  ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
@@ -31,6 +34,7 @@ const rendererUrl =
 let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
+let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 
 app.on('window-all-closed', () => {
   // macOS keeps the application available for reopening from the Dock.
@@ -63,7 +67,7 @@ function createWindow(): void {
     }
   })
   mainWindow = window
-  accountViewManager = createAccountViewManager(
+  const windowViewManager = createAccountViewManager(
     window,
     requireAccountStore(),
     (status) => {
@@ -71,6 +75,7 @@ function createWindow(): void {
     },
     (url) => shell.openExternal(url)
   )
+  accountViewManager = windowViewManager
 
   const contents = window.webContents
   contents.session.setPermissionCheckHandler(() => false)
@@ -93,8 +98,10 @@ function createWindow(): void {
 
   window.once('ready-to-show', () => window.show())
   window.once('closed', () => {
-    accountViewManager?.dispose()
-    accountViewManager = null
+    void windowViewManager.dispose().catch(() => {
+      console.error('Unable to close Gmail views')
+    })
+    if (accountViewManager === windowViewManager) accountViewManager = null
     if (mainWindow === window) mainWindow = null
   })
   optimizer.watchWindowShortcuts(window)
@@ -111,6 +118,11 @@ function requireAccountStore(): ReturnType<typeof createAccountStore> {
   return accountStore
 }
 
+function requireAccountRemoval(): ReturnType<typeof createAccountRemovalController> {
+  if (!accountRemoval) throw new Error('Account removal is unavailable')
+  return accountRemoval
+}
+
 function activateAccountView(accountId: string): void {
   try {
     accountViewManager?.activate(accountId)
@@ -125,6 +137,7 @@ void app
   .whenReady()
   .then(() => {
     accountStore = createAccountStore(app.getPath('userData'))
+    accountRemoval = createAccountRemovalController(requireAccountStore(), clearAccountSession)
     ipcMain.handle(APP_INFO_CHANNEL, (event, ...args: unknown[]): AppInfo => {
       const owner = mainWindow
       const ownerAlive = owner !== null && !owner.isDestroyed()
@@ -150,7 +163,7 @@ void app
 
     function accountRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'add' | 'activate' | 'retry',
+      operation: 'get' | 'add' | 'activate' | 'retry' | 'remove',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
@@ -167,25 +180,28 @@ void app
         operation,
         args,
         accountExists:
-          operation === 'activate'
+          operation === 'activate' || operation === 'remove'
             ? state.accounts.some((account) => account.id === id)
             : operation === 'retry' && state.activeAccountId !== null
       })
     }
 
     ipcMain.handle(ACCOUNT_STATE_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
       const state = requireAccountStore().getState()
       if (state.activeAccountId) activateAccountView(state.activeAccountId)
       return state
     })
     ipcMain.handle(ACCOUNT_ADD_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'add', args)) throw new Error('Request rejected')
       const state = requireAccountStore().add()
       if (state.activeAccountId) activateAccountView(state.activeAccountId)
       return state
     })
     ipcMain.handle(ACCOUNT_ACTIVATE_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'activate', args)) throw new Error('Request rejected')
       const id = args[0]
       if (typeof id !== 'string') throw new Error('Request rejected')
@@ -194,8 +210,58 @@ void app
       return state
     })
     ipcMain.handle(ACCOUNT_RETRY_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'retry', args)) throw new Error('Request rejected')
       accountViewManager?.retry()
+    })
+    ipcMain.handle(ACCOUNT_REMOVE_CHANNEL, async (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'remove', args)) throw new Error('Request rejected')
+      const accountId = args[0]
+      const owner = mainWindow
+      const viewManager = accountViewManager
+      if (typeof accountId !== 'string' || !owner || !viewManager) {
+        throw new Error('Request rejected')
+      }
+      const ownerIsAlive = (): boolean => mainWindow === owner && !owner.isDestroyed()
+      const result = await requireAccountRemoval().remove(accountId, {
+        ownerIsAlive,
+        async confirm(accountNumber): Promise<boolean> {
+          if (!ownerIsAlive()) return false
+          const isKorean = app.getLocale().startsWith('ko')
+          const accountLabel = `Gmail ${accountNumber}`
+          const response = await dialog.showMessageBox(owner, {
+            type: 'warning',
+            title: isKorean ? '계정 삭제' : 'Remove account',
+            message: isKorean
+              ? `${accountLabel} 계정을 한통에서 삭제할까요?`
+              : `Remove ${accountLabel} from Hantong?`,
+            detail: isKorean
+              ? '이 기기의 로그인 정보와 세션을 삭제합니다. Google 계정과 메일은 삭제되지 않습니다.'
+              : 'This removes its local sign-in and session from this device. Your Google account and email are not deleted.',
+            buttons: isKorean ? ['취소', '계정 삭제'] : ['Cancel', 'Remove account'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true
+          })
+          return response.response === 1
+        },
+        disposeView: (id) => viewManager.disposeAccount(id),
+        activate: (id) => {
+          if (!ownerIsAlive()) return
+          try {
+            viewManager.activate(id)
+          } catch {
+            if (!owner.isDestroyed()) {
+              owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId: id, status: 'error' })
+            }
+          }
+        }
+      })
+      if (result.outcome === 'failed' && ownerIsAlive()) {
+        owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId, status: 'error' })
+      }
+      return result
     })
 
     createWindow()
