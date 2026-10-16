@@ -23,6 +23,15 @@ export interface GmailMetadataOptions {
   readonly timeoutMs?: number
 }
 
+export interface GmailWatchOptions extends GmailMetadataOptions {
+  readonly now: () => number
+}
+
+export interface GmailWatchResult {
+  readonly historyId: string
+  readonly expiresAt: number
+}
+
 export interface GmailHistoryPage {
   readonly historyId: string
   readonly addedMessageIds: readonly string[]
@@ -94,7 +103,8 @@ async function requestJson(
   url: string,
   accessToken: string,
   options: GmailMetadataOptions,
-  notFoundCode: GmailMetadataFailureCode = 'provider_error'
+  notFoundCode: GmailMetadataFailureCode = 'provider_error',
+  request?: { readonly method: 'POST'; readonly body?: string; readonly allowNoContent?: boolean }
 ): Promise<unknown> {
   validateToken(accessToken)
   const timeoutMs = validateOptions(options)
@@ -108,15 +118,17 @@ async function requestJson(
   }, timeoutMs)
 
   try {
-    const response = await raceAbort(
-      options.fetch(url, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        redirect: 'error',
-        signal: controller.signal
-      }),
-      controller.signal
-    )
+    const init: RequestInit = {
+      method: request?.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(request?.body === undefined ? {} : { 'Content-Type': 'application/json' })
+      },
+      redirect: 'error',
+      signal: controller.signal,
+      ...(request?.body === undefined ? {} : { body: request.body })
+    }
+    const response = await raceAbort(options.fetch(url, init), controller.signal)
     if (response.redirected || (response.status >= 300 && response.status < 400)) {
       throw new GmailMetadataFailure('redirect_refused')
     }
@@ -133,6 +145,7 @@ async function requestJson(
                 : 'provider_error'
       throw new GmailMetadataFailure(code)
     }
+    if (request?.allowNoContent === true && response.status === 204) return {}
     try {
       return await raceAbort(response.json(), controller.signal)
     } catch {
@@ -148,6 +161,73 @@ async function requestJson(
   } finally {
     clearTimeout(timeout)
     options.signal.removeEventListener('abort', relayAbort)
+  }
+}
+
+function readWatchNow(now: () => number): number {
+  try {
+    const value = now()
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error('invalid clock')
+    return value
+  } catch {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+}
+
+function getWatchClock(options: GmailWatchOptions): () => number {
+  try {
+    if (typeof options.now !== 'function') throw new Error('invalid clock')
+    return options.now
+  } catch {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+}
+
+export async function registerGmailWatch(
+  accessToken: string,
+  topicName: string,
+  options: GmailWatchOptions
+): Promise<GmailWatchResult> {
+  if (
+    typeof topicName !== 'string' ||
+    !/^projects\/[A-Za-z0-9_-]+\/topics\/[A-Za-z0-9._~+%-]+$/.test(topicName)
+  ) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+  const now = getWatchClock(options)
+  readWatchNow(now)
+  const payload = await requestJson(
+    `${GMAIL_API_ORIGIN}/gmail/v1/users/me/watch?fields=historyId%2Cexpiration`,
+    accessToken,
+    options,
+    'provider_error',
+    { method: 'POST', body: JSON.stringify({ topicName }) }
+  )
+  if (!isRecord(payload)) throw new GmailMetadataFailure('invalid_response')
+  const historyId = validateHistoryId(payload.historyId)
+  if (typeof payload.expiration !== 'string' || !/^[1-9]\d*$/.test(payload.expiration)) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+  const expiresAt = Number(payload.expiration)
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0 || expiresAt <= readWatchNow(now)) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+  return { historyId, expiresAt }
+}
+
+export async function stopGmailWatch(
+  accessToken: string,
+  options: GmailMetadataOptions
+): Promise<void> {
+  const payload = await requestJson(
+    `${GMAIL_API_ORIGIN}/gmail/v1/users/me/stop`,
+    accessToken,
+    options,
+    'provider_error',
+    { method: 'POST', allowNoContent: true }
+  )
+  if (!isRecord(payload) || Object.keys(payload).length !== 0) {
+    throw new GmailMetadataFailure('invalid_response')
   }
 }
 
