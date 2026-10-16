@@ -29,7 +29,9 @@ const handle = createGmailView(session.fromPartition('hantong-gmail-login-check'
   openExternal: (url) => shell.openExternal(url),
   onNavigationBlocked: () => {
     console.error('Navigation blocked. No security workaround was applied.')
-  }
+  },
+  onMainFrameNavigation: () => {},
+  isMailAccessAllowed: () => true
 })
 window.contentView.addChildView(handle.view)
 

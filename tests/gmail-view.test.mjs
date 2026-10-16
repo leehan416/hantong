@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-function fixture() {
+function fixture({ allowed = false } = {}) {
   const opened = []
   let blocked = 0
   const webSession = {
@@ -50,9 +50,12 @@ function fixture() {
     },
     onNavigationBlocked: () => {
       blocked += 1
-    }
+    },
+    onMainFrameNavigation: (url) => navigated.push(url),
+    isMailAccessAllowed: () => allowed
   })
-  return { handle, webSession, opened, blocked: () => blocked }
+  const navigated = []
+  return { handle, webSession, opened, blocked: () => blocked, navigated }
 }
 
 test('creating a Gmail view grants no Node or preload access and does not load eagerly', async () => {
@@ -111,7 +114,7 @@ test('redirects cannot launch the system browser or leave the trusted hosts', ()
 })
 
 test('authentication popups share the session and inherit the navigation guards', async () => {
-  const { handle, webSession, opened } = fixture()
+  const { handle, webSession, opened } = fixture({ allowed: true })
   const response = handle.view.webContents.openWindow({
     url: 'https://accounts.google.com/ServiceLogin'
   })
@@ -165,4 +168,22 @@ test('OAuth and dangerous popup targets are blocked without leaving the app', ()
   }
   assert.deepEqual(opened, [])
   assert.equal(blocked(), 2)
+})
+
+test('locked parent allows Gmail login redirects while remaining closed to mail popups', () => {
+  const { handle, navigated } = fixture()
+  let prevented = false
+  handle.view.webContents.emit('will-redirect', {
+    url: 'https://mail.google.com/mail/u/0/',
+    isMainFrame: true,
+    preventDefault() {
+      prevented = true
+    }
+  })
+  assert.equal(prevented, false)
+  assert.deepEqual(navigated, ['https://mail.google.com/mail/u/0/'])
+  assert.equal(
+    handle.view.webContents.openWindow({ url: 'https://mail.google.com/mail/u/0/' }).action,
+    'deny'
+  )
 })

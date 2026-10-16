@@ -1,10 +1,24 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAccountStore } from './account-store'
 import { createAccountViewManager } from './account-view-manager'
+import { createAccountAccessController } from './account-access-controller'
 import { createAccountRemovalController } from './account-removal'
 import { clearAccountSession } from './account-session-cleanup'
+import { createGoogleCredentialStore } from './google-credential-store'
+import { createGoogleConnectionManager } from './google-connection-manager'
+import { createGoogleConnectionRuntime } from './google-connection-runtime'
+import type { GoogleConnectionFailureCode } from './google-connection'
+import type { GoogleWebIdentityFailureReason } from './google-web-identity'
+import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
+import { startGoogleAuthorization } from './google-authorization'
+import type { AuthorizationErrorCode } from './google-authorization'
+import {
+  exchangeGoogleAuthorizationCode,
+  fetchGoogleProfileEmail,
+  refreshGoogleAccessToken
+} from './google-token-exchange'
 import { is, optimizer } from '@electron-toolkit/utils'
 import {
   ACCOUNT_ACTIVATE_CHANNEL,
@@ -14,12 +28,19 @@ import {
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
+  GOOGLE_CONNECTION_CANCEL_CHANNEL,
+  GOOGLE_CONNECTION_CONNECT_CHANNEL,
+  GOOGLE_CONNECTION_DISCONNECT_CHANNEL,
+  GOOGLE_CONNECTION_STATUS_CHANNEL,
+  ACCOUNT_ACCESS_STATE_CHANNEL,
+  ACCOUNT_ACCESS_STATE_EVENT,
   type AppInfo
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
   isAllowedAppInfoRequest,
   isAllowedExternalUrl,
+  isAllowedGoogleConnectionRequest,
   isTrustedRendererUrl
 } from './security-policy'
 
@@ -35,6 +56,26 @@ let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
+let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
+let googleConnectionManager: ReturnType<typeof createGoogleConnectionManager> | null = null
+let accountAccessController: ReturnType<typeof createAccountAccessController> | null = null
+let appQuitting = false
+let quitCleanupPending = false
+let quitCleanupComplete = false
+
+function reportOAuthDiagnostic(
+  stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
+  code:
+    | Exclude<GoogleConnectionFailureCode, 'cancelled'>
+    | GoogleWebIdentityFailureReason
+    | AuthorizationErrorCode
+    | 'config_unavailable'
+    | 'connection_start_failed'
+    | 'connection_failed'
+    | 'accept_failed'
+): void {
+  if (!app.isPackaged) console.error(`[Hantong OAuth] ${stage}:${code}`)
+}
 
 app.on('window-all-closed', () => {
   // macOS keeps the application available for reopening from the Dock.
@@ -67,15 +108,50 @@ function createWindow(): void {
     }
   })
   mainWindow = window
+  let windowAccessController: ReturnType<typeof createAccountAccessController> | null = null
   const windowViewManager = createAccountViewManager(
     window,
     requireAccountStore(),
     (status) => {
       if (!window.isDestroyed()) window.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, status)
+      if (
+        status.status === 'ready' ||
+        status.status === 'blocked' ||
+        status.status === 'error' ||
+        status.status === 'loading'
+      ) {
+        windowAccessController?.onViewReady(status.accountId)
+      }
     },
-    (url) => shell.openExternal(url)
+    (url) => shell.openExternal(url),
+    30_000,
+    (reason) => reportOAuthDiagnostic('identity', reason)
   )
   accountViewManager = windowViewManager
+  windowAccessController = createAccountAccessController({
+    views: windowViewManager,
+    runtime: requireGoogleConnectionRuntime(),
+    connections: requireGoogleConnectionManager(),
+    loadConfig: () =>
+      loadRuntimeGoogleOAuthConfig({
+        environment: process.env,
+        isPackaged: app.isPackaged,
+        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+      }),
+    fetchProfile: async (accessToken, signal) => {
+      const email = await fetchGoogleProfileEmail(accessToken, { fetch, signal })
+      if (!email) throw new Error('Google profile is unavailable')
+      return email
+    },
+    accountExists: (id) =>
+      requireAccountStore()
+        .getState()
+        .accounts.some((account) => account.id === id),
+    publish: (state) => {
+      if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
+    }
+  })
+  accountAccessController = windowAccessController
 
   const contents = window.webContents
   contents.session.setPermissionCheckHandler(() => false)
@@ -98,9 +174,14 @@ function createWindow(): void {
 
   window.once('ready-to-show', () => window.show())
   window.once('closed', () => {
+    void googleConnectionRuntime?.cancelAll().catch(() => {
+      console.error('Unable to cancel pending Google connections')
+    })
     void windowViewManager.dispose().catch(() => {
       console.error('Unable to close Gmail views')
     })
+    windowAccessController?.dispose()
+    if (accountAccessController === windowAccessController) accountAccessController = null
     if (accountViewManager === windowViewManager) accountViewManager = null
     if (mainWindow === window) mainWindow = null
   })
@@ -123,6 +204,16 @@ function requireAccountRemoval(): ReturnType<typeof createAccountRemovalControll
   return accountRemoval
 }
 
+function requireGoogleConnectionRuntime(): NonNullable<typeof googleConnectionRuntime> {
+  if (!googleConnectionRuntime) throw new Error('Google connection runtime is unavailable')
+  return googleConnectionRuntime
+}
+
+function requireGoogleConnectionManager(): NonNullable<typeof googleConnectionManager> {
+  if (!googleConnectionManager) throw new Error('Google connection manager is unavailable')
+  return googleConnectionManager
+}
+
 function activateAccountView(accountId: string): void {
   try {
     accountViewManager?.activate(accountId)
@@ -137,7 +228,62 @@ void app
   .whenReady()
   .then(() => {
     accountStore = createAccountStore(app.getPath('userData'))
-    accountRemoval = createAccountRemovalController(requireAccountStore(), clearAccountSession)
+    const credentialStore = createGoogleCredentialStore({
+      directory: join(app.getPath('userData'), 'google-credentials'),
+      platform: process.platform,
+      safeStorage
+    })
+    const connectionManager = createGoogleConnectionManager({
+      credentialStore,
+      now: () => Date.now(),
+      refreshTokens: (config, refreshToken, signal) =>
+        refreshGoogleAccessToken(config, refreshToken, {
+          fetch,
+          signal,
+          now: () => Date.now()
+        })
+    })
+    googleConnectionManager = connectionManager
+    googleConnectionRuntime = createGoogleConnectionRuntime({
+      accountExists: (id) =>
+        requireAccountStore()
+          .getState()
+          .accounts.some((account) => account.id === id),
+      readWebIdentity: (id, signal) =>
+        accountViewManager?.readWebIdentity(id, signal) ?? Promise.resolve(null),
+      loadConfig: () =>
+        loadRuntimeGoogleOAuthConfig({
+          environment: process.env,
+          isPackaged: app.isPackaged,
+          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+        }),
+      startAuthorization: (config) =>
+        startGoogleAuthorization(config, {
+          openExternal: (url) => shell.openExternal(url),
+          reportFailure: (code) => reportOAuthDiagnostic('authorization', code)
+        }),
+      exchangeCode: (config, authorization, signal) =>
+        exchangeGoogleAuthorizationCode(config, authorization, {
+          fetch,
+          signal,
+          now: () => Date.now()
+        }),
+      fetchProfile: (accessToken, signal) =>
+        fetchGoogleProfileEmail(accessToken, { fetch, signal }),
+      manager: connectionManager,
+      reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
+    })
+    accountRemoval = createAccountRemovalController(
+      requireAccountStore(),
+      clearAccountSession,
+      async (id) => {
+        const access = accountAccessController
+        if (!access) throw new Error('Account access is unavailable')
+        const result = await access.disconnect(id)
+        if (result.connectionStatus !== 'disconnected')
+          throw new Error('Unable to disconnect Google API')
+      }
+    )
     ipcMain.handle(APP_INFO_CHANNEL, (event, ...args: unknown[]): AppInfo => {
       const owner = mainWindow
       const ownerAlive = owner !== null && !owner.isDestroyed()
@@ -185,6 +331,87 @@ void app
             : operation === 'retry' && state.activeAccountId !== null
       })
     }
+
+    function googleConnectionRequestAllowed(
+      event: Electron.IpcMainInvokeEvent,
+      operation: 'get' | 'connect' | 'cancel' | 'disconnect',
+      args: unknown[]
+    ): boolean {
+      const owner = mainWindow
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      const id = args.length === 1 && typeof args[0] === 'string' ? args[0] : ''
+      const accountExists = requireAccountStore()
+        .getState()
+        .accounts.some((account) => account.id === id)
+      return (
+        !appQuitting &&
+        !requireAccountRemoval().isBusy() &&
+        isAllowedGoogleConnectionRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl,
+          operation,
+          args,
+          accountExists
+        })
+      )
+    }
+
+    const handleGoogleConnection = (
+      channel: string,
+      operation: 'get' | 'connect' | 'cancel' | 'disconnect'
+    ): void => {
+      ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+        if (!googleConnectionRequestAllowed(event, operation, args))
+          throw new Error('Request rejected')
+        const accountId = args[0]
+        const owner = mainWindow
+        if (typeof accountId !== 'string' || !owner) throw new Error('Request rejected')
+        const runtime = requireGoogleConnectionRuntime()
+        const accessController = accountAccessController
+        let result: Awaited<ReturnType<typeof runtime.getStatus>>
+        if (operation === 'get') {
+          result = await runtime.getStatus(accountId)
+        } else {
+          if (!accessController) throw new Error('Request rejected')
+          const accessResult =
+            operation === 'connect'
+              ? await accessController.connect(accountId)
+              : operation === 'cancel'
+                ? await accessController.cancel(accountId)
+                : await accessController.disconnect(accountId)
+          result = { accountId, status: accessResult.connectionStatus }
+        }
+        if (
+          mainWindow !== owner ||
+          owner.isDestroyed() ||
+          event.sender !== owner.webContents ||
+          event.senderFrame === null ||
+          event.senderFrame !== event.sender.mainFrame ||
+          !isTrustedRendererUrl(event.senderFrame.url, rendererUrl) ||
+          !requireAccountStore()
+            .getState()
+            .accounts.some((account) => account.id === accountId)
+        )
+          throw new Error('Request rejected')
+        return result
+      })
+    }
+    handleGoogleConnection(GOOGLE_CONNECTION_STATUS_CHANNEL, 'get')
+    handleGoogleConnection(GOOGLE_CONNECTION_CONNECT_CHANNEL, 'connect')
+    handleGoogleConnection(GOOGLE_CONNECTION_CANCEL_CHANNEL, 'cancel')
+    handleGoogleConnection(GOOGLE_CONNECTION_DISCONNECT_CHANNEL, 'disconnect')
+
+    ipcMain.handle(ACCOUNT_ACCESS_STATE_CHANNEL, (event, ...args: unknown[]) => {
+      if (!googleConnectionRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
+      const accountId = args[0]
+      if (typeof accountId !== 'string' || !accountAccessController)
+        throw new Error('Request rejected')
+      return accountAccessController.getState(accountId)
+    })
 
     ipcMain.handle(ACCOUNT_STATE_CHANNEL, (event, ...args: unknown[]) => {
       requireAccountRemoval().assertIdle()
@@ -265,6 +492,24 @@ void app
     })
 
     createWindow()
+    app.on('before-quit', (event) => {
+      if (quitCleanupComplete) return
+      event.preventDefault()
+      if (quitCleanupPending) return
+      appQuitting = true
+      quitCleanupPending = true
+      void requireGoogleConnectionRuntime()
+        .cancelAll()
+        .then(() => {
+          quitCleanupComplete = true
+          app.quit()
+        })
+        .catch(() => {
+          console.error('Unable to cancel pending Google connections')
+          quitCleanupComplete = true
+          app.quit()
+        })
+    })
     app.on('activate', () => {
       if (!mainWindow) createWindow()
       else {

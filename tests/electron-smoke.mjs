@@ -45,6 +45,12 @@ async function verify(window) {
     operations: Object.keys(window.api),
     info: await window.api.getAppInfo(),
     accounts: await window.api.getAccounts(),
+    access: await (async () => {
+      const accounts = await window.api.getAccounts()
+      return accounts.activeAccountId
+        ? window.api.getAccountAccessState(accounts.activeAccountId)
+        : null
+    })(),
     permission: (await navigator.permissions.query({ name: 'geolocation' })).state
   }))()`)
   assert.equal(result.node, 'undefined')
@@ -52,17 +58,24 @@ async function verify(window) {
   assert.equal(result.genericBridge, 'undefined')
   assert.deepEqual(result.operations, [
     'getAppInfo',
+    'getGoogleConnectionStatus',
+    'connectGoogleAccount',
+    'cancelGoogleConnection',
+    'disconnectGoogleAccount',
     'getAccounts',
     'addAccount',
     'activateAccount',
     'retryAccount',
     'removeAccount',
-    'onAccountViewStatus'
+    'onAccountViewStatus',
+    'getAccountAccessState',
+    'onAccountAccessState'
   ])
   assert.equal(result.info.name, 'Hantong')
   assert.equal(typeof result.info.version, 'string')
   assert.ok(['ko', 'en'].includes(result.info.locale))
   assert.deepEqual(result.accounts, { version: 1, accounts: [], activeAccountId: null })
+  assert.equal(result.access, null)
   assert.equal(result.permission, 'denied')
 
   const originalUrl = window.webContents.getURL()

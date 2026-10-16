@@ -7,6 +7,12 @@ export const ACCOUNT_ACTIVATE_CHANNEL = 'hantong:accounts-activate'
 export const ACCOUNT_RETRY_CHANNEL = 'hantong:accounts-retry'
 export const ACCOUNT_REMOVE_CHANNEL = 'hantong:accounts-remove'
 export const ACCOUNT_VIEW_STATUS_EVENT = 'hantong:account-view-status'
+export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
+export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
+export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
+export const GOOGLE_CONNECTION_DISCONNECT_CHANNEL = 'hantong:google-connection-disconnect'
+export const ACCOUNT_ACCESS_STATE_CHANNEL = 'hantong:account-access-state'
+export const ACCOUNT_ACCESS_STATE_EVENT = 'hantong:account-access-state-change'
 export const ACCOUNT_CHROME_HEIGHT = 88
 
 export type AccountViewStatus = {
@@ -27,6 +33,17 @@ export interface AppInfo {
   locale: 'ko' | 'en'
 }
 
+export type GoogleConnectionStatus = {
+  accountId: string
+  status: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
+}
+
+export type AccountAccessState = {
+  accountId: string
+  status: 'sign_in' | 'checking' | 'required' | 'ready' | 'error'
+  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
+}
+
 export interface HantongApi {
   getAppInfo: () => Promise<AppInfo>
   getAccounts: () => Promise<AccountState>
@@ -35,4 +52,10 @@ export interface HantongApi {
   retryAccount: () => Promise<void>
   removeAccount: (accountId: string) => Promise<AccountRemovalResult>
   onAccountViewStatus: (listener: (status: AccountViewStatus) => void) => () => void
+  getGoogleConnectionStatus: (accountId: string) => Promise<GoogleConnectionStatus>
+  connectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>
+  cancelGoogleConnection: (accountId: string) => Promise<GoogleConnectionStatus>
+  disconnectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>
+  getAccountAccessState: (accountId: string) => Promise<AccountAccessState>
+  onAccountAccessState: (listener: (state: AccountAccessState) => void) => () => void
 }

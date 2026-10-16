@@ -15,6 +15,12 @@ interface AccountRequest extends Omit<AppInfoRequest, 'args'> {
   accountExists: boolean
 }
 
+interface GoogleConnectionRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: unknown
+  args: unknown[]
+  accountExists: boolean
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)
@@ -76,5 +82,19 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
     request.args.length === 1 &&
     isAccountId(request.args[0]) &&
     request.accountExists
+  )
+}
+
+export function isAllowedGoogleConnectionRequest(request: GoogleConnectionRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl) &&
+    request.accountExists &&
+    typeof request.operation === 'string' &&
+    ['get', 'connect', 'cancel', 'disconnect'].includes(request.operation) &&
+    request.args.length === 1 &&
+    isAccountId(request.args[0])
   )
 }
