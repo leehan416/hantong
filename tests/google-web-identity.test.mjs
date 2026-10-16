@@ -144,3 +144,78 @@ test('reader rejects unsafe URL, load, disposal, malformed result, and navigatio
   aborted.abort()
   assert.equal(await reader.read(accountId, aborted.signal), null)
 })
+
+test('identity reader reports fixed failure reasons without changing fail-closed results', async () => {
+  const reasons = []
+  let view
+  const reader = identity.createGoogleWebIdentityReader(
+    () => view,
+    (reason) => reasons.push(reason)
+  )
+  assert.equal(await reader.read(accountId), null)
+  view = {
+    contents: makeContents({ getURL: () => 'https://mail.google.com.evil.test/mail/u/0/' }),
+    revision: () => 1,
+    eligible: () => true
+  }
+  assert.equal(await reader.read(accountId), null)
+  view = {
+    contents: makeContents({ isLoadingMainFrame: () => true }),
+    revision: () => 1,
+    eligible: () => true
+  }
+  assert.equal(await reader.read(accountId), null)
+  view = {
+    contents: makeContents({ executeJavaScriptInIsolatedWorld: async () => 'a@example.com' }),
+    revision: () => 1,
+    eligible: () => true
+  }
+  view.contents.executeJavaScriptInIsolatedWorld = async () => {
+    throw new Error('private DOM failure')
+  }
+  assert.equal(await reader.read(accountId), null)
+  view.contents.executeJavaScriptInIsolatedWorld = async () => null
+  assert.equal(await reader.read(accountId), null)
+  assert.deepEqual(reasons, [
+    'missing_view',
+    'untrusted_document',
+    'document_loading',
+    'script_failed',
+    'identity_unavailable'
+  ])
+
+  const observerFailure = identity.createGoogleWebIdentityReader(
+    () => undefined,
+    () => {
+      throw new Error('observer failure')
+    }
+  )
+  assert.equal(await observerFailure.read(accountId), null)
+})
+
+test('identity reader reports navigation changes and keeps cancellation silent', async () => {
+  const reasons = []
+  const contents = makeContents()
+  const view = {
+    contents: {
+      getURL: contents.getURL,
+      isDestroyed: contents.isDestroyed,
+      isLoadingMainFrame: contents.isLoadingMainFrame,
+      executeJavaScriptInIsolatedWorld: async () => {
+        contents.setRevision(4)
+        return 'a@example.com'
+      }
+    },
+    revision: contents.revision,
+    eligible: () => contents.eligible()
+  }
+  const reader = identity.createGoogleWebIdentityReader(
+    () => view,
+    (reason) => reasons.push(reason)
+  )
+  assert.equal(await reader.read(accountId), null)
+  const aborted = new AbortController()
+  aborted.abort()
+  assert.equal(await reader.read(accountId, aborted.signal), null)
+  assert.deepEqual(reasons, ['navigation_changed'])
+})

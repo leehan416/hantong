@@ -8,8 +8,11 @@ import { clearAccountSession } from './account-session-cleanup'
 import { createGoogleCredentialStore } from './google-credential-store'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
+import type { GoogleConnectionFailureCode } from './google-connection'
+import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 import { startGoogleAuthorization } from './google-authorization'
+import type { AuthorizationErrorCode } from './google-authorization'
 import {
   exchangeGoogleAuthorizationCode,
   fetchGoogleProfileEmail,
@@ -55,6 +58,20 @@ let appQuitting = false
 let quitCleanupPending = false
 let quitCleanupComplete = false
 
+function reportOAuthDiagnostic(
+  stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
+  code:
+    | Exclude<GoogleConnectionFailureCode, 'cancelled'>
+    | GoogleWebIdentityFailureReason
+    | AuthorizationErrorCode
+    | 'config_unavailable'
+    | 'connection_start_failed'
+    | 'connection_failed'
+    | 'accept_failed'
+): void {
+  if (!app.isPackaged) console.error(`[Hantong OAuth] ${stage}:${code}`)
+}
+
 app.on('window-all-closed', () => {
   // macOS keeps the application available for reopening from the Dock.
 })
@@ -92,7 +109,9 @@ function createWindow(): void {
     (status) => {
       if (!window.isDestroyed()) window.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, status)
     },
-    (url) => shell.openExternal(url)
+    (url) => shell.openExternal(url),
+    30_000,
+    (reason) => reportOAuthDiagnostic('identity', reason)
   )
   accountViewManager = windowViewManager
 
@@ -193,7 +212,10 @@ void app
           localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
         }),
       startAuthorization: (config) =>
-        startGoogleAuthorization(config, { openExternal: (url) => shell.openExternal(url) }),
+        startGoogleAuthorization(config, {
+          openExternal: (url) => shell.openExternal(url),
+          reportFailure: (code) => reportOAuthDiagnostic('authorization', code)
+        }),
       exchangeCode: (config, authorization, signal) =>
         exchangeGoogleAuthorizationCode(config, authorization, {
           fetch,
@@ -202,7 +224,8 @@ void app
         }),
       fetchProfile: (accessToken, signal) =>
         fetchGoogleProfileEmail(accessToken, { fetch, signal }),
-      manager: connectionManager
+      manager: connectionManager,
+      reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
     })
     accountRemoval = createAccountRemovalController(
       requireAccountStore(),

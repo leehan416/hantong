@@ -262,6 +262,7 @@ test('wrong state, path, method and host leave the valid callback pending', asyn
 })
 
 test('browser launch failure, cancellation and timeout reject and close the listener', async () => {
+  const diagnostics = []
   const launchHttp = httpBoundary()
   const launchFailure = authorization.startGoogleAuthorization(
     { clientId },
@@ -269,11 +270,16 @@ test('browser launch failure, cancellation and timeout reject and close the list
       openExternal: () => {
         throw new Error('browser failure')
       },
+      reportFailure: (code) => {
+        diagnostics.push(code)
+        throw new Error('observer failure')
+      },
       timeoutMs: 5000,
       createServer: launchHttp.createServer
     }
   )
   await assert.rejects(launchFailure.result, { code: 'browser_error' })
+  assert.deepEqual(diagnostics, ['browser_error'])
   assert.equal(launchHttp.servers[0].closed, true)
 
   const cancelHttp = httpBoundary()
@@ -281,12 +287,14 @@ test('browser launch failure, cancellation and timeout reject and close the list
     { clientId },
     {
       openExternal: async () => {},
+      reportFailure: (code) => diagnostics.push(code),
       timeoutMs: 5000,
       createServer: cancelHttp.createServer
     }
   )
   cancelled.cancel()
   await assert.rejects(cancelled.result, { code: 'cancelled' })
+  assert.deepEqual(diagnostics, ['browser_error'])
   assert.equal(cancelHttp.servers[0].closed, true)
 
   const timeoutHttp = httpBoundary()
@@ -294,11 +302,13 @@ test('browser launch failure, cancellation and timeout reject and close the list
     { clientId },
     {
       openExternal: async () => {},
+      reportFailure: (code) => diagnostics.push(code),
       timeoutMs: 15,
       createServer: timeoutHttp.createServer
     }
   )
   await assert.rejects(timedOut.result, { code: 'timeout' })
+  assert.deepEqual(diagnostics, ['browser_error', 'timeout'])
   assert.equal(timeoutHttp.servers[0].closed, true)
 })
 

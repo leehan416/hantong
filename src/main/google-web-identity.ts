@@ -33,9 +33,25 @@ interface IdentityView {
   readonly contents: IdentityWebContents
   readonly revision: () => number
   readonly eligible: () => boolean
+  readonly readinessFailure?: () => GoogleWebIdentityFailureReason
 }
 
-function allowedGmailUrl(value: string): boolean {
+export type GoogleWebIdentityFailureReason =
+  | 'missing_view'
+  | 'not_ready'
+  | 'manager_disposed'
+  | 'view_loading'
+  | 'view_not_loaded'
+  | 'view_blocked'
+  | 'view_disposing'
+  | 'document_destroyed'
+  | 'document_loading'
+  | 'untrusted_document'
+  | 'script_failed'
+  | 'navigation_changed'
+  | 'identity_unavailable'
+
+export function isAllowedGmailIdentityUrl(value: string): boolean {
   try {
     const url = new URL(value)
     return (
@@ -61,25 +77,47 @@ function validEmailResult(value: unknown): value is string {
 }
 
 export function createGoogleWebIdentityReader(
-  getView: (accountId: string) => IdentityView | undefined
+  getView: (accountId: string) => IdentityView | undefined,
+  reportFailure?: (reason: GoogleWebIdentityFailureReason) => void
 ): {
   read(
     accountId: string,
     signal?: AbortSignal
   ): Promise<{ accountExists: true; emailAddress: string } | null>
 } {
+  const report = (reason: GoogleWebIdentityFailureReason): void => {
+    try {
+      reportFailure?.(reason)
+    } catch {
+      // Diagnostics must never affect identity verification.
+    }
+  }
+
   return {
     async read(accountId, signal) {
       if (!isAccountId(accountId) || signal?.aborted) return null
       const view = getView(accountId)
-      if (!view || !view.eligible()) return null
-      const { contents } = view
-      if (
-        contents.isDestroyed() ||
-        contents.isLoadingMainFrame() ||
-        !allowedGmailUrl(contents.getURL())
-      )
+      if (!view) {
+        report('missing_view')
         return null
+      }
+      if (!view.eligible()) {
+        report(view.readinessFailure?.() ?? 'not_ready')
+        return null
+      }
+      const { contents } = view
+      if (contents.isDestroyed()) {
+        report('document_destroyed')
+        return null
+      }
+      if (contents.isLoadingMainFrame()) {
+        report('document_loading')
+        return null
+      }
+      if (!isAllowedGmailIdentityUrl(contents.getURL())) {
+        report('untrusted_document')
+        return null
+      }
       const revision = view.revision()
       let value: unknown
       try {
@@ -87,11 +125,11 @@ export function createGoogleWebIdentityReader(
           { code: GMAIL_ACCOUNT_IDENTITY_SCRIPT }
         ])
       } catch {
+        report('script_failed')
         return null
       }
       const latestView = getView(accountId)
       if (
-        signal?.aborted ||
         !latestView ||
         latestView.contents !== contents ||
         latestView.revision() !== revision ||
@@ -100,10 +138,16 @@ export function createGoogleWebIdentityReader(
         contents.isDestroyed() ||
         contents.isLoadingMainFrame() ||
         view.revision() !== revision ||
-        !allowedGmailUrl(contents.getURL()) ||
-        !validEmailResult(value)
-      )
+        !isAllowedGmailIdentityUrl(contents.getURL())
+      ) {
+        if (!signal?.aborted) report('navigation_changed')
         return null
+      }
+      if (signal?.aborted) return null
+      if (!validEmailResult(value)) {
+        report('identity_unavailable')
+        return null
+      }
       return { accountExists: true, emailAddress: value }
     }
   }

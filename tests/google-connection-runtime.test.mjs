@@ -68,7 +68,9 @@ test('runtime status DTO contains only account ID and safe status', async () => 
 })
 
 test('missing OAuth config fails safely without starting browser authorization', async () => {
+  const diagnostics = []
   const f = fixture({
+    reportFailure: (stage, code) => diagnostics.push([stage, code]),
     loadConfig: () => {
       throw new Error('private config failure')
     }
@@ -76,6 +78,51 @@ test('missing OAuth config fails safely without starting browser authorization',
   const result = await f.runtime.connect(accountId)
   assert.deepEqual({ ...result }, { accountId, status: 'error' })
   assert.equal(f.calls.authorization, 0)
+  assert.deepEqual(diagnostics, [['config', 'config_unavailable']])
+})
+
+test('connection diagnostics report only allowlisted failure codes and cannot break the result', async () => {
+  const diagnostics = []
+  const f = fixture({
+    reportFailure: (stage, code) => {
+      diagnostics.push([stage, code])
+      throw new Error('observer failure')
+    },
+    readWebIdentity: async () => {
+      throw new Error('private identity data')
+    }
+  })
+  const result = await f.runtime.connect(accountId)
+  assert.deepEqual({ ...result }, { accountId, status: 'error' })
+  assert.deepEqual(diagnostics, [['connection', 'identity_unavailable']])
+  assert.equal(JSON.stringify(diagnostics).includes('private'), false)
+})
+
+test('an unavailable web identity fails safely before opening browser authorization', async () => {
+  const diagnostics = []
+  const f = fixture({
+    reportFailure: (stage, code) => diagnostics.push([stage, code]),
+    readWebIdentity: async () => ({ accountExists: true, emailAddress: null })
+  })
+  const result = await f.runtime.connect(accountId)
+  assert.deepEqual({ ...result }, { accountId, status: 'error' })
+  assert.equal(f.calls.authorization, 0)
+  assert.deepEqual(diagnostics, [['connection', 'identity_unavailable']])
+})
+
+test('persistence diagnostics identify acceptance failure without exposing its error', async () => {
+  const diagnostics = []
+  const f = fixture({
+    reportFailure: (stage, code) => diagnostics.push([stage, code]),
+    manager: {
+      acceptConnection: async () => {
+        throw new Error('private storage detail')
+      }
+    }
+  })
+  const result = await f.runtime.connect(accountId)
+  assert.deepEqual({ ...result }, { accountId, status: 'error' })
+  assert.deepEqual(diagnostics, [['persistence', 'accept_failed']])
 })
 
 test('same-turn cancel prevents a queued connect from opening the browser', async () => {

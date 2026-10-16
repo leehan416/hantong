@@ -27,6 +27,7 @@ export interface AuthorizationCode {
 
 export interface GoogleAuthorizationOptions {
   readonly openExternal: (url: string) => Promise<void>
+  readonly reportFailure?: (code: AuthorizationErrorCode) => void
   readonly timeoutMs?: number
   readonly crypto?: PkceCrypto
   readonly createServer?: (
@@ -77,8 +78,16 @@ export function startGoogleAuthorization(
     if (settled) return
     settled = true
     closeServer()
-    if (error) rejectResult(error)
-    else if (value) resolveResult(value)
+    if (error) {
+      if (error.code !== 'cancelled') {
+        try {
+          options.reportFailure?.(error.code)
+        } catch {
+          // Diagnostics must never affect authorization behavior.
+        }
+      }
+      rejectResult(error)
+    } else if (value) resolveResult(value)
     else rejectResult(new AuthorizationError('server_error'))
   }
 

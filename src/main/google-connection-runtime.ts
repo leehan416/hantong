@@ -1,10 +1,16 @@
 import type { GoogleAuthorizationOperation } from './google-authorization'
 import type { GoogleConnectionStatus } from '../shared/ipc'
 import { GoogleConnectionFailure, startGoogleConnection } from './google-connection'
-import type { GoogleConnectionResult } from './google-connection'
+import type { GoogleConnectionFailureCode, GoogleConnectionResult } from './google-connection'
 import type { GoogleOAuthConfig } from './google-oauth-config'
 
 export type GoogleConnectionStatusDto = GoogleConnectionStatus
+type RuntimeDiagnosticCode =
+  | Exclude<GoogleConnectionFailureCode, 'cancelled'>
+  | 'config_unavailable'
+  | 'connection_start_failed'
+  | 'connection_failed'
+  | 'accept_failed'
 
 interface ConnectionManager {
   acceptConnection(accountId: string, result: GoogleConnectionResult): Promise<unknown>
@@ -28,6 +34,10 @@ interface RuntimeDependencies {
   readonly exchangeCode: Parameters<typeof startGoogleConnection>[2]['exchangeCode']
   readonly fetchProfile: Parameters<typeof startGoogleConnection>[2]['fetchProfile']
   readonly manager: ConnectionManager
+  readonly reportFailure?: (
+    stage: 'config' | 'connection' | 'persistence',
+    code: RuntimeDiagnosticCode
+  ) => void
 }
 
 interface ActiveOperation {
@@ -57,6 +67,36 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
     accountId,
     status: value
   })
+  const reportFailure = (
+    stage: 'config' | 'connection' | 'persistence',
+    code: RuntimeDiagnosticCode
+  ): void => {
+    try {
+      dependencies.reportFailure?.(stage, code)
+    } catch {
+      // Diagnostics must never affect connection behavior.
+    }
+  }
+  const connectionFailureCode = (error: unknown): RuntimeDiagnosticCode | 'cancelled' => {
+    if (!(error instanceof GoogleConnectionFailure)) return 'connection_failed'
+    switch (error.code) {
+      case 'timeout':
+      case 'authorization_failed':
+      case 'network_error':
+      case 'redirect_refused':
+      case 'provider_error':
+      case 'invalid_response':
+      case 'identity_unavailable':
+      case 'account_missing':
+      case 'identity_changed':
+      case 'identity_mismatch':
+        return error.code
+      case 'cancelled':
+        return 'cancelled'
+      default:
+        return 'connection_failed'
+    }
+  }
   const cancelOperation = (accountId: string): Promise<boolean> => {
     const operation = active.get(accountId)
     if (!operation) return Promise.resolve(true)
@@ -95,11 +135,17 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         return status(accountId, active.has(accountId) ? 'connecting' : 'disconnected')
       }
       let connection: ReturnType<typeof startGoogleConnection>
+      let config: GoogleOAuthConfig
       try {
-        const config = dependencies.loadConfig()
+        config = dependencies.loadConfig()
         if (generation(accountId) !== expected) {
           return status(accountId, active.has(accountId) ? 'connecting' : 'disconnected')
         }
+      } catch {
+        reportFailure('config', 'config_unavailable')
+        return status(accountId, 'error')
+      }
+      try {
         connection = startGoogleConnection(accountId, config, {
           readWebIdentity: dependencies.readWebIdentity,
           startAuthorization: dependencies.startAuthorization,
@@ -107,6 +153,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           fetchProfile: dependencies.fetchProfile
         })
       } catch {
+        reportFailure('connection', 'connection_start_failed')
         return status(accountId, 'error')
       }
       const operation: ActiveOperation = {
@@ -135,9 +182,15 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         return status(accountId, 'connected')
       } catch (error) {
         if (active.get(accountId) === operation) active.delete(accountId)
-        if (error instanceof GoogleConnectionFailure && error.code === 'cancelled') {
+        if (operation.phase === 'accepting') {
+          reportFailure('persistence', 'accept_failed')
+          return status(accountId, 'error')
+        }
+        const failureCode = connectionFailureCode(error)
+        if (failureCode === 'cancelled') {
           return status(accountId, 'disconnected')
         }
+        reportFailure('connection', failureCode)
         return status(accountId, 'error')
       }
     },
