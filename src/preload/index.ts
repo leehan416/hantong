@@ -1,22 +1,11 @@
-import { contextBridge } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
+import { contextBridge, ipcRenderer } from 'electron'
+import { APP_INFO_CHANNEL, type HantongApi } from '../shared/ipc'
 
-// Custom APIs for renderer
-const api = {}
+if (!process.contextIsolated) throw new Error('Context isolation is required')
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
-if (process.contextIsolated) {
-  try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('api', api)
-  } catch (error) {
-    console.error(error)
-  }
-} else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
-  window.api = api
-}
+// Expose operations rather than a generic channel sender or Electron objects.
+const api: HantongApi = Object.freeze({
+  getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL)
+})
+
+if (process.isMainFrame) contextBridge.exposeInMainWorld('api', api)
