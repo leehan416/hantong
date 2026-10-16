@@ -8,7 +8,7 @@ import { clearAccountSession } from './account-session-cleanup'
 import { createGoogleCredentialStore } from './google-credential-store'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
-import { loadGoogleOAuthConfig } from './google-oauth-config'
+import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 import { startGoogleAuthorization } from './google-authorization'
 import {
   exchangeGoogleAuthorizationCode,
@@ -186,7 +186,12 @@ void app
           .accounts.some((account) => account.id === id),
       readWebIdentity: (id, signal) =>
         accountViewManager?.readWebIdentity(id, signal) ?? Promise.resolve(null),
-      loadConfig: () => loadGoogleOAuthConfig(process.env),
+      loadConfig: () =>
+        loadRuntimeGoogleOAuthConfig({
+          environment: process.env,
+          isPackaged: app.isPackaged,
+          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+        }),
       startAuthorization: (config) =>
         startGoogleAuthorization(config, { openExternal: (url) => shell.openExternal(url) }),
       exchangeCode: (config, authorization, signal) =>
