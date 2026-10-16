@@ -16,6 +16,8 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     exports: module.exports,
     module,
     URL,
+    setTimeout,
+    clearTimeout,
     require(name) {
       if (Object.hasOwn(overrides, name)) return overrides[name]
       if (name.startsWith('.')) {

@@ -44,15 +44,24 @@ async function verify(window) {
     genericBridge: typeof window.electron,
     operations: Object.keys(window.api),
     info: await window.api.getAppInfo(),
+    accounts: await window.api.getAccounts(),
     permission: (await navigator.permissions.query({ name: 'geolocation' })).state
   }))()`)
   assert.equal(result.node, 'undefined')
   assert.equal(result.process, 'undefined')
   assert.equal(result.genericBridge, 'undefined')
-  assert.deepEqual(result.operations, ['getAppInfo'])
+  assert.deepEqual(result.operations, [
+    'getAppInfo',
+    'getAccounts',
+    'addAccount',
+    'activateAccount',
+    'retryAccount',
+    'onAccountViewStatus'
+  ])
   assert.equal(result.info.name, 'Hantong')
   assert.equal(typeof result.info.version, 'string')
   assert.ok(['ko', 'en'].includes(result.info.locale))
+  assert.deepEqual(result.accounts, { version: 1, accounts: [], activeAccountId: null })
   assert.equal(result.permission, 'denied')
 
   const originalUrl = window.webContents.getURL()

@@ -1,4 +1,17 @@
+import type { AccountState } from './accounts'
+
 export const APP_INFO_CHANNEL = 'hantong:app-info'
+export const ACCOUNT_STATE_CHANNEL = 'hantong:accounts-get'
+export const ACCOUNT_ADD_CHANNEL = 'hantong:accounts-add'
+export const ACCOUNT_ACTIVATE_CHANNEL = 'hantong:accounts-activate'
+export const ACCOUNT_RETRY_CHANNEL = 'hantong:accounts-retry'
+export const ACCOUNT_VIEW_STATUS_EVENT = 'hantong:account-view-status'
+export const ACCOUNT_CHROME_HEIGHT = 88
+
+export type AccountViewStatus = {
+  accountId: string
+  status: 'loading' | 'ready' | 'error' | 'blocked'
+}
 
 export interface AppInfo {
   name: string
@@ -8,4 +21,9 @@ export interface AppInfo {
 
 export interface HantongApi {
   getAppInfo: () => Promise<AppInfo>
+  getAccounts: () => Promise<AccountState>
+  addAccount: () => Promise<AccountState>
+  activateAccount: (accountId: string) => Promise<AccountState>
+  retryAccount: () => Promise<void>
+  onAccountViewStatus: (listener: (status: AccountViewStatus) => void) => () => void
 }
