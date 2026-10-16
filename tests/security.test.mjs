@@ -7,12 +7,14 @@ const {
   isAllowedExternalUrl,
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
+  isAllowedGoogleConnectionRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
 const policy = {
   isAllowedExternalUrl,
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
+  isAllowedGoogleConnectionRequest,
   isTrustedRendererUrl
 }
 
@@ -139,5 +141,36 @@ test('account IPC validates operation arguments and requires a stored account fo
     { operation: 'remove', args: [base.args[0], 'extra'], accountExists: true }
   ]) {
     assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
+  }
+})
+
+test('Google connection IPC accepts only known operations for the live owner main frame and one existing UUID', () => {
+  const valid = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    operation: 'connect',
+    args: ['11111111-1111-4111-8111-111111111111'],
+    accountExists: true
+  }
+  assert.equal(policy.isAllowedGoogleConnectionRequest(valid), true)
+  for (const patch of [
+    { ownerAlive: false },
+    { senderMatches: false },
+    { mainFrameMatches: false },
+    { senderUrl: 'https://mail.google.com/' },
+    { operation: 'activate' },
+    { operation: {} },
+    { args: [] },
+    { args: ['11111111-1111-4111-8111-111111111111', 'extra'] },
+    { args: ['../other-session'] },
+    { accountExists: false }
+  ]) {
+    assert.equal(policy.isAllowedGoogleConnectionRequest({ ...valid, ...patch }), false)
+  }
+  for (const operation of ['get', 'connect', 'cancel', 'disconnect']) {
+    assert.equal(policy.isAllowedGoogleConnectionRequest({ ...valid, operation }), true)
   }
 })

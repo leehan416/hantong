@@ -3,6 +3,7 @@ import type { AccountState } from '../shared/accounts'
 import { ACCOUNT_CHROME_HEIGHT, type AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
+import { createGoogleWebIdentityReader } from './google-web-identity'
 
 interface AccountStore {
   getState: () => AccountState
@@ -23,6 +24,7 @@ interface ViewEntry {
   loadNumber: number
   timeout: ReturnType<typeof setTimeout> | null
   disposePromise: Promise<void> | null
+  navigationRevision: number
 }
 
 export function createAccountViewManager(
@@ -35,9 +37,26 @@ export function createAccountViewManager(
   activate: (id: string) => void
   retry: () => void
   disposeAccount: (id: string) => Promise<void>
+  readWebIdentity: (id: string, signal?: AbortSignal) => ReturnType<typeof identityReader.read>
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
+  const identityReader = createGoogleWebIdentityReader((id) => {
+    const entry = views.get(id)
+    return entry
+      ? {
+          contents: entry.handle.view.webContents,
+          revision: () => entry.navigationRevision,
+          eligible: () =>
+            !disposed &&
+            !entry.loading &&
+            entry.loaded &&
+            !entry.blocked &&
+            !entry.disposePromise &&
+            accountStore.getState().accounts.some((account) => account.id === id)
+        }
+      : undefined
+  })
   let activeAccountId: string | null = null
   let disposed = false
 
@@ -141,10 +160,14 @@ export function createAccountViewManager(
         blocked: false,
         loadNumber: 0,
         timeout: null,
-        disposePromise: null
+        disposePromise: null,
+        navigationRevision: 0
       }
       entry = createdEntry
       views.set(id, createdEntry)
+      handle.view.webContents.on('did-start-navigation', (details) => {
+        if (details.isMainFrame) createdEntry.navigationRevision += 1
+      })
       handle.view.webContents.on('render-process-gone', () => {
         if (createdEntry.timeout) clearTimeout(createdEntry.timeout)
         createdEntry.timeout = null
@@ -197,6 +220,7 @@ export function createAccountViewManager(
     if (entry.disposePromise) return entry.disposePromise
     if (entry.timeout) clearTimeout(entry.timeout)
     entry.timeout = null
+    entry.navigationRevision += 1
     entry.loadNumber += 1
     entry.loaded = false
     entry.loading = false
@@ -218,6 +242,7 @@ export function createAccountViewManager(
     activate,
     retry,
     disposeAccount,
+    readWebIdentity: identityReader.read,
     async dispose(): Promise<void> {
       if (disposed) return
       disposed = true

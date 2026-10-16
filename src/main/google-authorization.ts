@@ -221,6 +221,7 @@ export function startGoogleAuthorization(
       authorizationUrl.searchParams.set('response_type', 'code')
       authorizationUrl.searchParams.set('scope', OAUTH_SCOPE)
       authorizationUrl.searchParams.set('access_type', 'offline')
+      authorizationUrl.searchParams.set('prompt', 'consent select_account')
       authorizationUrl.searchParams.set('code_challenge', pkce.challenge)
       authorizationUrl.searchParams.set('code_challenge_method', 'S256')
       authorizationUrl.searchParams.set('state', pkce.state)

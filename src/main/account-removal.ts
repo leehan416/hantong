@@ -16,7 +16,8 @@ interface AccountStore {
 
 export function createAccountRemovalController(
   store: AccountStore,
-  clearSession: (accountId: string) => Promise<void>
+  clearSession: (accountId: string) => Promise<void>,
+  disconnectConnection: (accountId: string) => Promise<void> = async () => undefined
 ): {
   isBusy: () => boolean
   assertIdle: () => void
@@ -56,6 +57,7 @@ export function createAccountRemovalController(
         let updated: AccountState
         try {
           await context.disposeView(accountId)
+          await disconnectConnection(accountId)
           await clearSession(accountId)
           updated = store.remove(accountId)
         } catch {

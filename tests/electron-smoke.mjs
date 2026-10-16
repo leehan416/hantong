@@ -52,6 +52,10 @@ async function verify(window) {
   assert.equal(result.genericBridge, 'undefined')
   assert.deepEqual(result.operations, [
     'getAppInfo',
+    'getGoogleConnectionStatus',
+    'connectGoogleAccount',
+    'cancelGoogleConnection',
+    'disconnectGoogleAccount',
     'getAccounts',
     'addAccount',
     'activateAccount',

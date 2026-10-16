@@ -58,6 +58,74 @@ test('cancelled removal leaves account state and views untouched', async () => {
   assert.deepEqual(fixtureData.events, [])
 })
 
+test('account removal disconnects the API grant after view disposal and before session clearing', async () => {
+  const events = []
+  let state = {
+    version: 1,
+    accounts: [{ id: firstId }],
+    activeAccountId: firstId
+  }
+  const { createAccountRemovalController } = loadTypeScript(
+    new URL('../src/main/account-removal.ts', import.meta.url)
+  )
+  const controller = createAccountRemovalController(
+    {
+      getState: () => structuredClone(state),
+      remove: () => {
+        events.push('persist')
+        state = { version: 1, accounts: [], activeAccountId: null }
+        return structuredClone(state)
+      }
+    },
+    async () => events.push('clear-session'),
+    async () => events.push('disconnect-api')
+  )
+  const result = await controller.remove(firstId, {
+    ownerIsAlive: () => true,
+    confirm: async () => true,
+    disposeView: async () => events.push('dispose-view'),
+    activate: () => undefined
+  })
+  assert.equal(result.outcome, 'removed')
+  assert.deepEqual(events, ['dispose-view', 'disconnect-api', 'clear-session', 'persist'])
+})
+
+test('failed API disconnection keeps account metadata and does not clear the web session', async () => {
+  const events = []
+  let state = {
+    version: 1,
+    accounts: [{ id: firstId }],
+    activeAccountId: firstId
+  }
+  const { createAccountRemovalController } = loadTypeScript(
+    new URL('../src/main/account-removal.ts', import.meta.url)
+  )
+  const controller = createAccountRemovalController(
+    {
+      getState: () => structuredClone(state),
+      remove: () => {
+        events.push('persist')
+        state = { version: 1, accounts: [], activeAccountId: null }
+        return structuredClone(state)
+      }
+    },
+    async () => events.push('clear-session'),
+    async () => {
+      events.push('disconnect-api')
+      throw new Error('private storage failure')
+    }
+  )
+  const result = await controller.remove(firstId, {
+    ownerIsAlive: () => true,
+    confirm: async () => true,
+    disposeView: async () => events.push('dispose-view'),
+    activate: () => undefined
+  })
+  assert.equal(result.outcome, 'failed')
+  assert.deepEqual(result.state.accounts, [{ id: firstId }])
+  assert.deepEqual(events, ['dispose-view', 'disconnect-api'])
+})
+
 test('cleanup failure retains metadata and a later retry activates fallback after persistence', async () => {
   const fixtureData = fixture({ failCleanup: true })
   const failed = await fixtureData.controller.remove(firstId, fixtureData.context)

@@ -136,7 +136,7 @@ test('authorization opens a Desktop OAuth URL in the injected system browser', a
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256')
   assert.equal(url.searchParams.has('code_challenge'), true)
   assert.equal(url.searchParams.has('state'), true)
-  assert.equal(url.searchParams.has('prompt'), false)
+  assert.equal(url.searchParams.get('prompt'), 'consent select_account')
   operation.cancel()
   await assert.rejects(operation.result, { code: 'cancelled' })
   assert.equal(http.servers[0].closed, true)
