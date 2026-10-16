@@ -1,3 +1,5 @@
+import { isAccountId } from './account-state'
+
 interface AppInfoRequest {
   ownerAlive: boolean
   senderMatches: boolean
@@ -5,6 +7,12 @@ interface AppInfoRequest {
   senderUrl: string
   rendererUrl: string
   args: unknown[]
+}
+
+interface AccountRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: unknown
+  args: unknown[]
+  accountExists: boolean
 }
 
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
@@ -49,5 +57,24 @@ export function isAllowedAppInfoRequest(request: AppInfoRequest): boolean {
     request.mainFrameMatches &&
     request.args.length === 0 &&
     isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
+export function isAllowedAccountRequest(request: AccountRequest): boolean {
+  const common =
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  if (!common) return false
+  if (request.operation === 'get' || request.operation === 'add') return request.args.length === 0
+  if (request.operation === 'retry') {
+    return request.args.length === 0 && request.accountExists
+  }
+  return (
+    (request.operation === 'activate' || request.operation === 'remove') &&
+    request.args.length === 1 &&
+    isAccountId(request.args[0]) &&
+    request.accountExists
   )
 }

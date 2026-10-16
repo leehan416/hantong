@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { runInNewContext } from 'node:vm'
-import ts from 'typescript'
+import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 // Compile only the pure policy module; no Electron process or network is needed.
-const source = readFileSync(new URL('../src/main/security-policy.ts', import.meta.url), 'utf8')
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
-})
-const policy = {}
-runInNewContext(compiled.outputText, { exports: policy, URL })
+const {
+  isAllowedExternalUrl,
+  isAllowedAppInfoRequest,
+  isAllowedAccountRequest,
+  isTrustedRendererUrl
+} = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
+const policy = {
+  isAllowedExternalUrl,
+  isAllowedAppInfoRequest,
+  isAllowedAccountRequest,
+  isTrustedRendererUrl
+}
 
 const rendererUrl =
   'file:///Applications/Hantong.app/Contents/Resources/app/out/renderer/index.html'
@@ -85,5 +89,55 @@ test('IPC accepts only the live owner main frame and an empty argument list', ()
     { args: [{ command: 'anything' }] }
   ]) {
     assert.equal(policy.isAllowedAppInfoRequest({ ...valid, ...patch }), false)
+  }
+})
+
+test('account IPC validates operation arguments and requires a stored account for switching', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    operation: 'activate',
+    args: ['11111111-1111-4111-8111-111111111111'],
+    accountExists: true
+  }
+  assert.equal(policy.isAllowedAccountRequest(base), true)
+  for (const patch of [
+    { ownerAlive: false },
+    { senderMatches: false },
+    { mainFrameMatches: false },
+    { senderUrl: 'https://mail.google.com/' },
+    { operation: 'unknown' },
+    { args: [] },
+    { args: [42] },
+    { args: ['../other-session'] },
+    { accountExists: false }
+  ]) {
+    assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
+  }
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'add', args: [], accountExists: false }),
+    true
+  )
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'retry', args: [], accountExists: true }),
+    true
+  )
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'retry', args: [], accountExists: false }),
+    false
+  )
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'remove', accountExists: true }),
+    true
+  )
+  for (const patch of [
+    { operation: 'remove', args: ['../other-session'], accountExists: true },
+    { operation: 'remove', accountExists: false },
+    { operation: 'remove', args: [base.args[0], 'extra'], accountExists: true }
+  ]) {
+    assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
   }
 })
