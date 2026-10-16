@@ -8,6 +8,7 @@ export type GoogleOAuthFailureCode =
   | 'network_error'
   | 'redirect_refused'
   | 'provider_error'
+  | 'invalid_grant'
   | 'invalid_response'
 
 export class GoogleOAuthFailure extends Error {
@@ -68,7 +69,8 @@ function raceAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
 async function requestJson(
   url: string,
   init: RequestInit,
-  options: GoogleRequestOptions
+  options: GoogleRequestOptions,
+  recognizeInvalidGrant = false
 ): Promise<unknown> {
   if (options.signal.aborted) throw new GoogleOAuthFailure('cancelled')
   const controller = new AbortController()
@@ -88,7 +90,21 @@ async function requestJson(
     if (response.redirected || (response.status >= 300 && response.status < 400)) {
       throw new GoogleOAuthFailure('redirect_refused')
     }
-    if (!response.ok) throw new GoogleOAuthFailure('provider_error')
+    if (!response.ok) {
+      if (recognizeInvalidGrant) {
+        try {
+          const payload: unknown = await raceAbort(response.json(), controller.signal)
+          if (isRecord(payload) && payload.error === 'invalid_grant') {
+            throw new GoogleOAuthFailure('invalid_grant')
+          }
+        } catch (error) {
+          if (error instanceof GoogleOAuthFailure) throw error
+          if (timedOut) throw new GoogleOAuthFailure('timeout')
+          if (options.signal.aborted) throw new GoogleOAuthFailure('cancelled')
+        }
+      }
+      throw new GoogleOAuthFailure('provider_error')
+    }
     try {
       return await raceAbort(response.json(), controller.signal)
     } catch (error) {
@@ -108,32 +124,10 @@ async function requestJson(
   }
 }
 
-export async function exchangeGoogleAuthorizationCode(
-  config: GoogleOAuthConfig,
-  authorization: AuthorizationCode,
+function parseTokenResponse(
+  payload: unknown,
   options: GoogleTokenExchangeOptions
-): Promise<GoogleOAuthTokens> {
-  const body = new URLSearchParams({
-    client_id: config.clientId,
-    code: authorization.code,
-    code_verifier: authorization.verifier,
-    grant_type: 'authorization_code',
-    redirect_uri: authorization.redirectUri
-  })
-  if (config.clientSecret) body.set('client_secret', config.clientSecret)
-
-  const payload = await requestJson(
-    'https://oauth2.googleapis.com/token',
-    {
-      method: 'POST',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/x-www-form-urlencoded'
-      },
-      body: body.toString()
-    },
-    options
-  )
+): GoogleOAuthTokens {
   if (!isRecord(payload)) throw new GoogleOAuthFailure('invalid_response')
   const accessToken = payload.access_token
   const tokenType = payload.token_type
@@ -166,6 +160,63 @@ export async function exchangeGoogleAuthorizationCode(
     ...(optionalRefreshToken ? { refreshToken: optionalRefreshToken } : {}),
     expiresAt
   }
+}
+
+export async function exchangeGoogleAuthorizationCode(
+  config: GoogleOAuthConfig,
+  authorization: AuthorizationCode,
+  options: GoogleTokenExchangeOptions
+): Promise<GoogleOAuthTokens> {
+  const body = new URLSearchParams({
+    client_id: config.clientId,
+    code: authorization.code,
+    code_verifier: authorization.verifier,
+    grant_type: 'authorization_code',
+    redirect_uri: authorization.redirectUri
+  })
+  if (config.clientSecret) body.set('client_secret', config.clientSecret)
+
+  const payload = await requestJson(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    },
+    options
+  )
+  return parseTokenResponse(payload, options)
+}
+
+export async function refreshGoogleAccessToken(
+  config: GoogleOAuthConfig,
+  refreshToken: string,
+  options: GoogleTokenExchangeOptions
+): Promise<GoogleOAuthTokens> {
+  if (!refreshToken.trim()) throw new GoogleOAuthFailure('invalid_response')
+  const body = new URLSearchParams({
+    client_id: config.clientId,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token'
+  })
+  if (config.clientSecret) body.set('client_secret', config.clientSecret)
+  const payload = await requestJson(
+    'https://oauth2.googleapis.com/token',
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/x-www-form-urlencoded'
+      },
+      body: body.toString()
+    },
+    options,
+    true
+  )
+  return parseTokenResponse(payload, options)
 }
 
 export async function fetchGoogleProfileEmail(
