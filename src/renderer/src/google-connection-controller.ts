@@ -1,4 +1,4 @@
-import type { GoogleConnectionStatus, HantongApi } from '../../shared/ipc'
+import type { AccountAccessState, GoogleConnectionStatus, HantongApi } from '../../shared/ipc'
 
 type GoogleConnectionApi = Pick<
   HantongApi,
@@ -63,13 +63,32 @@ export class GoogleConnectionController {
     }
   }
 
-  async connect(): Promise<void> {
+  applyExternalStatus(status: GoogleConnectionStatus): void {
+    if (this.disposed || status.accountId !== this.state.accountId) return
+    if (this.state.operation) {
+      this.update({ status: status.status, loading: false, readFailed: false })
+      return
+    }
+    this.revision += 1
+    this.update({
+      status: status.status,
+      loading: false,
+      readFailed: false,
+      operation: status.status === 'connecting' ? 'connecting' : null,
+      operationFailed: false
+    })
+  }
+
+  async connect(allowExistingConnection = false): Promise<void> {
     const { accountId, status } = this.state
     if (
       this.disposed ||
       !accountId ||
       this.state.operation ||
-      (status !== 'disconnected' && status !== 'reconnect_required' && status !== 'error')
+      (status !== 'disconnected' &&
+        status !== 'reconnect_required' &&
+        status !== 'error' &&
+        !(allowExistingConnection && status === 'connected'))
     ) {
       return
     }
@@ -162,6 +181,97 @@ export class GoogleConnectionController {
   private update(changes: Partial<GoogleConnectionUiState>): void {
     this.state = { ...this.state, ...changes }
     this.publish()
+  }
+
+  private publish(): void {
+    if (!this.disposed) this.onChange(this.state)
+  }
+}
+
+type AccountAccessApi = Pick<HantongApi, 'getAccountAccessState' | 'onAccountAccessState'>
+
+export interface AccountAccessUiState {
+  accountId: string | null
+  state: AccountAccessState | null
+  loading: boolean
+  readFailed: boolean
+}
+
+const emptyAccessState: AccountAccessUiState = {
+  accountId: null,
+  state: null,
+  loading: false,
+  readFailed: false
+}
+
+export class AccountAccessController {
+  private state = emptyAccessState
+  private revision = 0
+  private disposed = false
+  private unsubscribe: () => void = () => {}
+  private subscriptionFailed = false
+
+  constructor(
+    private readonly api: AccountAccessApi,
+    private readonly onChange: (state: AccountAccessUiState) => void,
+    private readonly onConnectionStatus: (state: AccountAccessState) => void
+  ) {
+    try {
+      this.unsubscribe = api.onAccountAccessState((state) => {
+        if (this.disposed || state.accountId !== this.state.accountId) return
+        this.revision += 1
+        this.state = { accountId: state.accountId, state, loading: false, readFailed: false }
+        this.onConnectionStatus(state)
+        this.publish()
+      })
+    } catch {
+      this.subscriptionFailed = true
+    }
+  }
+
+  selectAccount(accountId: string | null): void {
+    if (this.disposed || accountId === this.state.accountId) return
+    this.revision += 1
+    this.state = {
+      accountId,
+      state: null,
+      loading: Boolean(accountId),
+      readFailed: this.subscriptionFailed
+    }
+    this.publish()
+    if (accountId) void this.refresh()
+  }
+
+  async refresh(): Promise<void> {
+    const { accountId } = this.state
+    if (this.disposed || !accountId) return
+    const revision = ++this.revision
+    this.state = { ...this.state, loading: true, readFailed: this.subscriptionFailed }
+    this.publish()
+    try {
+      const result = await this.api.getAccountAccessState(accountId)
+      if (!this.isCurrent(revision, accountId)) return
+      if (result.accountId !== accountId) {
+        this.state = { ...this.state, state: null, loading: false, readFailed: true }
+      } else {
+        this.state = { accountId, state: result, loading: false, readFailed: false }
+        this.onConnectionStatus(result)
+      }
+    } catch {
+      if (!this.isCurrent(revision, accountId)) return
+      this.state = { ...this.state, state: null, loading: false, readFailed: true }
+    }
+    this.publish()
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.revision += 1
+    this.unsubscribe()
+  }
+
+  private isCurrent(revision: number, accountId: string): boolean {
+    return !this.disposed && this.revision === revision && this.state.accountId === accountId
   }
 
   private publish(): void {

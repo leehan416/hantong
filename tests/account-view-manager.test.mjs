@@ -69,7 +69,8 @@ function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
           dispose: () => {
             handle.disposeCount += 1
             return Promise.resolve()
-          }
+          },
+          revokeMailAccess: () => {}
         }
         created.push(handle)
         return handle
@@ -106,8 +107,8 @@ test('views are created only when visited, reused on switch, and removed when in
   await manager.activate(firstId)
   assert.equal(created.length, 2)
   assert.equal(created[0].loads, 1)
-  assert.equal(attached.length, 3)
-  assert.equal(detached.length, 2)
+  assert.equal(attached.length, 0)
+  assert.equal(detached.length, 0)
   await manager.dispose()
   assert.equal(created[0].disposeCount, 1)
   assert.equal(created[1].disposeCount, 1)
@@ -194,19 +195,82 @@ test('same-document navigation keeps a ready Gmail identity readable', async () 
 test('inactive load completion is cached and the view stays below the fixed chrome', async () => {
   const fixtureData = fixture({ deferLoads: true })
   await fixtureData.manager.activate(firstId)
-  assert.equal(fixtureData.attached.length, 1)
-  assert.equal(fixtureData.created[0].view.bounds.y, 88)
-  fixtureData.resize()
-  assert.equal(fixtureData.created[0].view.boundsCount, 2)
+  fixtureData.created[0].view.callbacks.onMainFrameNavigation(
+    'https://accounts.google.com/ServiceLogin'
+  )
+  assert.equal(fixtureData.attached.length, 0)
+  fixtureData.created[0].view.webContents.url = 'https://accounts.google.com/ServiceLogin'
   await fixtureData.manager.activate(secondId)
   fixtureData.resolvers[0]()
   await new Promise((resolve) => setImmediate(resolve))
   await fixtureData.manager.activate(firstId)
+  assert.equal(fixtureData.attached.length, 1)
+  assert.equal(fixtureData.created[0].view.bounds.y, 88)
+  fixtureData.resize()
+  assert.equal(fixtureData.created[0].view.boundsCount, 2)
   assert.equal(fixtureData.created[0].loads, 1)
   assert.deepEqual(structuredClone(fixtureData.statuses.at(-1)), {
     accountId: firstId,
     status: 'ready'
   })
+  await fixtureData.manager.dispose()
+})
+
+test('mail view stays detached until Main grants access and sign-in remains visible', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.attached.length, 0)
+  assert.deepEqual(structuredClone(fixtureData.manager.getDocumentState(firstId)), {
+    revision: 0,
+    kind: 'mail',
+    ready: true
+  })
+  fixtureData.created[0].view.callbacks.onMainFrameNavigation(
+    'https://accounts.google.com/ServiceLogin'
+  )
+  assert.equal(fixtureData.attached.length, 0)
+  fixtureData.created[0].view.webContents.url = 'https://accounts.google.com/ServiceLogin'
+  fixtureData.created[0].view.webContents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: false,
+    url: 'https://accounts.google.com/ServiceLogin'
+  })
+  fixtureData.created[0].view.webContents.emit('did-frame-finish-load', {}, true)
+  fixtureData.created[0].view.webContents.emit('did-stop-loading')
+  assert.equal(fixtureData.attached.length, 1)
+  fixtureData.created[0].view.webContents.url = 'https://mail.google.com/mail/u/0/'
+  fixtureData.created[0].view.callbacks.onMainFrameNavigation('https://mail.google.com/mail/u/0/')
+  assert.equal(fixtureData.detached.length, 1)
+  fixtureData.created[0].view.webContents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: false,
+    url: 'https://mail.google.com/mail/u/0/'
+  })
+  fixtureData.created[0].view.webContents.emit('did-frame-finish-load', {}, true)
+  fixtureData.created[0].view.webContents.emit('did-stop-loading')
+  const state = fixtureData.manager.getDocumentState(firstId)
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, state.revision), true)
+  assert.equal(fixtureData.attached.length, 2)
+  const grantedRevision = fixtureData.manager.getDocumentState(firstId).revision
+  fixtureData.created[0].view.webContents.url = 'https://mail.google.com/mail/u/0/#inbox'
+  fixtureData.created[0].view.webContents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: true,
+    url: 'https://mail.google.com/mail/u/0/#inbox'
+  })
+  assert.equal(fixtureData.manager.getDocumentState(firstId).revision, grantedRevision)
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, grantedRevision), true)
+  fixtureData.created[0].view.webContents.url = 'https://mail.google.com/mail/u/1/#inbox'
+  fixtureData.created[0].view.webContents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: true,
+    url: 'https://mail.google.com/mail/u/1/#inbox'
+  })
+  assert.equal(fixtureData.manager.getDocumentState(firstId).revision > grantedRevision, true)
+  assert.equal(fixtureData.detached.length, 2)
+  assert.equal(fixtureData.manager.setMailAccess(firstId, false), true)
+  assert.equal(fixtureData.detached.length, 2)
   await fixtureData.manager.dispose()
 })
 

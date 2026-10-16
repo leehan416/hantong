@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const { GoogleConnectionController } = loadTypeScript(
+const { AccountAccessController, GoogleConnectionController } = loadTypeScript(
   new URL('../src/renderer/src/google-connection-controller.ts', import.meta.url)
 )
 
@@ -232,4 +232,135 @@ test('disposed controller ignores late mutation completion', async () => {
   await connect
 
   assert.equal(states.length, stateCount)
+})
+
+test('Main access event invalidates an older access snapshot', async () => {
+  const snapshot = deferred()
+  const states = []
+  const connectionStates = []
+  let listener
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: (callback) => {
+        listener = callback
+        return () => {}
+      },
+      getAccountAccessState: () => snapshot.promise
+    },
+    (state) => states.push(state),
+    (state) => connectionStates.push(state)
+  )
+
+  controller.selectAccount('first')
+  listener({ accountId: 'first', status: 'ready', connectionStatus: 'connected' })
+  snapshot.resolve({ accountId: 'first', status: 'required', connectionStatus: 'disconnected' })
+  await tick()
+
+  assert.equal(states.at(-1).state.status, 'ready')
+  assert.equal(connectionStates.at(-1).status, 'ready')
+  controller.dispose()
+})
+
+test('access controller ignores responses from the previous account', async () => {
+  const oldSnapshot = deferred()
+  const states = []
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: () => () => {},
+      getAccountAccessState: (accountId) =>
+        accountId === 'first'
+          ? oldSnapshot.promise
+          : Promise.resolve({ accountId, status: 'required', connectionStatus: 'disconnected' })
+    },
+    (state) => states.push(state),
+    () => {}
+  )
+
+  controller.selectAccount('first')
+  controller.selectAccount('second')
+  await tick()
+  oldSnapshot.resolve({ accountId: 'first', status: 'ready', connectionStatus: 'connected' })
+  await tick()
+
+  assert.equal(states.at(-1).accountId, 'second')
+  assert.equal(states.at(-1).state.status, 'required')
+  controller.dispose()
+})
+
+test('external Main connection status enables cancellation of automatic OAuth', async () => {
+  const states = []
+  let cancelCalls = 0
+  const controller = new GoogleConnectionController(
+    {
+      getGoogleConnectionStatus: async () => status('first', 'disconnected'),
+      connectGoogleAccount: async () => status('first', 'connected'),
+      cancelGoogleConnection: async () => {
+        cancelCalls += 1
+        return status('first', 'disconnected')
+      },
+      disconnectGoogleAccount: async () => status('first', 'disconnected')
+    },
+    (state) => states.push(state)
+  )
+
+  controller.selectAccount('first')
+  await tick()
+  controller.applyExternalStatus(status('first', 'connecting'))
+  await controller.cancel()
+
+  assert.equal(cancelCalls, 1)
+  assert.equal(states.at(-1).status, 'disconnected')
+  assert.equal(states.at(-1).operation, null)
+})
+
+test('gate retry can revalidate a connected grant while regular connect stays guarded', async () => {
+  let connectCalls = 0
+  const states = []
+  const controller = new GoogleConnectionController(
+    {
+      getGoogleConnectionStatus: async () => status('first', 'connected'),
+      connectGoogleAccount: async () => {
+        connectCalls += 1
+        return status('first', 'connected')
+      },
+      cancelGoogleConnection: async () => status('first', 'disconnected'),
+      disconnectGoogleAccount: async () => status('first', 'disconnected')
+    },
+    (state) => states.push(state)
+  )
+
+  controller.selectAccount('first')
+  await tick()
+  await controller.connect()
+  assert.equal(connectCalls, 0)
+  await controller.connect(true)
+
+  assert.equal(connectCalls, 1)
+  assert.equal(states.at(-1).status, 'connected')
+})
+
+test('access subscription failure is contained and status snapshots remain queryable', async () => {
+  const states = []
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: () => {
+        throw new Error('subscription unavailable')
+      },
+      getAccountAccessState: async (accountId) => ({
+        accountId,
+        status: 'required',
+        connectionStatus: 'disconnected'
+      })
+    },
+    (state) => states.push(state),
+    () => {}
+  )
+
+  controller.selectAccount('first')
+  assert.equal(states.at(-1).readFailed, true)
+  await tick()
+
+  assert.equal(states.at(-1).readFailed, false)
+  assert.equal(states.at(-1).state.status, 'required')
+  controller.dispose()
 })

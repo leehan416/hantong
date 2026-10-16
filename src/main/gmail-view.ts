@@ -10,11 +10,14 @@ import { classifyGmailNavigation } from './gmail-navigation'
 interface GmailViewCallbacks {
   openExternal: (url: string) => Promise<void>
   onNavigationBlocked: () => void
+  onMainFrameNavigation: (url: string) => void
+  isMailAccessAllowed: () => boolean
 }
 
 interface GmailView {
   view: WebContentsView
   load: () => Promise<void>
+  revokeMailAccess: () => void
   dispose: () => Promise<void>
 }
 
@@ -58,17 +61,30 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
     void callbacks.openExternal(url).catch(callbacks.onNavigationBlocked)
   }
 
-  function guard(contents: WebContents): void {
+  function guard(contents: WebContents, child = false): void {
     contents.on('will-frame-navigate', (event) => {
       if (!event.isMainFrame) return
       const target = classifyGmailNavigation(event.url)
+      if (!child && target === 'internal') callbacks.onMainFrameNavigation(event.url)
+      if (child && !callbacks.isMailAccessAllowed() && isMailUrl(event.url)) {
+        event.preventDefault()
+        return
+      }
       if (target === 'internal') return
       event.preventDefault()
       if (target === 'external') openExternal(event.url)
       else callbacks.onNavigationBlocked()
     })
     contents.on('will-redirect', (event) => {
-      if (event.isMainFrame && classifyGmailNavigation(event.url) !== 'internal') {
+      const target = classifyGmailNavigation(event.url)
+      if (event.isMainFrame && !child && target === 'internal')
+        callbacks.onMainFrameNavigation(event.url)
+      if (event.isMainFrame && child && !callbacks.isMailAccessAllowed() && isMailUrl(event.url)) {
+        event.preventDefault()
+        callbacks.onNavigationBlocked()
+        return
+      }
+      if (event.isMainFrame && target !== 'internal') {
         // Redirects must not launch an application without a new user action.
         event.preventDefault()
         callbacks.onNavigationBlocked()
@@ -76,6 +92,14 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
     })
     contents.setWindowOpenHandler(({ url }) => {
       const target = classifyGmailNavigation(url)
+      if (target === 'external') {
+        openExternal(url)
+        return { action: 'deny' }
+      }
+      if (!callbacks.isMailAccessAllowed()) {
+        callbacks.onNavigationBlocked()
+        return { action: 'deny' }
+      }
       if (target === 'internal') {
         return {
           action: 'allow',
@@ -83,13 +107,12 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
           overrideBrowserWindowOptions: { webPreferences }
         }
       }
-      if (target === 'external') openExternal(url)
-      else callbacks.onNavigationBlocked()
+      callbacks.onNavigationBlocked()
       return { action: 'deny' }
     })
     contents.on('did-create-window', (child) => {
       children.add(child)
-      guard(child.webContents)
+      guard(child.webContents, true)
       child.once('closed', () => children.delete(child))
     })
   }
@@ -98,6 +121,12 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
 
   return {
     view,
+    revokeMailAccess(): void {
+      for (const child of children) {
+        if (!child.isDestroyed()) child.destroy()
+      }
+      children.clear()
+    },
     load(): Promise<void> {
       if (disposed || view.webContents.isDestroyed()) {
         return Promise.reject(new Error('Gmail view is unavailable'))
@@ -127,5 +156,14 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       })
       return disposePromise
     }
+  }
+}
+
+function isMailUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname === 'mail.google.com' && url.port === ''
+  } catch {
+    return false
   }
 }

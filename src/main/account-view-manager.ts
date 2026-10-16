@@ -4,6 +4,7 @@ import { ACCOUNT_CHROME_HEIGHT, type AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
 import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './google-web-identity'
+import { classifyGmailNavigation } from './gmail-navigation'
 
 interface AccountStore {
   getState: () => AccountState
@@ -12,6 +13,7 @@ interface AccountStore {
 interface ViewHandle {
   view: WebContentsView
   load: () => Promise<void>
+  revokeMailAccess: () => void
   dispose: () => Promise<void>
 }
 
@@ -25,8 +27,30 @@ interface ViewEntry {
   timeout: ReturnType<typeof setTimeout> | null
   disposePromise: Promise<void> | null
   navigationRevision: number
+  accessRevision: number
   mainFrameNavigationPending: boolean
   mainFrameDocumentLoaded: boolean
+  mailAccessGranted: boolean
+  committedUrl: string
+}
+
+export interface GmailDocumentState {
+  revision: number
+  kind: 'sign_in' | 'mail' | 'unknown'
+  ready: boolean
+}
+
+function documentKind(value: string): GmailDocumentState['kind'] {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.port || url.username || url.password) return 'unknown'
+    if (url.hostname === 'accounts.google.com' && classifyGmailNavigation(value) === 'internal')
+      return 'sign_in'
+    if (url.hostname === 'mail.google.com') return 'mail'
+  } catch {
+    return 'unknown'
+  }
+  return 'unknown'
 }
 
 export function createAccountViewManager(
@@ -44,6 +68,9 @@ export function createAccountViewManager(
     id: string,
     signal?: AbortSignal
   ) => Promise<{ accountExists: boolean; emailAddress: string | null }>
+  getDocumentState: (id: string) => GmailDocumentState
+  setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
+  getActiveAccountId: () => string | null
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -92,6 +119,23 @@ export function createAccountViewManager(
     })
   }
 
+  function reconcileVisibility(id: string, entry: ViewEntry): void {
+    const shouldAttach =
+      activeAccountId === id &&
+      !entry.disposePromise &&
+      !entry.loading &&
+      !entry.mainFrameNavigationPending &&
+      (entry.mailAccessGranted || documentKind(entry.committedUrl) === 'sign_in')
+    if (shouldAttach && !entry.attached) {
+      window.contentView.addChildView(entry.handle.view)
+      entry.attached = true
+      setBounds(entry.handle.view)
+    } else if (!shouldAttach && entry.attached) {
+      window.contentView.removeChildView(entry.handle.view)
+      entry.attached = false
+    }
+  }
+
   function armLoadTimeout(id: string, entry: ViewEntry, loadNumber: number): void {
     if (entry.timeout) clearTimeout(entry.timeout)
     entry.timeout = setTimeout(() => {
@@ -102,6 +146,10 @@ export function createAccountViewManager(
       entry.loaded = false
       entry.mainFrameNavigationPending = false
       entry.mainFrameDocumentLoaded = false
+      entry.accessRevision += 1
+      entry.mailAccessGranted = false
+      entry.handle.revokeMailAccess()
+      reconcileVisibility(id, entry)
       publish(id, 'error')
     }, loadTimeoutMs)
   }
@@ -122,9 +170,11 @@ export function createAccountViewManager(
     entry.mainFrameDocumentLoaded = false
     entry.loaded = true
     entry.loading = false
+    entry.committedUrl = contents.getURL()
     if (entry.timeout) clearTimeout(entry.timeout)
     entry.timeout = null
     entry.loadNumber += 1
+    reconcileVisibility(id, entry)
     if (isAllowedGmailIdentityUrl(contents.getURL())) entry.blocked = false
     if (activeAccountId === id) publish(id, entry.blocked ? 'blocked' : 'ready')
   }
@@ -154,6 +204,8 @@ export function createAccountViewManager(
         if (!alive()) return
         entry.loaded = true
         entry.loading = false
+        entry.committedUrl = entry.handle.view.webContents.getURL()
+        reconcileVisibility(id, entry)
         if (activeAccountId === id) publish(id, entry.blocked ? 'blocked' : 'ready')
       },
       () => {
@@ -194,7 +246,42 @@ export function createAccountViewManager(
               current.blocked = true
               publish(id, 'blocked')
             }
-          }
+          },
+          onMainFrameNavigation: (url) => {
+            const current = views.get(id)
+            if (!current) return
+            const nextKind = documentKind(url)
+            try {
+              const previousUrl = new URL(current.committedUrl)
+              const nextUrl = new URL(url)
+              if (
+                previousUrl.origin !== nextUrl.origin ||
+                previousUrl.pathname !== nextUrl.pathname
+              ) {
+                current.accessRevision += 1
+                current.mailAccessGranted = false
+                current.handle.revokeMailAccess()
+              }
+            } catch {
+              current.accessRevision += 1
+              current.mailAccessGranted = false
+              current.handle.revokeMailAccess()
+            }
+            if (nextKind !== 'mail' && current.mailAccessGranted) {
+              current.mailAccessGranted = false
+              current.handle.revokeMailAccess()
+            }
+            const committedKind = documentKind(current.committedUrl)
+            if (
+              (nextKind !== 'sign_in' || committedKind !== 'sign_in') &&
+              !current.mailAccessGranted &&
+              current.attached
+            ) {
+              window.contentView.removeChildView(current.handle.view)
+              current.attached = false
+            }
+          },
+          isMailAccessAllowed: () => views.get(id)?.mailAccessGranted ?? false
         })
       } catch {
         publish(id, 'error')
@@ -210,8 +297,11 @@ export function createAccountViewManager(
         timeout: null,
         disposePromise: null,
         navigationRevision: 0,
+        accessRevision: 0,
         mainFrameNavigationPending: false,
-        mainFrameDocumentLoaded: false
+        mainFrameDocumentLoaded: false,
+        mailAccessGranted: false,
+        committedUrl: handle.view.webContents.getURL()
       }
       entry = createdEntry
       views.set(id, createdEntry)
@@ -224,12 +314,39 @@ export function createAccountViewManager(
         )
           return
         createdEntry.navigationRevision += 1
-        if (details.isSameDocument) return
+        if (details.isSameDocument) {
+          let accountSlotChanged = false
+          try {
+            const current = new URL(createdEntry.committedUrl)
+            const next = new URL(details.url)
+            const currentSlot = current.pathname.match(/^\/mail\/u\/(\d+)(?:\/|$)/)?.[1]
+            const nextSlot = next.pathname.match(/^\/mail\/u\/(\d+)(?:\/|$)/)?.[1]
+            if (currentSlot && nextSlot && currentSlot !== nextSlot) {
+              accountSlotChanged = true
+              createdEntry.accessRevision += 1
+              createdEntry.mailAccessGranted = false
+              createdEntry.handle.revokeMailAccess()
+              reconcileVisibility(id, createdEntry)
+            }
+            createdEntry.committedUrl = details.url
+          } catch {
+            createdEntry.accessRevision += 1
+            createdEntry.mailAccessGranted = false
+            createdEntry.handle.revokeMailAccess()
+            reconcileVisibility(id, createdEntry)
+          }
+          if (accountSlotChanged && activeAccountId === id) publish(id, 'ready')
+          return
+        }
+        createdEntry.accessRevision += 1
+        createdEntry.mailAccessGranted = false
+        createdEntry.handle.revokeMailAccess()
         createdEntry.loadNumber += 1
         createdEntry.mainFrameNavigationPending = true
         createdEntry.mainFrameDocumentLoaded = false
         createdEntry.loaded = false
         createdEntry.loading = true
+        reconcileVisibility(id, createdEntry)
         armLoadTimeout(id, createdEntry, createdEntry.loadNumber)
         publish(id, 'loading')
       })
@@ -252,6 +369,10 @@ export function createAccountViewManager(
         createdEntry.mainFrameNavigationPending = false
         createdEntry.mainFrameDocumentLoaded = false
         createdEntry.navigationRevision += 1
+        createdEntry.accessRevision += 1
+        createdEntry.mailAccessGranted = false
+        createdEntry.handle.revokeMailAccess()
+        reconcileVisibility(id, createdEntry)
         if (alive()) publish(id, 'error')
       })
       handle.view.webContents.on(
@@ -273,6 +394,10 @@ export function createAccountViewManager(
           createdEntry.loading = false
           createdEntry.mainFrameNavigationPending = false
           createdEntry.mainFrameDocumentLoaded = false
+          createdEntry.accessRevision += 1
+          createdEntry.mailAccessGranted = false
+          createdEntry.handle.revokeMailAccess()
+          reconcileVisibility(id, createdEntry)
           if (createdEntry.timeout) clearTimeout(createdEntry.timeout)
           createdEntry.timeout = null
           createdEntry.loadNumber += 1
@@ -280,11 +405,7 @@ export function createAccountViewManager(
         }
       )
     }
-    if (!entry.attached) {
-      window.contentView.addChildView(entry.handle.view)
-      entry.attached = true
-      setBounds(entry.handle.view)
-    }
+    reconcileVisibility(id, entry)
     if (entry.loaded) {
       publish(id, entry.blocked ? 'blocked' : 'ready')
     } else if (!entry.loading) {
@@ -344,6 +465,42 @@ export function createAccountViewManager(
       const identity = await identityReader.read(id, signal)
       if (!accountExists()) return { accountExists: false, emailAddress: null }
       return identity ?? { accountExists: true, emailAddress: null }
+    },
+    getDocumentState(id) {
+      const entry = views.get(id)
+      if (!entry) return { revision: 0, kind: 'unknown', ready: false }
+      return {
+        revision: entry.accessRevision,
+        kind: documentKind(entry.committedUrl),
+        ready: entry.loaded && !entry.loading && !entry.blocked && !entry.disposePromise
+      }
+    },
+    setMailAccess(id, allowed, expectedRevision) {
+      const entry = views.get(id)
+      if (
+        !entry ||
+        !alive() ||
+        !accountStore.getState().accounts.some((account) => account.id === id)
+      )
+        return false
+      if (
+        allowed &&
+        (expectedRevision === undefined ||
+          entry.accessRevision !== expectedRevision ||
+          !entry.loaded ||
+          entry.loading ||
+          entry.blocked ||
+          documentKind(entry.committedUrl) !== 'mail' ||
+          !isAllowedGmailIdentityUrl(entry.committedUrl))
+      )
+        return false
+      entry.mailAccessGranted = allowed
+      if (!allowed) entry.handle.revokeMailAccess()
+      reconcileVisibility(id, entry)
+      return true
+    },
+    getActiveAccountId() {
+      return activeAccountId
     },
     async dispose(): Promise<void> {
       if (disposed) return

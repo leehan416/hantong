@@ -6,12 +6,15 @@ import {
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_VIEW_STATUS_EVENT,
+  ACCOUNT_ACCESS_STATE_CHANNEL,
+  ACCOUNT_ACCESS_STATE_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
   GOOGLE_CONNECTION_CONNECT_CHANNEL,
   GOOGLE_CONNECTION_DISCONNECT_CHANNEL,
   GOOGLE_CONNECTION_STATUS_CHANNEL,
   type AccountViewStatus,
+  type AccountAccessState,
   type HantongApi
 } from '../shared/ipc'
 
@@ -37,6 +40,12 @@ const api: HantongApi = Object.freeze({
     const handler = (_event: IpcRendererEvent, status: AccountViewStatus): void => listener(status)
     ipcRenderer.on(ACCOUNT_VIEW_STATUS_EVENT, handler)
     return () => ipcRenderer.removeListener(ACCOUNT_VIEW_STATUS_EVENT, handler)
+  },
+  getAccountAccessState: (accountId) => ipcRenderer.invoke(ACCOUNT_ACCESS_STATE_CHANNEL, accountId),
+  onAccountAccessState: (listener) => {
+    const handler = (_event: IpcRendererEvent, state: AccountAccessState): void => listener(state)
+    ipcRenderer.on(ACCOUNT_ACCESS_STATE_EVENT, handler)
+    return () => ipcRenderer.removeListener(ACCOUNT_ACCESS_STATE_EVENT, handler)
   }
 })
 
