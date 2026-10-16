@@ -4,3 +4,24 @@ out
 .DS_Store
 .eslintcache
 *.log*
+.env
+.env.*
+!.env.example
+
+# Claude Code (personal files)
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Claude harness (local only)
+CLAUDE.md
+.claude/
+AGENTS.md
+.codex/
+.agents/
+docs/CONTEXT.md
+docs/CONVENTIONS.md
+docs/TESTING.md
+docs/COMMANDS.md
+docs/decisions.md
+docs/stack/
+docs/reference/
