@@ -30,6 +30,7 @@ export interface WebIdentitySnapshot {
 export interface GoogleConnectionResult {
   readonly emailAddress: string
   readonly tokens: GoogleOAuthTokens
+  readonly relayNonce?: string
 }
 
 export interface GoogleConnectionDependencies {
@@ -40,7 +41,11 @@ export interface GoogleConnectionDependencies {
     signal: AbortSignal
   ) => Promise<WebIdentitySnapshot | null>
   readonly identityTimeoutMs?: number
-  readonly startAuthorization: (config: GoogleOAuthConfig) => GoogleAuthorizationOperation
+  readonly startAuthorization: (
+    config: GoogleOAuthConfig,
+    nonce?: string
+  ) => GoogleAuthorizationOperation
+  readonly prepareRelayChallenge?: (signal: AbortSignal) => Promise<string | undefined>
   readonly exchangeCode: (
     config: GoogleOAuthConfig,
     authorization: AuthorizationCode,
@@ -204,8 +209,22 @@ export function startGoogleConnection(
     const initialIdentity = await getIdentity()
     assertCurrent()
 
+    let relayNonce: string | undefined
+    if (dependencies.prepareRelayChallenge) {
+      try {
+        relayNonce = await waitForAbort(
+          Promise.resolve().then(() => dependencies.prepareRelayChallenge?.(controller.signal)),
+          controller.signal
+        )
+      } catch {
+        if (controller.signal.aborted) throw new GoogleConnectionFailure('cancelled')
+        relayNonce = undefined
+      }
+      assertCurrent()
+    }
+
     try {
-      authorization = dependencies.startAuthorization(config)
+      authorization = dependencies.startAuthorization(config, relayNonce)
     } catch {
       throw new GoogleConnectionFailure('authorization_failed')
     }
@@ -255,7 +274,7 @@ export function startGoogleConnection(
     if (normalizedApiEmail !== finalIdentity.normalized) {
       throw new GoogleConnectionFailure('identity_mismatch')
     }
-    return { emailAddress: apiEmail.trim(), tokens }
+    return { emailAddress: apiEmail.trim(), tokens, ...(relayNonce ? { relayNonce } : {}) }
   }
 
   activeByAccount.get(accountId)?.cancel()

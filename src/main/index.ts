@@ -12,6 +12,9 @@ import { createGoogleConnectionRuntime } from './google-connection-runtime'
 import type { GoogleConnectionFailureCode } from './google-connection'
 import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
+import { loadRuntimeRelayConfig } from './relay-config'
+import { createRelayClient } from './relay-client'
+import { createRelayRuntime } from './relay-runtime'
 import { startGoogleAuthorization } from './google-authorization'
 import type { AuthorizationErrorCode } from './google-authorization'
 import {
@@ -58,6 +61,7 @@ let accountViewManager: ReturnType<typeof createAccountViewManager> | null = nul
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
 let googleConnectionManager: ReturnType<typeof createGoogleConnectionManager> | null = null
+let relayRuntime: ReturnType<typeof createRelayRuntime> | null = null
 let accountAccessController: ReturnType<typeof createAccountAccessController> | null = null
 let appQuitting = false
 let quitCleanupPending = false
@@ -244,11 +248,43 @@ void app
         })
     })
     googleConnectionManager = connectionManager
+    let relayClient: ReturnType<typeof createRelayClient> | undefined
+    const relayConfig = (): ReturnType<typeof loadRuntimeRelayConfig> =>
+      loadRuntimeRelayConfig({
+        environment: process.env,
+        isPackaged: app.isPackaged,
+        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+      })
+    const accountExists = (id: string): boolean =>
+      requireAccountStore()
+        .getState()
+        .accounts.some((account) => account.id === id)
+    const resolveRelayClient = (): ReturnType<typeof createRelayClient> | undefined => {
+      if (relayClient) return relayClient
+      const config = relayConfig()
+      if (!config) return undefined
+      relayClient = createRelayClient({ baseUrl: config.baseUrl, fetch, now: () => Date.now() })
+      return relayClient
+    }
+    relayRuntime = createRelayRuntime({
+      client: {
+        createSession: (...args) => {
+          const client = relayClient ?? resolveRelayClient()
+          if (!client) return Promise.reject(new Error('Relay is disabled'))
+          return client.createSession(...args)
+        },
+        consumeEvents: (...args) =>
+          relayClient?.consumeEvents(...args) ?? Promise.reject(new Error('Relay is disabled')),
+        deleteSession: (token) => relayClient?.deleteSession(token) ?? Promise.resolve()
+      },
+      accountExists,
+      now: () => Date.now(),
+      onSignal: () => {
+        // Gmail history reconciliation and badge wiring are handled in a later client unit.
+      }
+    })
     googleConnectionRuntime = createGoogleConnectionRuntime({
-      accountExists: (id) =>
-        requireAccountStore()
-          .getState()
-          .accounts.some((account) => account.id === id),
+      accountExists,
       readWebIdentity: (id, signal) =>
         accountViewManager?.readWebIdentity(id, signal) ?? Promise.resolve(null),
       loadConfig: () =>
@@ -257,10 +293,30 @@ void app
           isPackaged: app.isPackaged,
           localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
         }),
-      startAuthorization: (config) =>
+      prepareRelayChallenge: async (signal) => {
+        try {
+          const client = resolveRelayClient()
+          if (!client) return undefined
+          return (await client.fetchChallenge(signal)).nonce
+        } catch (error) {
+          if (
+            signal.aborted ||
+            (typeof error === 'object' &&
+              error !== null &&
+              'code' in error &&
+              error.code === 'cancelled')
+          ) {
+            throw Object.assign(new Error('Relay challenge cancelled'), { code: 'cancelled' })
+          }
+          if (!app.isPackaged) console.error('[Hantong Relay] unavailable')
+          return undefined
+        }
+      },
+      startAuthorization: (config, nonce) =>
         startGoogleAuthorization(config, {
           openExternal: (url) => shell.openExternal(url),
-          reportFailure: (code) => reportOAuthDiagnostic('authorization', code)
+          reportFailure: (code) => reportOAuthDiagnostic('authorization', code),
+          nonce
         }),
       exchangeCode: (config, authorization, signal) =>
         exchangeGoogleAuthorizationCode(config, authorization, {
@@ -271,6 +327,14 @@ void app
       fetchProfile: (accessToken, signal) =>
         fetchGoogleProfileEmail(accessToken, { fetch, signal }),
       manager: connectionManager,
+      onConnected: (accountId, result) =>
+        relayRuntime?.accept(
+          accountId,
+          result.tokens.idToken && result.relayNonce
+            ? { idToken: result.tokens.idToken, nonce: result.relayNonce }
+            : {}
+        ),
+      onDisconnected: (accountId) => relayRuntime?.disconnect(accountId),
       reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
     })
     accountRemoval = createAccountRemovalController(
@@ -498,8 +562,11 @@ void app
       if (quitCleanupPending) return
       appQuitting = true
       quitCleanupPending = true
-      void requireGoogleConnectionRuntime()
-        .cancelAll()
+      const cleanup = Promise.all([
+        requireGoogleConnectionRuntime().cancelAll(),
+        relayRuntime?.dispose() ?? Promise.resolve()
+      ])
+      void Promise.race([cleanup, new Promise((resolve) => setTimeout(resolve, 2000))])
         .then(() => {
           quitCleanupComplete = true
           app.quit()

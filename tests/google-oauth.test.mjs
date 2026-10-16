@@ -136,11 +136,41 @@ test('authorization opens a Desktop OAuth URL in the injected system browser', a
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256')
   assert.equal(url.searchParams.has('code_challenge'), true)
   assert.equal(url.searchParams.has('state'), true)
+  assert.equal(url.searchParams.has('nonce'), false)
   assert.equal(url.searchParams.get('prompt'), 'consent select_account')
   operation.cancel()
   await assert.rejects(operation.result, { code: 'cancelled' })
   assert.equal(http.servers[0].closed, true)
   assert.equal(http.servers[0].connectionsClosed, true)
+})
+
+test('relay nonce is included in authorization URL only when URL-safe and supplied', async () => {
+  const capture = openCapture()
+  const http = httpBoundary()
+  const operation = authorization.startGoogleAuthorization(
+    { clientId },
+    {
+      openExternal: capture.openExternal,
+      nonce: 'relay_nonce-123',
+      createServer: http.createServer
+    }
+  )
+  const url = new URL(await capture.opened)
+  assert.equal(url.searchParams.get('nonce'), 'relay_nonce-123')
+  operation.cancel()
+  await assert.rejects(operation.result, { code: 'cancelled' })
+  assert.throws(
+    () =>
+      authorization.startGoogleAuthorization(
+        { clientId },
+        {
+          openExternal: capture.openExternal,
+          nonce: 'unsafe nonce',
+          createServer: http.createServer
+        }
+      ),
+    { code: 'server_error' }
+  )
 })
 
 test('valid callback returns code, verifier and exact dynamic redirect URI once', async () => {

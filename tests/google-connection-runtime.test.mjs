@@ -67,6 +67,48 @@ test('runtime status DTO contains only account ID and safe status', async () => 
   assert.equal(JSON.stringify(result).includes('secret'), false)
 })
 
+test('connection lifecycle hook runs only after accepted connection and disconnect hook runs immediately', async () => {
+  const hooks = []
+  const f = fixture({
+    onConnected: (id, result) => hooks.push(['connected', id, result.emailAddress]),
+    onDisconnected: (id) => hooks.push(['disconnected', id])
+  })
+  assert.equal((await f.runtime.connect(accountId)).status, 'connected')
+  assert.deepEqual(hooks, [['connected', accountId, 'private@example.com']])
+  assert.equal((await f.runtime.disconnect(accountId)).status, 'disconnected')
+  assert.deepEqual(hooks[1], ['disconnected', accountId])
+})
+
+test('failed identity checks and cancellation skip relay hooks while cancelAll preserves accepted relay state', async () => {
+  const hooks = []
+  const mismatch = fixture({
+    onConnected: (id) => hooks.push(['connected', id]),
+    onDisconnected: (id) => hooks.push(['disconnected', id]),
+    fetchProfile: async () => 'different@example.com'
+  })
+  assert.equal((await mismatch.runtime.connect(accountId)).status, 'error')
+  assert.deepEqual(hooks, [])
+
+  const deferredAuthorization = fixture({
+    onConnected: (id) => hooks.push(['connected', id]),
+    onDisconnected: (id) => hooks.push(['disconnected', id]),
+    startAuthorization: () => ({ result: new Promise(() => {}), cancel: () => undefined })
+  })
+  const pending = deferredAuthorization.runtime.connect(accountId)
+  await new Promise((resolve) => setImmediate(resolve))
+  await deferredAuthorization.runtime.cancel(accountId)
+  await pending
+  assert.deepEqual(hooks, [])
+
+  const connected = fixture({
+    onConnected: (id) => hooks.push(['connected', id]),
+    onDisconnected: (id) => hooks.push(['disconnected', id])
+  })
+  await connected.runtime.connect(accountId)
+  await connected.runtime.cancelAll()
+  assert.deepEqual(hooks, [['connected', accountId]])
+})
+
 test('missing OAuth config fails safely without starting browser authorization', async () => {
   const diagnostics = []
   const f = fixture({
