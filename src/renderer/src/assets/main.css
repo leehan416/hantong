@@ -115,6 +115,23 @@
 }
 
 .status-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-connection {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.api-connection-status {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -125,6 +142,29 @@
   padding: 1px 8px;
   color: var(--color-accent);
   font-size: 12px;
+}
+
+.api-action {
+  min-height: 26px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 1px 8px;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.api-action:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.api-action:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .empty-state,

@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
 import type { AccountViewStatus, AppInfo } from '../../shared/ipc'
+import {
+  GoogleConnectionController,
+  type GoogleConnectionUiState
+} from './google-connection-controller'
 
 const messages = {
   ko: {
@@ -15,7 +19,20 @@ const messages = {
     blocked: '허용되지 않은 페이지 이동을 차단했습니다.',
     retry: '다시 시도',
     operationError: '요청을 완료하지 못했습니다. 다시 시도해 주세요.',
-    removeError: '계정을 삭제하지 못했습니다. 다시 시도해 주세요.'
+    removeError: '계정을 삭제하지 못했습니다. 다시 시도해 주세요.',
+    apiLabel: 'API 연결',
+    apiChecking: 'API 상태 확인 중…',
+    apiCheckError: 'API 연결 상태를 확인하지 못했습니다.',
+    apiDisconnected: 'API 연결 안 됨',
+    apiConnected: 'API 연결됨',
+    apiConnecting: '브라우저에서 인증을 완료해 주세요.',
+    apiCancelling: '연결 취소 중…',
+    apiDisconnecting: '연결 해제 중…',
+    apiReconnect: '다시 연결',
+    apiConnect: '연결',
+    apiDisconnect: '연결 해제',
+    apiCancel: '취소',
+    apiFailure: '연결을 완료하지 못했습니다. 다시 시도해 주세요.'
   },
   en: {
     wordmark: 'HANTONG',
@@ -29,7 +46,20 @@ const messages = {
     blocked: 'A page navigation was blocked.',
     retry: 'Retry',
     operationError: 'Unable to complete the request. Please try again.',
-    removeError: 'Unable to remove the account. Please try again.'
+    removeError: 'Unable to remove the account. Please try again.',
+    apiLabel: 'API connection',
+    apiChecking: 'Checking API status…',
+    apiCheckError: 'Unable to check API connection status.',
+    apiDisconnected: 'API disconnected',
+    apiConnected: 'API connected',
+    apiConnecting: 'Complete sign-in in your browser.',
+    apiCancelling: 'Cancelling connection…',
+    apiDisconnecting: 'Disconnecting…',
+    apiReconnect: 'Reconnect',
+    apiConnect: 'Connect',
+    apiDisconnect: 'Disconnect',
+    apiCancel: 'Cancel',
+    apiFailure: 'Unable to complete the connection. Please try again.'
   }
 }
 
@@ -37,6 +67,15 @@ function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [accounts, setAccounts] = useState<AccountState | null>(null)
   const [viewStatus, setViewStatus] = useState<AccountViewStatus | null>(null)
+  const [googleState, setGoogleState] = useState<GoogleConnectionUiState>({
+    accountId: null,
+    status: null,
+    loading: false,
+    readFailed: false,
+    operation: null,
+    operationFailed: false
+  })
+  const googleController = useRef<GoogleConnectionController | null>(null)
   const [busy, setBusy] = useState(false)
   const [operationFailed, setOperationFailed] = useState(false)
   const [removalFailed, setRemovalFailed] = useState(false)
@@ -46,6 +85,35 @@ function App(): React.JSX.Element {
   const activeIndex =
     accounts?.accounts.findIndex((account) => account.id === activeAccountId) ?? -1
   const currentStatus = viewStatus?.accountId === activeAccountId ? viewStatus.status : null
+  const googleStateMatches = googleState.accountId === activeAccountId
+  const googleStatus = googleStateMatches ? googleState.status : null
+  const googleOperation = googleStateMatches ? googleState.operation : null
+  const accountActionsBusy = busy || googleOperation !== null || googleStatus === 'connecting'
+
+  let googleMessage = text.apiChecking
+  if (googleStateMatches && googleState.loading) googleMessage = text.apiChecking
+  else if (googleOperation === 'cancelling') googleMessage = text.apiCancelling
+  else if (googleOperation === 'disconnecting') googleMessage = text.apiDisconnecting
+  else if (googleStateMatches && googleState.readFailed) googleMessage = text.apiCheckError
+  else if (googleStateMatches && googleState.operationFailed) googleMessage = text.apiFailure
+  else if (googleStatus === 'disconnected') googleMessage = text.apiDisconnected
+  else if (googleStatus === 'connected') googleMessage = text.apiConnected
+  else if (googleStatus === 'connecting') googleMessage = text.apiConnecting
+  else if (googleStatus === 'reconnect_required') googleMessage = text.apiReconnect
+  else if (googleStatus === 'error') googleMessage = text.apiFailure
+
+  useEffect(() => {
+    const controller = new GoogleConnectionController(window.api, setGoogleState)
+    googleController.current = controller
+    return () => {
+      controller.dispose()
+      if (googleController.current === controller) googleController.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    googleController.current?.selectAccount(activeAccountId)
+  }, [activeAccountId])
 
   useEffect(() => {
     let active = true
@@ -170,7 +238,7 @@ function App(): React.JSX.Element {
               key={account.id}
               type="button"
               aria-pressed={account.id === activeAccountId}
-              disabled={busy}
+              disabled={accountActionsBusy}
               onClick={() => void activateAccount(account.id)}
             >
               Gmail {index + 1}
@@ -180,7 +248,7 @@ function App(): React.JSX.Element {
         <button
           className="add-account"
           type="button"
-          disabled={busy || accounts === null}
+          disabled={accountActionsBusy || accounts === null}
           onClick={() => void addAccount()}
         >
           <span aria-hidden="true">＋</span> {text.add}
@@ -188,25 +256,79 @@ function App(): React.JSX.Element {
         <button
           className="remove-account"
           type="button"
-          disabled={busy || activeAccountId === null}
+          disabled={accountActionsBusy || activeAccountId === null}
           onClick={() => void removeActiveAccount()}
         >
           {text.remove}
         </button>
       </header>
-      <div className="status-strip" role="status" aria-live="polite">
-        <span className="status-text">{statusMessage}</span>
+      <div className="status-strip">
+        <span className="status-text" role="status" aria-live="polite">
+          {statusMessage}
+        </span>
         {(currentStatus === 'error' ||
           currentStatus === 'blocked' ||
           (operationFailed && !removalFailed)) && (
           <button
             className="retry-button"
             type="button"
-            disabled={busy}
+            disabled={accountActionsBusy}
             onClick={() => void retry()}
           >
             {text.retry}
           </button>
+        )}
+        {activeAccountId && (
+          <div className="api-connection" role="group" aria-label={text.apiLabel}>
+            <span
+              className="api-connection-status"
+              role="status"
+              aria-live="polite"
+              aria-busy={googleStateMatches && (googleState.loading || googleOperation !== null)}
+              title={googleMessage}
+            >
+              {googleMessage}
+            </span>
+            {googleStateMatches && googleState.readFailed ? (
+              <button
+                className="api-action"
+                type="button"
+                disabled={busy || googleState.loading}
+                onClick={() => void googleController.current?.refresh()}
+              >
+                {text.retry}
+              </button>
+            ) : googleStatus === 'connected' ? (
+              <button
+                className="api-action"
+                type="button"
+                disabled={busy || googleOperation !== null}
+                onClick={() => void googleController.current?.disconnect()}
+              >
+                {text.apiDisconnect}
+              </button>
+            ) : googleStatus === 'connecting' ? (
+              <button
+                className="api-action"
+                type="button"
+                disabled={busy || googleOperation === 'cancelling'}
+                onClick={() => void googleController.current?.cancel()}
+              >
+                {text.apiCancel}
+              </button>
+            ) : googleStatus === 'disconnected' ||
+              googleStatus === 'reconnect_required' ||
+              googleStatus === 'error' ? (
+              <button
+                className="api-action"
+                type="button"
+                disabled={busy || googleOperation !== null}
+                onClick={() => void googleController.current?.connect()}
+              >
+                {googleStatus === 'disconnected' ? text.apiConnect : text.apiReconnect}
+              </button>
+            ) : null}
+          </div>
         )}
       </div>
       {accounts?.accounts.length === 0 && (
