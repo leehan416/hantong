@@ -1,74 +1,124 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { is, optimizer } from '@electron-toolkit/utils'
+import { APP_INFO_CHANNEL, type AppInfo } from '../shared/ipc'
+import {
+  isAllowedAppInfoRequest,
+  isAllowedExternalUrl,
+  isTrustedRendererUrl
+} from './security-policy'
+
+app.setName('Hantong')
+
+const rendererFile = join(__dirname, '../renderer/index.html')
+const rendererUrl =
+  is.dev && process.env['ELECTRON_RENDERER_URL']
+    ? process.env['ELECTRON_RENDERER_URL']
+    : pathToFileURL(rendererFile).href
+
+let mainWindow: BrowserWindow | null = null
+
+app.on('window-all-closed', () => {
+  // macOS keeps the application available for reopening from the Dock.
+})
+
+function openExternal(url: string): void {
+  if (!isAllowedExternalUrl(url)) return
+  void shell.openExternal(url).catch(() => {
+    // URLs can contain personal information; do not include them in diagnostics.
+    console.error('Unable to open the external link')
+  })
+}
 
 function createWindow(): void {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+  const window = new BrowserWindow({
+    title: 'Hantong',
+    width: 1000,
+    height: 720,
+    minWidth: 640,
+    minHeight: 480,
     show: false,
-    autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      partition: 'hantong-ui',
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      webviewTag: false
     }
   })
+  mainWindow = window
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+  const contents = window.webContents
+  contents.session.setPermissionCheckHandler(() => false)
+  contents.session.setPermissionRequestHandler((_contents, _permission, callback) => {
+    callback(false)
   })
-
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+  contents.on('will-attach-webview', (event) => event.preventDefault())
+  contents.on('will-frame-navigate', (event) => {
+    if (!event.isMainFrame || !isTrustedRendererUrl(event.url, rendererUrl)) {
+      event.preventDefault()
+    }
+  })
+  contents.on('will-redirect', (event) => {
+    if (!isTrustedRendererUrl(event.url, rendererUrl)) event.preventDefault()
+  })
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternal(url)
     return { action: 'deny' }
   })
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  window.once('ready-to-show', () => window.show())
+  window.once('closed', () => {
+    if (mainWindow === window) mainWindow = null
+  })
+  optimizer.watchWindowShortcuts(window)
+
+  void contents.loadURL(rendererUrl).catch(() => {
+    console.error('Unable to load the Hantong window')
+    window.destroy()
+    app.quit()
+  })
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+void app
+  .whenReady()
+  .then(() => {
+    ipcMain.handle(APP_INFO_CHANNEL, (event, ...args: unknown[]): AppInfo => {
+      const owner = mainWindow
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      if (
+        !isAllowedAppInfoRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl,
+          args
+        })
+      ) {
+        throw new Error('Request rejected')
+      }
+      return {
+        name: app.getName(),
+        version: app.getVersion(),
+        locale: app.getLocale().startsWith('ko') ? 'ko' : 'en'
+      }
+    })
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
+    createWindow()
+    app.on('activate', () => {
+      if (!mainWindow) createWindow()
+      else {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+      }
+    })
   })
-
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-
-  createWindow()
-
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
-
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  .catch(() => {
+    console.error('Unable to start Hantong')
     app.quit()
-  }
-})
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
+  })
