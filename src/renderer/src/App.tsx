@@ -163,6 +163,10 @@ function App(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
+  const settingsDialogRef = useRef<HTMLDialogElement | null>(null)
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const settingsReturnFocusRef = useRef<HTMLElement | null>(null)
+  const settingsWasOpenRef = useRef(false)
   const [operationFailed, setOperationFailed] = useState(false)
   const [removalFailed, setRemovalFailed] = useState(false)
   const locale =
@@ -283,7 +287,7 @@ function App(): React.JSX.Element {
         if (active) setSettings(next)
       })
       unsubscribeOpen = window.api.onOpenSettings(() => {
-        if (active) setSettingsOpen(true)
+        if (active) openSettings()
       })
     } catch {
       // Without the push channel the panel still shows the values it saved itself.
@@ -302,15 +306,31 @@ function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    // Main detaches the native Gmail view while the panel is open, or it would cover the panel.
-    void window.api.setSettingsPanelOpen(settingsOpen).catch(() => undefined)
-    if (!settingsOpen) return
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setSettingsOpen(false)
+    // Main detaches the native Gmail view while the modal is open, or it would cover the dialog.
+    const dialog = settingsDialogRef.current
+    if (settingsOpen) {
+      if (dialog && !dialog.open) dialog.showModal()
+      void window.api.setSettingsPanelOpen(true).catch(() => undefined)
+    } else {
+      if (dialog?.open) dialog.close()
+      void window.api.setSettingsPanelOpen(false).catch(() => undefined)
+      if (settingsWasOpenRef.current) {
+        const focusTarget = settingsReturnFocusRef.current ?? settingsButtonRef.current
+        focusTarget?.focus()
+        settingsReturnFocusRef.current = null
+      }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    settingsWasOpenRef.current = settingsOpen
   }, [settingsOpen])
+
+  function openSettings(): void {
+    const activeElement = document.activeElement
+    settingsReturnFocusRef.current =
+      activeElement instanceof HTMLElement && activeElement !== document.body
+        ? activeElement
+        : settingsButtonRef.current
+    setSettingsOpen(true)
+  }
 
   async function changeSettings(patch: AppSettingsPatch): Promise<void> {
     setSettingsFailed(false)
@@ -489,8 +509,9 @@ function App(): React.JSX.Element {
                 <button
                   className="settings-button"
                   type="button"
+                  ref={settingsButtonRef}
                   aria-pressed={settingsOpen}
-                  onClick={() => setSettingsOpen((open) => !open)}
+                  onClick={openSettings}
                 >
                   {text.settings}
                 </button>
@@ -521,8 +542,9 @@ function App(): React.JSX.Element {
               <button
                 className="settings-button"
                 type="button"
+                ref={settingsButtonRef}
                 aria-pressed={settingsOpen}
-                onClick={() => setSettingsOpen((open) => !open)}
+                onClick={openSettings}
               >
                 {text.settings}
               </button>
@@ -600,84 +622,91 @@ function App(): React.JSX.Element {
           )}
         </div>
       </div>
-      {settingsOpen && (
-        <main className="settings-panel" aria-labelledby="settings-title">
-          <section className="settings-content">
+      <dialog
+        ref={settingsDialogRef}
+        className="settings-panel"
+        aria-labelledby="settings-title"
+        onCancel={(event) => event.preventDefault()}
+      >
+        <section className="settings-content">
+          <header className="settings-heading">
             <h1 id="settings-title">{text.settings}</h1>
-            <details className="settings-position">
-              <summary className="settings-position-trigger">
-                <span>{text.position}</span>
-                <span className="settings-position-current">
-                  {text.positions[position]} <span aria-hidden="true">⌄</span>
-                </span>
-              </summary>
-              <fieldset className="settings-position-options">
-                <legend className="visually-hidden">{text.position}</legend>
-                {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
-                  <label key={option} className="settings-position-option">
-                    <input
-                      type="radio"
-                      name="account-selector-position"
-                      value={option}
-                      checked={position === option}
-                      onChange={() =>
-                        void changeSettings({
-                          accountSelectorPosition: option as AccountSelectorPosition
-                        })
-                      }
-                    />
-                    {text.positions[option]}
-                  </label>
-                ))}
-              </fieldset>
-            </details>
-            {(
-              [
-                ['language', text.language, text.languageOptions],
-                ['theme', text.theme, text.themeOptions],
-                ['closeAction', text.closeAction, text.closeActionOptions]
-              ] as const
-            ).map(([field, label, options]) => (
-              <fieldset key={field} className="settings-group">
-                <legend>{label}</legend>
-                {Object.entries(options).map(([value, optionLabel]) => (
-                  <label key={value} className="settings-option">
-                    <input
-                      type="radio"
-                      name={field}
-                      value={value}
-                      checked={settings?.[field] === value}
-                      onChange={() => void changeSettings({ [field]: value })}
-                    />
-                    {optionLabel}
-                  </label>
-                ))}
-              </fieldset>
-            ))}
-            <fieldset className="settings-group">
-              <legend>{text.gmailCleanup}</legend>
-              {GMAIL_CLEANUP_FIELDS.map((field) => (
-                <label key={field} className="settings-option">
+            <button
+              className="settings-close"
+              type="button"
+              aria-label={text.settingsClose}
+              title={text.settingsClose}
+              onClick={() => setSettingsOpen(false)}
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </header>
+          <details className="settings-position">
+            <summary className="settings-position-trigger">
+              <span>{text.position}</span>
+              <span className="settings-position-current">
+                {text.positions[position]} <span aria-hidden="true">⌄</span>
+              </span>
+            </summary>
+            <fieldset className="settings-position-options">
+              <legend className="visually-hidden">{text.position}</legend>
+              {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
+                <label key={option} className="settings-position-option">
                   <input
-                    type="checkbox"
-                    checked={settings?.[field] === true}
-                    onChange={(event) => void changeSettings({ [field]: event.target.checked })}
+                    type="radio"
+                    name="account-selector-position"
+                    value={option}
+                    checked={position === option}
+                    onChange={() =>
+                      void changeSettings({
+                        accountSelectorPosition: option as AccountSelectorPosition
+                      })
+                    }
                   />
-                  {text.gmailCleanupOptions[field]}
+                  {text.positions[option]}
                 </label>
               ))}
             </fieldset>
-            {settingsFailed && <p role="alert">{text.settingsError}</p>}
-            <button
-              className="access-gate-action"
-              type="button"
-              onClick={() => setSettingsOpen(false)}
-            >
-              {text.settingsClose}
-            </button>
-          </section>
-        </main>
-      )}
+          </details>
+          {(
+            [
+              ['language', text.language, text.languageOptions],
+              ['theme', text.theme, text.themeOptions],
+              ['closeAction', text.closeAction, text.closeActionOptions]
+            ] as const
+          ).map(([field, label, options]) => (
+            <fieldset key={field} className="settings-group">
+              <legend>{label}</legend>
+              {Object.entries(options).map(([value, optionLabel]) => (
+                <label key={value} className="settings-option">
+                  <input
+                    type="radio"
+                    name={field}
+                    value={value}
+                    checked={settings?.[field] === value}
+                    onChange={() => void changeSettings({ [field]: value })}
+                  />
+                  {optionLabel}
+                </label>
+              ))}
+            </fieldset>
+          ))}
+          <fieldset className="settings-group">
+            <legend>{text.gmailCleanup}</legend>
+            {GMAIL_CLEANUP_FIELDS.map((field) => (
+              <label key={field} className="settings-option">
+                <input
+                  type="checkbox"
+                  checked={settings?.[field] === true}
+                  onChange={(event) => void changeSettings({ [field]: event.target.checked })}
+                />
+                {text.gmailCleanupOptions[field]}
+              </label>
+            ))}
+          </fieldset>
+          {settingsFailed && <p role="alert">{text.settingsError}</p>}
+        </section>
+      </dialog>
       {!settingsOpen && accounts?.accounts.length === 0 && (
         <main className="empty-state">
           <p>{text.welcome}</p>
