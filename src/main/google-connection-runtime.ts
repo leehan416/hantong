@@ -30,7 +30,11 @@ interface RuntimeDependencies {
     readonly emailAddress: string | null
   } | null>
   readonly loadConfig: () => GoogleOAuthConfig
-  readonly startAuthorization: (config: GoogleOAuthConfig) => GoogleAuthorizationOperation
+  readonly startAuthorization: (
+    config: GoogleOAuthConfig,
+    nonce?: string
+  ) => GoogleAuthorizationOperation
+  readonly prepareRelayChallenge?: (signal: AbortSignal) => Promise<string | undefined>
   readonly exchangeCode: Parameters<typeof startGoogleConnection>[2]['exchangeCode']
   readonly fetchProfile: Parameters<typeof startGoogleConnection>[2]['fetchProfile']
   readonly manager: ConnectionManager
@@ -38,6 +42,8 @@ interface RuntimeDependencies {
     stage: 'config' | 'connection' | 'persistence',
     code: RuntimeDiagnosticCode
   ) => void
+  readonly onConnected?: (accountId: string, result: GoogleConnectionResult) => void
+  readonly onDisconnected?: (accountId: string) => void
 }
 
 interface ActiveOperation {
@@ -149,6 +155,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         connection = startGoogleConnection(accountId, config, {
           readWebIdentity: dependencies.readWebIdentity,
           startAuthorization: dependencies.startAuthorization,
+          prepareRelayChallenge: dependencies.prepareRelayChallenge,
           exchangeCode: dependencies.exchangeCode,
           fetchProfile: dependencies.fetchProfile
         })
@@ -179,6 +186,11 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           return status(accountId, 'disconnected')
         }
         active.delete(accountId)
+        try {
+          dependencies.onConnected?.(accountId, result)
+        } catch {
+          // Relay lifecycle observers cannot roll back an accepted Google grant.
+        }
         return status(accountId, 'connected')
       } catch (error) {
         if (active.get(accountId) === operation) active.delete(accountId)
@@ -214,6 +226,11 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
     },
     async disconnect(accountId): Promise<GoogleConnectionStatusDto> {
       const expected = advance(accountId)
+      try {
+        dependencies.onDisconnected?.(accountId)
+      } catch {
+        // A relay cleanup observer cannot block Google account cleanup.
+      }
       const cleanup = cancelOperation(accountId)
       if (!(await cleanup)) return status(accountId, 'error')
       if (generation(accountId) !== expected || active.has(accountId)) {

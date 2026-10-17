@@ -74,7 +74,6 @@ export class GoogleConnectionController {
       status: status.status,
       loading: false,
       readFailed: false,
-      operation: status.status === 'connecting' ? 'connecting' : null,
       operationFailed: false
     })
   }

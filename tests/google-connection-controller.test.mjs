@@ -313,6 +313,30 @@ test('external Main connection status enables cancellation of automatic OAuth', 
   assert.equal(states.at(-1).operation, null)
 })
 
+for (const terminalStatus of ['connected', 'error']) {
+  test(`external automatic OAuth ${terminalStatus} status clears its busy state`, async () => {
+    const states = []
+    const controller = new GoogleConnectionController(
+      {
+        getGoogleConnectionStatus: async () => status('first', 'disconnected'),
+        connectGoogleAccount: async () => status('first', 'connected'),
+        cancelGoogleConnection: async () => status('first', 'disconnected'),
+        disconnectGoogleAccount: async () => status('first', 'disconnected')
+      },
+      (state) => states.push(state)
+    )
+
+    controller.selectAccount('first')
+    await tick()
+    controller.applyExternalStatus(status('first', 'connecting'))
+    assert.equal(states.at(-1).operation, null)
+    controller.applyExternalStatus(status('first', terminalStatus))
+
+    assert.equal(states.at(-1).status, terminalStatus)
+    assert.equal(states.at(-1).operation, null)
+  })
+}
+
 test('gate retry can revalidate a connected grant while regular connect stays guarded', async () => {
   let connectCalls = 0
   const states = []

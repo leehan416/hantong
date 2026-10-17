@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Notification,
+  powerMonitor,
+  safeStorage,
+  shell
+} from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAccountStore } from './account-store'
@@ -12,6 +21,22 @@ import { createGoogleConnectionRuntime } from './google-connection-runtime'
 import type { GoogleConnectionFailureCode } from './google-connection'
 import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
+import { loadRuntimeRelayConfig } from './relay-config'
+import { createRelayClient } from './relay-client'
+import { createRelayRuntime } from './relay-runtime'
+import { createRelayCredentialStore } from './relay-credential-store'
+import { createGmailSyncStore } from './gmail-sync-store'
+import { createGmailHistorySync } from './gmail-history-sync'
+import { createGmailWatchManager } from './gmail-watch-manager'
+import { createGmailRelaySync } from './gmail-relay-sync'
+import { createGmailMailAlerts, type GmailMailAlert } from './gmail-mail-alerts'
+import {
+  fetchGmailHistoryId,
+  fetchGmailHistoryPage,
+  fetchGmailMessageSummary,
+  fetchGmailUnreadCount,
+  registerGmailWatch
+} from './gmail-metadata'
 import { startGoogleAuthorization } from './google-authorization'
 import type { AuthorizationErrorCode } from './google-authorization'
 import {
@@ -26,6 +51,9 @@ import {
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
+  ACCOUNT_STATE_EVENT,
+  UNREAD_COUNTS_CHANNEL,
+  UNREAD_COUNTS_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -58,6 +86,8 @@ let accountViewManager: ReturnType<typeof createAccountViewManager> | null = nul
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
 let googleConnectionManager: ReturnType<typeof createGoogleConnectionManager> | null = null
+let relayRuntime: ReturnType<typeof createRelayRuntime> | null = null
+let gmailRelaySync: ReturnType<typeof createGmailRelaySync> | null = null
 let accountAccessController: ReturnType<typeof createAccountAccessController> | null = null
 let appQuitting = false
 let quitCleanupPending = false
@@ -214,6 +244,42 @@ function requireGoogleConnectionManager(): NonNullable<typeof googleConnectionMa
   return googleConnectionManager
 }
 
+// Electron drops click handlers of notifications that get garbage-collected, so keep them alive.
+const shownNotifications = new Set<Notification>()
+
+function showMailNotification(alert: GmailMailAlert): void {
+  if (!Notification.isSupported()) return
+  const notification = new Notification({ title: alert.title, body: alert.body })
+  const forget = (): void => {
+    shownNotifications.delete(notification)
+  }
+  notification.on('click', () => {
+    forget()
+    showAccount(alert.accountId)
+  })
+  notification.on('close', forget)
+  shownNotifications.add(notification)
+  notification.show()
+}
+
+function showAccount(accountId: string): void {
+  const store = accountStore
+  if (!store || appQuitting || accountRemoval?.isBusy()) return
+  if (!store.getState().accounts.some((account) => account.id === accountId)) return
+  const state = store.activate(accountId)
+  const window = mainWindow
+  // A new window picks up the active account itself when its renderer loads the account state.
+  if (!window || window.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  window.webContents.send(ACCOUNT_STATE_EVENT, state)
+  if (state.activeAccountId) activateAccountView(state.activeAccountId)
+}
+
 function activateAccountView(accountId: string): void {
   try {
     accountViewManager?.activate(accountId)
@@ -244,11 +310,150 @@ void app
         })
     })
     googleConnectionManager = connectionManager
-    googleConnectionRuntime = createGoogleConnectionRuntime({
-      accountExists: (id) =>
-        requireAccountStore()
+    let relayClient: ReturnType<typeof createRelayClient> | undefined
+    const relayConfig = (): ReturnType<typeof loadRuntimeRelayConfig> =>
+      loadRuntimeRelayConfig({
+        environment: process.env,
+        isPackaged: app.isPackaged,
+        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+      })
+    const accountExists = (id: string): boolean =>
+      requireAccountStore()
+        .getState()
+        .accounts.some((account) => account.id === id)
+    const resolveRelayClient = (): ReturnType<typeof createRelayClient> | undefined => {
+      if (relayClient) return relayClient
+      const config = relayConfig()
+      if (!config) return undefined
+      relayClient = createRelayClient({ baseUrl: config.baseUrl, fetch, now: () => Date.now() })
+      return relayClient
+    }
+    const gmailAccessToken = (accountId: string): Promise<string> =>
+      connectionManager.getAccessToken(
+        accountId,
+        loadRuntimeGoogleOAuthConfig({
+          environment: process.env,
+          isPackaged: app.isPackaged,
+          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+        })
+      )
+    let gmailTopic: string | undefined
+    try {
+      gmailTopic = relayConfig()?.gmailTopic
+    } catch {
+      // Invalid relay settings already disable the relay session; a watch is useless without it.
+      gmailTopic = undefined
+    }
+    const historySync = createGmailHistorySync({
+      store: createGmailSyncStore(app.getPath('userData')),
+      accountExists,
+      readHistoryId: async (accountId, signal) =>
+        fetchGmailHistoryId(await gmailAccessToken(accountId), { fetch, signal }),
+      readHistoryPage: async (accountId, startHistoryId, pageToken, signal) =>
+        fetchGmailHistoryPage(await gmailAccessToken(accountId), startHistoryId, pageToken, {
+          fetch,
+          signal
+        })
+    })
+    const korean = (): boolean => app.getLocale().startsWith('ko')
+    const mailAlerts = createGmailMailAlerts({
+      accountExists,
+      accountLabel: (accountId) => {
+        const index = requireAccountStore()
           .getState()
-          .accounts.some((account) => account.id === id),
+          .accounts.findIndex((account) => account.id === accountId)
+        return `Gmail ${index + 1}`
+      },
+      korean,
+      readUnreadCount: async (accountId) =>
+        fetchGmailUnreadCount(await gmailAccessToken(accountId), 'INBOX', {
+          fetch,
+          signal: AbortSignal.timeout(30_000)
+        }),
+      readSummary: async (accountId, messageId) =>
+        fetchGmailMessageSummary(await gmailAccessToken(accountId), messageId, {
+          fetch,
+          signal: AbortSignal.timeout(30_000)
+        }),
+      notify: showMailNotification,
+      setBadge: (total) => {
+        app.setBadgeCount(total)
+        const window = mainWindow
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(
+            UNREAD_COUNTS_EVENT,
+            Object.fromEntries(mailAlerts.unreadCounts())
+          )
+        }
+      }
+    })
+    const topic = gmailTopic
+    gmailRelaySync = createGmailRelaySync({
+      sync: (accountId) => historySync.sync(accountId),
+      resetSync: (accountId) => historySync.reset(accountId),
+      watch: topic
+        ? createGmailWatchManager({
+            accountExists,
+            registerWatch: async (accountId, signal) =>
+              registerGmailWatch(await gmailAccessToken(accountId), topic, {
+                fetch,
+                signal,
+                now: () => Date.now()
+              })
+          })
+        : undefined,
+      now: () => Date.now(),
+      onChanges: (accountId, result) => {
+        void mailAlerts.onChanges(accountId, result).catch(() => undefined)
+      }
+    })
+    const allAccountIds = (): string[] =>
+      requireAccountStore()
+        .getState()
+        .accounts.map((account) => account.id)
+    powerMonitor.on('suspend', () => gmailRelaySync?.suspend())
+    powerMonitor.on('resume', () => gmailRelaySync?.resume(allAccountIds()))
+    // ponytail: fixed 15-minute fallback poll; derive from relay health if quota or latency matters.
+    const fallbackSync = setInterval(() => gmailRelaySync?.syncAll(allAccountIds()), 15 * 60_000)
+    // Catch up on mail that arrived while the app was closed; never-connected accounts just fail.
+    gmailRelaySync.syncAll(allAccountIds())
+    relayRuntime = createRelayRuntime({
+      client: {
+        createSession: (...args) => {
+          const client = relayClient ?? resolveRelayClient()
+          if (!client) return Promise.reject(new Error('Relay is disabled'))
+          return client.createSession(...args)
+        },
+        refreshSession: (...args) => {
+          const client = relayClient ?? resolveRelayClient()
+          if (!client) return Promise.reject(new Error('Relay is disabled'))
+          return client.refreshSession(...args)
+        },
+        consumeEvents: (...args) =>
+          relayClient?.consumeEvents(...args) ?? Promise.reject(new Error('Relay is disabled')),
+        deleteSession: (token) => relayClient?.deleteSession(token) ?? Promise.resolve()
+      },
+      accountExists,
+      now: () => Date.now(),
+      credentials: createRelayCredentialStore({
+        directory: join(app.getPath('userData'), 'relay-credentials'),
+        platform: process.platform,
+        safeStorage
+      }),
+      onSignal: (accountId, event) => gmailRelaySync?.onSignal(accountId, event)
+    })
+    let relayEnabled = false
+    try {
+      relayEnabled = relayConfig() !== undefined
+    } catch {
+      // Invalid relay settings leave the relay off; Gmail still syncs through the fallback poll.
+    }
+    // Reattach saved relay sessions without a browser round-trip; unknown accounts are skipped.
+    if (relayEnabled) {
+      for (const accountId of allAccountIds()) void relayRuntime.resume(accountId)
+    }
+    googleConnectionRuntime = createGoogleConnectionRuntime({
+      accountExists,
       readWebIdentity: (id, signal) =>
         accountViewManager?.readWebIdentity(id, signal) ?? Promise.resolve(null),
       loadConfig: () =>
@@ -257,10 +462,30 @@ void app
           isPackaged: app.isPackaged,
           localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
         }),
-      startAuthorization: (config) =>
+      prepareRelayChallenge: async (signal) => {
+        try {
+          const client = resolveRelayClient()
+          if (!client) return undefined
+          return (await client.fetchChallenge(signal)).nonce
+        } catch (error) {
+          if (
+            signal.aborted ||
+            (typeof error === 'object' &&
+              error !== null &&
+              'code' in error &&
+              error.code === 'cancelled')
+          ) {
+            throw Object.assign(new Error('Relay challenge cancelled'), { code: 'cancelled' })
+          }
+          if (!app.isPackaged) console.error('[Hantong Relay] unavailable')
+          return undefined
+        }
+      },
+      startAuthorization: (config, nonce) =>
         startGoogleAuthorization(config, {
           openExternal: (url) => shell.openExternal(url),
-          reportFailure: (code) => reportOAuthDiagnostic('authorization', code)
+          reportFailure: (code) => reportOAuthDiagnostic('authorization', code),
+          nonce
         }),
       exchangeCode: (config, authorization, signal) =>
         exchangeGoogleAuthorizationCode(config, authorization, {
@@ -271,6 +496,18 @@ void app
       fetchProfile: (accessToken, signal) =>
         fetchGoogleProfileEmail(accessToken, { fetch, signal }),
       manager: connectionManager,
+      onConnected: (accountId, result) =>
+        relayRuntime?.accept(
+          accountId,
+          result.tokens.idToken && result.relayNonce
+            ? { idToken: result.tokens.idToken, nonce: result.relayNonce }
+            : {}
+        ),
+      onDisconnected: (accountId) => {
+        relayRuntime?.disconnect(accountId)
+        gmailRelaySync?.disconnect(accountId)
+        mailAlerts.remove(accountId)
+      },
       reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
     })
     accountRemoval = createAccountRemovalController(
@@ -413,6 +650,10 @@ void app
       return accountAccessController.getState(accountId)
     })
 
+    ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
+      if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
+      return Object.fromEntries(mailAlerts.unreadCounts())
+    })
     ipcMain.handle(ACCOUNT_STATE_CHANNEL, (event, ...args: unknown[]) => {
       requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
@@ -498,8 +739,13 @@ void app
       if (quitCleanupPending) return
       appQuitting = true
       quitCleanupPending = true
-      void requireGoogleConnectionRuntime()
-        .cancelAll()
+      clearInterval(fallbackSync)
+      gmailRelaySync?.dispose()
+      const cleanup = Promise.all([
+        requireGoogleConnectionRuntime().cancelAll(),
+        relayRuntime?.dispose() ?? Promise.resolve()
+      ])
+      void Promise.race([cleanup, new Promise((resolve) => setTimeout(resolve, 2000))])
         .then(() => {
           quitCleanupComplete = true
           app.quit()

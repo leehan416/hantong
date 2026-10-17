@@ -22,6 +22,7 @@ export interface GoogleOAuthTokens {
   readonly accessToken: string
   readonly refreshToken?: string
   readonly expiresAt: number
+  readonly idToken?: string
 }
 
 export interface GoogleRequestOptions {
@@ -134,6 +135,8 @@ function parseTokenResponse(
   const expiresIn = payload.expires_in
   const hasRefreshToken = Object.hasOwn(payload, 'refresh_token')
   const refreshToken = payload.refresh_token
+  const hasIdToken = Object.hasOwn(payload, 'id_token')
+  const idToken = payload.id_token
   if (
     typeof accessToken !== 'string' ||
     !accessToken.trim() ||
@@ -142,7 +145,8 @@ function parseTokenResponse(
     typeof expiresIn !== 'number' ||
     !Number.isFinite(expiresIn) ||
     expiresIn <= 0 ||
-    (hasRefreshToken && (typeof refreshToken !== 'string' || !refreshToken.trim()))
+    (hasRefreshToken && (typeof refreshToken !== 'string' || !refreshToken.trim())) ||
+    (hasIdToken && (typeof idToken !== 'string' || !idToken.trim() || idToken.length > 16_384))
   ) {
     throw new GoogleOAuthFailure('invalid_response')
   }
@@ -158,6 +162,7 @@ function parseTokenResponse(
   return {
     accessToken,
     ...(optionalRefreshToken ? { refreshToken: optionalRefreshToken } : {}),
+    ...(typeof idToken === 'string' ? { idToken } : {}),
     expiresAt
   }
 }

@@ -33,6 +33,7 @@ export interface GoogleAuthorizationOptions {
   readonly createServer?: (
     listener: (request: IncomingMessage, response: ServerResponse) => void
   ) => Server
+  readonly nonce?: string
 }
 
 export interface GoogleAuthorizationOperation {
@@ -49,6 +50,9 @@ export function startGoogleAuthorization(
   config: GoogleOAuthConfig,
   options: GoogleAuthorizationOptions
 ): GoogleAuthorizationOperation {
+  if (options.nonce !== undefined && !/^[A-Za-z0-9._~-]{1,2048}$/.test(options.nonce)) {
+    throw new AuthorizationError('server_error')
+  }
   const crypto = options.crypto ?? { randomBytes, createHash }
   const pkce = createPkcePair(crypto)
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000
@@ -234,6 +238,7 @@ export function startGoogleAuthorization(
       authorizationUrl.searchParams.set('code_challenge', pkce.challenge)
       authorizationUrl.searchParams.set('code_challenge_method', 'S256')
       authorizationUrl.searchParams.set('state', pkce.state)
+      if (options.nonce !== undefined) authorizationUrl.searchParams.set('nonce', options.nonce)
       void Promise.resolve()
         .then(() => (settled ? undefined : options.openExternal(authorizationUrl.href)))
         .catch(() => finish(new AuthorizationError('browser_error')))

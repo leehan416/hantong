@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
-import type { AccountAccessState, AccountViewStatus, AppInfo } from '../../shared/ipc'
+import type { AccountAccessState, AccountViewStatus, AppInfo, UnreadCounts } from '../../shared/ipc'
 import {
   AccountAccessController,
   type AccountAccessUiState,
@@ -20,6 +20,8 @@ const messages = {
     blocked: '허용되지 않은 페이지 이동을 차단했습니다.',
     retry: '다시 시도',
     operationError: '요청을 완료하지 못했습니다. 다시 시도해 주세요.',
+    unreadLabel: (accountNumber: number, count: number) =>
+      `Gmail ${accountNumber}, 읽지 않은 메일 ${count}통`,
     removeError: '계정을 삭제하지 못했습니다. 다시 시도해 주세요.',
     apiLabel: 'API 연결',
     apiChecking: 'API 상태 확인 중…',
@@ -55,6 +57,8 @@ const messages = {
     blocked: 'A page navigation was blocked.',
     retry: 'Retry',
     operationError: 'Unable to complete the request. Please try again.',
+    unreadLabel: (accountNumber: number, count: number) =>
+      `Gmail ${accountNumber}, ${count} unread`,
     removeError: 'Unable to remove the account. Please try again.',
     apiLabel: 'API connection',
     apiChecking: 'Checking API status…',
@@ -102,6 +106,7 @@ function App(): React.JSX.Element {
   const googleController = useRef<GoogleConnectionController | null>(null)
   const accessController = useRef<AccountAccessController | null>(null)
   const [busy, setBusy] = useState(false)
+  const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({})
   const [operationFailed, setOperationFailed] = useState(false)
   const [removalFailed, setRemovalFailed] = useState(false)
   const locale = info?.locale ?? (navigator.language.startsWith('ko') ? 'ko' : 'en')
@@ -171,9 +176,18 @@ function App(): React.JSX.Element {
     let active = true
     let subscriptionFailed = false
     let unsubscribe = (): void => {}
+    let unsubscribeAccounts = (): void => {}
+    let unsubscribeUnread = (): void => {}
     try {
       unsubscribe = window.api.onAccountViewStatus((status) => {
         if (active) setViewStatus(status)
+      })
+      // Main switches accounts on its own when a mail notification is clicked.
+      unsubscribeAccounts = window.api.onAccountState((state) => {
+        if (active) setAccounts(state)
+      })
+      unsubscribeUnread = window.api.onUnreadCounts((counts) => {
+        if (active) setUnreadCounts(counts)
       })
     } catch {
       subscriptionFailed = true
@@ -194,6 +208,22 @@ function App(): React.JSX.Element {
     return () => {
       active = false
       unsubscribe()
+      unsubscribeAccounts()
+      unsubscribeUnread()
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    // Badges are advisory; a failed read just leaves them hidden until the next push.
+    void window.api.getUnreadCounts().then(
+      (counts) => {
+        if (active) setUnreadCounts(counts)
+      },
+      () => undefined
+    )
+    return () => {
+      active = false
     }
   }, [])
 
@@ -293,18 +323,27 @@ function App(): React.JSX.Element {
           className="account-list"
           aria-label={locale === 'ko' ? 'Gmail 계정' : 'Gmail accounts'}
         >
-          {accounts?.accounts.map((account, index) => (
-            <button
-              className="account-button"
-              key={account.id}
-              type="button"
-              aria-pressed={account.id === activeAccountId}
-              disabled={accountActionsBusy}
-              onClick={() => void activateAccount(account.id)}
-            >
-              Gmail {index + 1}
-            </button>
-          ))}
+          {accounts?.accounts.map((account, index) => {
+            const unread = unreadCounts[account.id] ?? 0
+            return (
+              <button
+                className="account-button"
+                key={account.id}
+                type="button"
+                aria-pressed={account.id === activeAccountId}
+                aria-label={unread ? text.unreadLabel(index + 1, unread) : undefined}
+                disabled={accountActionsBusy}
+                onClick={() => void activateAccount(account.id)}
+              >
+                Gmail {index + 1}
+                {unread > 0 && (
+                  <span className="unread-badge" aria-hidden="true">
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </nav>
         <button
           className="add-account"

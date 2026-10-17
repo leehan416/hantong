@@ -142,6 +142,25 @@ test('token exchange omits an absent client secret', async () => {
   assert.equal(body.has('client_secret'), false)
 })
 
+test('OAuth keeps an optional ID token in Main memory and rejects malformed fields', async () => {
+  const result = await exchange.exchangeGoogleAuthorizationCode(
+    { clientId },
+    code,
+    tokenOptions(async () => response(200, validTokenResponse({ id_token: 'id-proof' })))
+  )
+  assert.equal(result.idToken, 'id-proof')
+  for (const id_token of ['', 7, 'x'.repeat(16_385)]) {
+    await assert.rejects(
+      exchange.exchangeGoogleAuthorizationCode(
+        { clientId },
+        code,
+        tokenOptions(async () => response(200, validTokenResponse({ id_token })))
+      ),
+      { code: 'invalid_response' }
+    )
+  }
+})
+
 test('invalid, incomplete, or expired token responses are rejected without exposing their contents', async () => {
   for (const payload of [
     null,
@@ -275,6 +294,41 @@ test('connection verifies the per-account web identity before and after the Gmai
   assert.equal(calls.auth, 1)
   assert.equal(calls.exchange, 1)
   assert.equal(calls.profile, 1)
+})
+
+test('relay challenge is requested before OAuth and returned only after both identities match', async () => {
+  const calls = []
+  const { dependencies } = makeConnectionDependencies({
+    prepareRelayChallenge: async () => {
+      calls.push('challenge')
+      return 'nonce_abc'
+    },
+    startAuthorization: (_config, nonce) => {
+      calls.push(`authorization:${nonce}`)
+      return { result: Promise.resolve(code), cancel: () => undefined }
+    }
+  })
+  const result = await connection.startGoogleConnection('account-a', { clientId }, dependencies)
+    .result
+  assert.deepEqual(calls, ['challenge', 'authorization:nonce_abc'])
+  assert.equal(result.relayNonce, 'nonce_abc')
+})
+
+test('relay challenge failure falls back to Google OAuth without nonce', async () => {
+  let nonce = 'uninitialized'
+  const { dependencies } = makeConnectionDependencies({
+    prepareRelayChallenge: async () => {
+      throw new Error('private relay URL')
+    },
+    startAuthorization: (_config, suppliedNonce) => {
+      nonce = suppliedNonce
+      return { result: Promise.resolve(code), cancel: () => undefined }
+    }
+  })
+  const result = await connection.startGoogleConnection('account-a', { clientId }, dependencies)
+    .result
+  assert.equal(nonce, undefined)
+  assert.equal(Object.hasOwn(result, 'relayNonce'), false)
 })
 
 test('missing web identity prevents browser authorization from starting', async () => {

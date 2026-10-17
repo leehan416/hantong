@@ -7,6 +7,9 @@ export const ACCOUNT_ACTIVATE_CHANNEL = 'hantong:accounts-activate'
 export const ACCOUNT_RETRY_CHANNEL = 'hantong:accounts-retry'
 export const ACCOUNT_REMOVE_CHANNEL = 'hantong:accounts-remove'
 export const ACCOUNT_VIEW_STATUS_EVENT = 'hantong:account-view-status'
+export const ACCOUNT_STATE_EVENT = 'hantong:accounts-change'
+export const UNREAD_COUNTS_CHANNEL = 'hantong:unread-counts-get'
+export const UNREAD_COUNTS_EVENT = 'hantong:unread-counts-change'
 export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
@@ -26,6 +29,9 @@ export interface AccountRemovalResult {
   outcome: AccountRemovalOutcome
   state: AccountState
 }
+
+// Inbox unread count per account id; accounts without a known count are absent.
+export type UnreadCounts = Record<string, number>
 
 export interface AppInfo {
   name: string
@@ -52,6 +58,9 @@ export interface HantongApi {
   retryAccount: () => Promise<void>
   removeAccount: (accountId: string) => Promise<AccountRemovalResult>
   onAccountViewStatus: (listener: (status: AccountViewStatus) => void) => () => void
+  onAccountState: (listener: (state: AccountState) => void) => () => void
+  getUnreadCounts: () => Promise<UnreadCounts>
+  onUnreadCounts: (listener: (counts: UnreadCounts) => void) => () => void
   getGoogleConnectionStatus: (accountId: string) => Promise<GoogleConnectionStatus>
   connectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>
   cancelGoogleConnection: (accountId: string) => Promise<GoogleConnectionStatus>

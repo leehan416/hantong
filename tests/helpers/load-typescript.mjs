@@ -17,6 +17,9 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     module,
     URL,
     AbortController,
+    TextDecoder,
+    TextEncoder,
+    Uint8Array,
     setTimeout,
     clearTimeout,
     require(name) {
