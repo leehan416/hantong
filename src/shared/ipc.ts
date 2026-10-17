@@ -15,6 +15,7 @@ export const SETTINGS_GET_CHANNEL = 'hantong:settings-get'
 export const SETTINGS_UPDATE_CHANNEL = 'hantong:settings-update'
 export const SETTINGS_EVENT = 'hantong:settings-change'
 export const SETTINGS_PANEL_CHANNEL = 'hantong:settings-panel'
+export const SETTINGS_OPEN_EVENT = 'hantong:settings-open'
 export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
@@ -70,6 +71,7 @@ export interface HantongApi {
   updateSettings: (patch: AppSettingsPatch) => Promise<AppSettings>
   onSettings: (listener: (settings: AppSettings) => void) => () => void
   setSettingsPanelOpen: (open: boolean) => Promise<void>
+  onOpenSettings: (listener: () => void) => () => void
   getGoogleConnectionStatus: (accountId: string) => Promise<GoogleConnectionStatus>
   connectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>
   cancelGoogleConnection: (accountId: string) => Promise<GoogleConnectionStatus>

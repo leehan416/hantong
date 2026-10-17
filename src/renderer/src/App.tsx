@@ -241,9 +241,13 @@ function App(): React.JSX.Element {
   useEffect(() => {
     let active = true
     let unsubscribe = (): void => {}
+    let unsubscribeOpen = (): void => {}
     try {
       unsubscribe = window.api.onSettings((next) => {
         if (active) setSettings(next)
+      })
+      unsubscribeOpen = window.api.onOpenSettings(() => {
+        if (active) setSettingsOpen(true)
       })
     } catch {
       // Without the push channel the panel still shows the values it saved itself.
@@ -257,6 +261,7 @@ function App(): React.JSX.Element {
     return () => {
       active = false
       unsubscribe()
+      unsubscribeOpen()
     }
   }, [])
 

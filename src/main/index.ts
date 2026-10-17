@@ -1,6 +1,8 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
+  Menu,
   dialog,
   ipcMain,
   nativeTheme,
@@ -27,6 +29,7 @@ import { createRelayClient } from './relay-client'
 import { createRelayRuntime } from './relay-runtime'
 import { createRelayCredentialStore } from './relay-credential-store'
 import { createSettingsStore } from './settings-store'
+import { buildAppMenuTemplate, buildContextMenuTemplate } from './app-menu'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
@@ -61,6 +64,7 @@ import {
   SETTINGS_UPDATE_CHANNEL,
   SETTINGS_EVENT,
   SETTINGS_PANEL_CHANNEL,
+  SETTINGS_OPEN_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -260,6 +264,35 @@ function uiLocale(): 'ko' | 'en' {
   return app.getLocale().startsWith('ko') ? 'ko' : 'en'
 }
 
+function openSettings(): void {
+  const window = mainWindow
+  // ponytail: with no window yet the menu only creates one; reopen Cmd+, once it has loaded.
+  if (!window || window.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  window.webContents.send(SETTINGS_OPEN_EVENT)
+}
+
+function installAppMenu(): void {
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(buildAppMenuTemplate(uiLocale(), { openSettings }))
+  )
+}
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('context-menu', (_menuEvent, params) => {
+    const template = buildContextMenuTemplate(params, uiLocale(), {
+      copyLink: (url) => clipboard.writeText(url),
+      isAllowedLink: isAllowedExternalUrl
+    })
+    if (template.length) Menu.buildFromTemplate(template).popup()
+  })
+})
+
 // Electron drops click handlers of notifications that get garbage-collected, so keep them alive.
 const shownNotifications = new Set<Notification>()
 
@@ -312,6 +345,7 @@ void app
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
     nativeTheme.themeSource = settingsStore.get().theme
+    installAppMenu()
     const credentialStore = createGoogleCredentialStore({
       directory: join(app.getPath('userData'), 'google-credentials'),
       platform: process.platform,
@@ -698,6 +732,7 @@ void app
       }
       const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
       nativeTheme.themeSource = settings.theme
+      installAppMenu()
       const owner = mainWindow
       if (owner && !owner.isDestroyed()) owner.webContents.send(SETTINGS_EVENT, settings)
       return settings
