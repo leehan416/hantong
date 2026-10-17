@@ -1,11 +1,17 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
+  Menu,
+  nativeImage,
+  Tray,
   dialog,
   ipcMain,
+  nativeTheme,
   Notification,
   powerMonitor,
   safeStorage,
+  screen,
   shell
 } from 'electron'
 import { join } from 'node:path'
@@ -25,6 +31,11 @@ import { loadRuntimeRelayConfig } from './relay-config'
 import { createRelayClient } from './relay-client'
 import { createRelayRuntime } from './relay-runtime'
 import { createRelayCredentialStore } from './relay-credential-store'
+import { createSettingsStore } from './settings-store'
+import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate } from './app-menu'
+import trayIconPath from '../../resources/icon.png?asset'
+import { createWindowStateStore, fitWindowBounds } from './window-state'
+import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
@@ -54,6 +65,11 @@ import {
   ACCOUNT_STATE_EVENT,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
+  SETTINGS_GET_CHANNEL,
+  SETTINGS_UPDATE_CHANNEL,
+  SETTINGS_EVENT,
+  SETTINGS_PANEL_CHANNEL,
+  SETTINGS_OPEN_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -69,10 +85,14 @@ import {
   isAllowedAppInfoRequest,
   isAllowedExternalUrl,
   isAllowedGoogleConnectionRequest,
+  isAllowedSettingsRequest,
   isTrustedRendererUrl
 } from './security-policy'
 
 app.setName('Hantong')
+
+// A second launch only brings the running instance forward (see 'second-instance' below).
+if (!app.requestSingleInstanceLock()) app.exit(0)
 
 const rendererFile = join(__dirname, '../renderer/index.html')
 const rendererUrl =
@@ -82,6 +102,9 @@ const rendererUrl =
 
 let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
+let settingsStore: ReturnType<typeof createSettingsStore> | null = null
+let windowStateStore: ReturnType<typeof createWindowStateStore> | null = null
+let tray: Tray | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
@@ -120,10 +143,16 @@ function openExternal(url: string): void {
 }
 
 function createWindow(): void {
+  const saved = windowStateStore?.read() ?? null
+  const bounds = saved
+    ? fitWindowBounds(
+        saved.bounds,
+        screen.getAllDisplays().map((display) => display.workArea)
+      )
+    : null
   const window = new BrowserWindow({
     title: 'Hantong',
-    width: 1000,
-    height: 720,
+    ...(bounds ?? { width: 1000, height: 720 }),
     minWidth: 640,
     minHeight: 480,
     show: false,
@@ -138,6 +167,16 @@ function createWindow(): void {
     }
   })
   mainWindow = window
+  if (bounds && saved?.maximized) window.maximize()
+  window.on('close', (event) => {
+    windowStateStore?.write({ bounds: window.getNormalBounds(), maximized: window.isMaximized() })
+    // Hiding keeps Main, the relay stream and notifications alive; quitting goes through before-quit.
+    if (!appQuitting && (settingsStore?.get().closeAction ?? 'hide') === 'hide') {
+      event.preventDefault()
+      if (window.isFullScreen()) window.setFullScreen(false)
+      window.hide()
+    }
+  })
   let windowAccessController: ReturnType<typeof createAccountAccessController> | null = null
   const windowViewManager = createAccountViewManager(
     window,
@@ -204,6 +243,7 @@ function createWindow(): void {
 
   window.once('ready-to-show', () => window.show())
   window.once('closed', () => {
+    if (!appQuitting && settingsStore?.get().closeAction === 'quit') app.quit()
     void googleConnectionRuntime?.cancelAll().catch(() => {
       console.error('Unable to cancel pending Google connections')
     })
@@ -243,6 +283,75 @@ function requireGoogleConnectionManager(): NonNullable<typeof googleConnectionMa
   if (!googleConnectionManager) throw new Error('Google connection manager is unavailable')
   return googleConnectionManager
 }
+
+// The language setting wins; 'system' follows the OS locale.
+function uiLocale(): 'ko' | 'en' {
+  const language = settingsStore?.get().language ?? 'system'
+  if (language !== 'system') return language
+  return app.getLocale().startsWith('ko') ? 'ko' : 'en'
+}
+
+function openSettings(): void {
+  const window = mainWindow
+  // ponytail: with no window yet the menu only creates one; reopen Cmd+, once it has loaded.
+  if (!window || window.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  window.webContents.send(SETTINGS_OPEN_EVENT)
+}
+
+function showMainWindow(): void {
+  const window = mainWindow
+  if (!window || window.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+}
+
+// Rebuilt whenever the language changes, so every Hantong-owned label follows the setting.
+function installAppMenu(): void {
+  const locale = uiLocale()
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate(locale, { openSettings })))
+  if (!tray) {
+    // A small copy of the app icon; a monochrome template icon can replace it later.
+    tray = new Tray(nativeImage.createFromPath(trayIconPath).resize({ width: 18, height: 18 }))
+    tray.setToolTip('Hantong')
+    tray.on('click', showMainWindow)
+  }
+  tray.setContextMenu(
+    Menu.buildFromTemplate(
+      buildTrayMenuTemplate(locale, { open: showMainWindow, quit: () => app.quit() })
+    )
+  )
+}
+
+app.on('second-instance', () => {
+  const window = mainWindow
+  if (!window || window.isDestroyed()) {
+    if (app.isReady() && accountStore) createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+})
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('context-menu', (_menuEvent, params) => {
+    const template = buildContextMenuTemplate(params, uiLocale(), {
+      copyLink: (url) => clipboard.writeText(url),
+      isAllowedLink: isAllowedExternalUrl
+    })
+    if (template.length) Menu.buildFromTemplate(template).popup()
+  })
+})
 
 // Electron drops click handlers of notifications that get garbage-collected, so keep them alive.
 const shownNotifications = new Set<Notification>()
@@ -294,6 +403,10 @@ void app
   .whenReady()
   .then(() => {
     accountStore = createAccountStore(app.getPath('userData'))
+    settingsStore = createSettingsStore(app.getPath('userData'))
+    windowStateStore = createWindowStateStore(app.getPath('userData'))
+    nativeTheme.themeSource = settingsStore.get().theme
+    installAppMenu()
     const credentialStore = createGoogleCredentialStore({
       directory: join(app.getPath('userData'), 'google-credentials'),
       platform: process.platform,
@@ -355,7 +468,7 @@ void app
           signal
         })
     })
-    const korean = (): boolean => app.getLocale().startsWith('ko')
+    const korean = (): boolean => uiLocale() === 'ko'
     const mailAlerts = createGmailMailAlerts({
       accountExists,
       accountLabel: (accountId) => {
@@ -650,6 +763,45 @@ void app
       return accountAccessController.getState(accountId)
     })
 
+    function settingsRequestAllowed(
+      event: Electron.IpcMainInvokeEvent,
+      operation: 'get' | 'update' | 'panel',
+      args: unknown[]
+    ): boolean {
+      const owner = mainWindow
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      return isAllowedSettingsRequest({
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl,
+        operation,
+        args
+      })
+    }
+    ipcMain.handle(SETTINGS_GET_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'get', args) || !settingsStore) {
+        throw new Error('Request rejected')
+      }
+      return settingsStore.get()
+    })
+    ipcMain.handle(SETTINGS_UPDATE_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'update', args) || !settingsStore) {
+        throw new Error('Request rejected')
+      }
+      const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
+      nativeTheme.themeSource = settings.theme
+      installAppMenu()
+      const owner = mainWindow
+      if (owner && !owner.isDestroyed()) owner.webContents.send(SETTINGS_EVENT, settings)
+      return settings
+    })
+    ipcMain.handle(SETTINGS_PANEL_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'panel', args)) throw new Error('Request rejected')
+      accountViewManager?.setCovered(args[0] === true)
+    })
     ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
       return Object.fromEntries(mailAlerts.unreadCounts())
@@ -696,7 +848,7 @@ void app
         ownerIsAlive,
         async confirm(accountNumber): Promise<boolean> {
           if (!ownerIsAlive()) return false
-          const isKorean = app.getLocale().startsWith('ko')
+          const isKorean = uiLocale() === 'ko'
           const accountLabel = `Gmail ${accountNumber}`
           const response = await dialog.showMessageBox(owner, {
             type: 'warning',

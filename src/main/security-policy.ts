@@ -1,4 +1,5 @@
 import { isAccountId } from './account-state'
+import { isSettingsPatch } from './settings-store'
 
 interface AppInfoRequest {
   ownerAlive: boolean
@@ -13,6 +14,11 @@ interface AccountRequest extends Omit<AppInfoRequest, 'args'> {
   operation: unknown
   args: unknown[]
   accountExists: boolean
+}
+
+interface SettingsRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: unknown
+  args: unknown[]
 }
 
 interface GoogleConnectionRequest extends Omit<AppInfoRequest, 'args'> {
@@ -96,5 +102,23 @@ export function isAllowedGoogleConnectionRequest(request: GoogleConnectionReques
     ['get', 'connect', 'cancel', 'disconnect'].includes(request.operation) &&
     request.args.length === 1 &&
     isAccountId(request.args[0])
+  )
+}
+
+export function isAllowedSettingsRequest(request: SettingsRequest): boolean {
+  if (
+    !request.ownerAlive ||
+    !request.senderMatches ||
+    !request.mainFrameMatches ||
+    !isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  ) {
+    return false
+  }
+  if (request.operation === 'get') return request.args.length === 0
+  if (request.operation === 'panel') {
+    return request.args.length === 1 && typeof request.args[0] === 'boolean'
+  }
+  return (
+    request.operation === 'update' && request.args.length === 1 && isSettingsPatch(request.args[0])
   )
 }

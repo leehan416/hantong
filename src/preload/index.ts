@@ -8,6 +8,11 @@ import {
   ACCOUNT_STATE_EVENT,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
+  SETTINGS_GET_CHANNEL,
+  SETTINGS_UPDATE_CHANNEL,
+  SETTINGS_EVENT,
+  SETTINGS_PANEL_CHANNEL,
+  SETTINGS_OPEN_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   ACCOUNT_ACCESS_STATE_CHANNEL,
   ACCOUNT_ACCESS_STATE_EVENT,
@@ -22,6 +27,7 @@ import {
   type HantongApi
 } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
+import type { AppSettings } from '../shared/settings'
 
 if (!process.contextIsolated) throw new Error('Context isolation is required')
 
@@ -56,6 +62,19 @@ const api: HantongApi = Object.freeze({
     const handler = (_event: IpcRendererEvent, counts: UnreadCounts): void => listener(counts)
     ipcRenderer.on(UNREAD_COUNTS_EVENT, handler)
     return () => ipcRenderer.removeListener(UNREAD_COUNTS_EVENT, handler)
+  },
+  getSettings: () => ipcRenderer.invoke(SETTINGS_GET_CHANNEL),
+  updateSettings: (patch) => ipcRenderer.invoke(SETTINGS_UPDATE_CHANNEL, patch),
+  setSettingsPanelOpen: (open) => ipcRenderer.invoke(SETTINGS_PANEL_CHANNEL, open),
+  onOpenSettings: (listener) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(SETTINGS_OPEN_EVENT, handler)
+    return () => ipcRenderer.removeListener(SETTINGS_OPEN_EVENT, handler)
+  },
+  onSettings: (listener) => {
+    const handler = (_event: IpcRendererEvent, settings: AppSettings): void => listener(settings)
+    ipcRenderer.on(SETTINGS_EVENT, handler)
+    return () => ipcRenderer.removeListener(SETTINGS_EVENT, handler)
   },
   getAccountAccessState: (accountId) => ipcRenderer.invoke(ACCOUNT_ACCESS_STATE_CHANNEL, accountId),
   onAccountAccessState: (listener) => {

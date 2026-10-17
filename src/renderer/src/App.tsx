@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
+import type { AppSettings, AppSettingsPatch } from '../../shared/settings'
 import type { AccountAccessState, AccountViewStatus, AppInfo, UnreadCounts } from '../../shared/ipc'
 import {
   AccountAccessController,
@@ -44,7 +45,16 @@ const messages = {
     accessError: 'Google 계정을 다시 연결해 주세요.',
     accessRetry: '상태 확인',
     accessCancel: '연결 취소',
-    accessConnecting: '브라우저에서 Google 로그인을 완료해 주세요.'
+    accessConnecting: '브라우저에서 Google 로그인을 완료해 주세요.',
+    settings: '설정',
+    settingsClose: '닫기',
+    settingsError: '설정을 저장하지 못했습니다. 다시 시도해 주세요.',
+    language: '언어',
+    languageOptions: { system: '시스템 설정', ko: '한국어', en: 'English' },
+    theme: '테마',
+    themeOptions: { system: '시스템 설정', light: '밝게', dark: '어둡게' },
+    closeAction: '창을 닫을 때',
+    closeActionOptions: { hide: '숨기기 (알림 계속 받기)', quit: '앱 종료' }
   },
   en: {
     add: 'Add account',
@@ -81,7 +91,16 @@ const messages = {
     accessError: 'Reconnect your Google account to continue.',
     accessRetry: 'Check status',
     accessCancel: 'Cancel connection',
-    accessConnecting: 'Complete Google sign-in in your browser.'
+    accessConnecting: 'Complete Google sign-in in your browser.',
+    settings: 'Settings',
+    settingsClose: 'Close',
+    settingsError: 'Unable to save settings. Please try again.',
+    language: 'Language',
+    languageOptions: { system: 'System', ko: '한국어', en: 'English' },
+    theme: 'Theme',
+    themeOptions: { system: 'System', light: 'Light', dark: 'Dark' },
+    closeAction: 'When closing the window',
+    closeActionOptions: { hide: 'Hide (keep notifications)', quit: 'Quit the app' }
   }
 }
 
@@ -107,9 +126,15 @@ function App(): React.JSX.Element {
   const accessController = useRef<AccountAccessController | null>(null)
   const [busy, setBusy] = useState(false)
   const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({})
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsFailed, setSettingsFailed] = useState(false)
   const [operationFailed, setOperationFailed] = useState(false)
   const [removalFailed, setRemovalFailed] = useState(false)
-  const locale = info?.locale ?? (navigator.language.startsWith('ko') ? 'ko' : 'en')
+  const locale =
+    settings && settings.language !== 'system'
+      ? settings.language
+      : (info?.locale ?? (navigator.language.startsWith('ko') ? 'ko' : 'en'))
   const text = messages[locale]
   const activeAccountId = accounts?.activeAccountId ?? null
   const activeIndex =
@@ -212,6 +237,53 @@ function App(): React.JSX.Element {
       unsubscribeUnread()
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    let unsubscribe = (): void => {}
+    let unsubscribeOpen = (): void => {}
+    try {
+      unsubscribe = window.api.onSettings((next) => {
+        if (active) setSettings(next)
+      })
+      unsubscribeOpen = window.api.onOpenSettings(() => {
+        if (active) setSettingsOpen(true)
+      })
+    } catch {
+      // Without the push channel the panel still shows the values it saved itself.
+    }
+    void window.api.getSettings().then(
+      (next) => {
+        if (active) setSettings(next)
+      },
+      () => undefined
+    )
+    return () => {
+      active = false
+      unsubscribe()
+      unsubscribeOpen()
+    }
+  }, [])
+
+  useEffect(() => {
+    // Main detaches the native Gmail view while the panel is open, or it would cover the panel.
+    void window.api.setSettingsPanelOpen(settingsOpen).catch(() => undefined)
+    if (!settingsOpen) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setSettingsOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [settingsOpen])
+
+  async function changeSettings(patch: AppSettingsPatch): Promise<void> {
+    setSettingsFailed(false)
+    try {
+      setSettings(await window.api.updateSettings(patch))
+    } catch {
+      setSettingsFailed(true)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -361,6 +433,14 @@ function App(): React.JSX.Element {
         >
           {text.remove}
         </button>
+        <button
+          className="settings-button"
+          type="button"
+          aria-pressed={settingsOpen}
+          onClick={() => setSettingsOpen((open) => !open)}
+        >
+          {text.settings}
+        </button>
       </header>
       <div className="status-strip">
         <span className="status-text" role="status" aria-live="polite">
@@ -432,12 +512,50 @@ function App(): React.JSX.Element {
           </div>
         )}
       </div>
-      {accounts?.accounts.length === 0 && (
+      {settingsOpen && (
+        <main className="settings-panel" aria-labelledby="settings-title">
+          <section className="settings-content">
+            <h1 id="settings-title">{text.settings}</h1>
+            {(
+              [
+                ['language', text.language, text.languageOptions],
+                ['theme', text.theme, text.themeOptions],
+                ['closeAction', text.closeAction, text.closeActionOptions]
+              ] as const
+            ).map(([field, label, options]) => (
+              <fieldset key={field} className="settings-group">
+                <legend>{label}</legend>
+                {Object.entries(options).map(([value, optionLabel]) => (
+                  <label key={value} className="settings-option">
+                    <input
+                      type="radio"
+                      name={field}
+                      value={value}
+                      checked={settings?.[field] === value}
+                      onChange={() => void changeSettings({ [field]: value })}
+                    />
+                    {optionLabel}
+                  </label>
+                ))}
+              </fieldset>
+            ))}
+            {settingsFailed && <p role="alert">{text.settingsError}</p>}
+            <button
+              className="access-gate-action"
+              type="button"
+              onClick={() => setSettingsOpen(false)}
+            >
+              {text.settingsClose}
+            </button>
+          </section>
+        </main>
+      )}
+      {!settingsOpen && accounts?.accounts.length === 0 && (
         <main className="empty-state">
           <p>{text.welcome}</p>
         </main>
       )}
-      {gateVisible && activeAccountId && (
+      {!settingsOpen && gateVisible && activeAccountId && (
         <main className="access-gate" aria-labelledby="access-gate-title">
           <section
             className="access-gate-content"
