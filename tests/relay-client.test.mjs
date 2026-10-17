@@ -240,3 +240,46 @@ test('bounded JSON body timeout and malformed UTF-8 fail with fixed relay codes'
     { code: 'invalid_response' }
   )
 })
+
+test('relay challenge, session, deletion and events retain an approved base path', async () => {
+  const requests = []
+  const client = relay.createRelayClient({
+    baseUrl: 'https://relay.example/api/v1/',
+    fetch: async (url, init) => {
+      requests.push({ url, init })
+      if (init.method === 'DELETE') return response(204, undefined)
+      if (init.method === 'GET') {
+        return {
+          status: 200,
+          ok: true,
+          redirected: false,
+          headers: { get: () => 'text/event-stream' },
+          body: {
+            getReader: () => ({
+              read: async () => ({ done: true }),
+              cancel: async () => undefined,
+              releaseLock: () => undefined
+            })
+          }
+        }
+      }
+      return requests.length === 1
+        ? response(200, { nonce: 'nonce_123', expires_in: 300 })
+        : response(200, { access_token: 'opaque-token_123', token_type: 'Bearer', expires_in: 900 })
+    },
+    now: () => 1000
+  })
+  await client.fetchChallenge()
+  const session = await client.createSession('id-proof', 'nonce_123', 'install')
+  await client.deleteSession(session.accessToken)
+  await client.consumeEvents(session.accessToken, () => undefined)
+  assert.deepEqual(
+    requests.map(({ url }) => url),
+    [
+      'https://relay.example/api/v1/auth/challenge',
+      'https://relay.example/api/v1/auth/session',
+      'https://relay.example/api/v1/auth/session',
+      'https://relay.example/api/v1/events'
+    ]
+  )
+})

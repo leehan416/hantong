@@ -177,11 +177,17 @@ export function createRelayClient(options: RelayClientOptions): {
     }
     try {
       const response = (await raceAbort(
-        options.fetch(new URL(path, `${options.baseUrl}/`).href, {
-          ...init,
-          redirect: 'error',
-          signal: controller.signal
-        }),
+        options.fetch(
+          new URL(
+            path.replace(/^\/+/, ''),
+            options.baseUrl.endsWith('/') ? options.baseUrl : `${options.baseUrl}/`
+          ).href,
+          {
+            ...init,
+            redirect: 'error',
+            signal: controller.signal
+          }
+        ),
         controller.signal
       )) as RelayResponse
       if (response.redirected || (response.status >= 300 && response.status < 400)) {

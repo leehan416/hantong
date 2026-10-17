@@ -16,28 +16,38 @@ interface RelayConfigIO {
   readonly parseEnv?: typeof parseEnv
 }
 
+// The relay server mounts every route under /api/v1; a bare origin gets the prefix appended.
+const API_PREFIX = '/api/v1/'
+const API_PATHS = new Set(['', '/', '/api/v1', API_PREFIX])
+
 function validBaseUrl(value: string | undefined, isPackaged: boolean): RelayConfig | undefined {
   if (!value?.trim()) return undefined
+  const trimmed = value.trim()
+  if (trimmed.includes('\\')) throw new Error('Relay configuration is invalid')
+  const rawPath = /^https?:\/\/[^/?#]*(\/[^?#]*)?/i.exec(trimmed)?.[1] ?? ''
+  if (!API_PATHS.has(rawPath)) {
+    throw new Error('Relay configuration is invalid')
+  }
   let url: URL
   try {
-    url = new URL(value.trim())
+    url = new URL(trimmed)
   } catch {
     throw new Error('Relay configuration is invalid')
   }
   const localHttp =
     !isPackaged &&
     url.protocol === 'http:' &&
-    /^http:\/\/127\.0\.0\.1(?::[0-9]{1,5})?(?:\/)?$/i.test(value.trim())
+    /^http:\/\/127\.0\.0\.1(?::[0-9]{1,5})?(?:\/|\/api\/v1\/?)?$/i.test(trimmed)
   if (
     (url.protocol !== 'https:' && !localHttp) ||
     url.username ||
     url.password ||
     url.search ||
     url.hash ||
-    (url.pathname !== '/' && url.pathname !== '')
+    !API_PATHS.has(url.pathname)
   )
     throw new Error('Relay configuration is invalid')
-  return { baseUrl: url.origin }
+  return { baseUrl: `${url.origin}${API_PREFIX}` }
 }
 
 export function loadRuntimeRelayConfig(

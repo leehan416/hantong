@@ -14,7 +14,7 @@ test('relay config gives launcher values precedence and reads local env only in 
         localEnvPath: '/ignored'
       })
     },
-    { baseUrl: 'https://relay.example' }
+    { baseUrl: 'https://relay.example/api/v1/' }
   )
   assert.deepEqual(
     {
@@ -28,7 +28,7 @@ test('relay config gives launcher values precedence and reads local env only in 
       )
     },
     {
-      baseUrl: 'http://127.0.0.1:8000'
+      baseUrl: 'http://127.0.0.1:8000/api/v1/'
     }
   )
   assert.equal(
@@ -48,6 +48,8 @@ test('relay config rejects unsafe origins and IPv4 loopback aliases', () => {
     'http://127.1:8000',
     'http://2130706433:8000',
     'http://127.0.0.1.evil:8000',
+    'http://127.0.0.1:8000/api/v1/../other',
+    'http://127.0.0.1:8000/%61pi',
     'https://relay.example/path',
     'https://user:pass@relay.example',
     'https://relay.example/?secret=x'
@@ -68,7 +70,7 @@ test('relay config rejects unsafe origins and IPv4 loopback aliases', () => {
         isPackaged: false
       })
     },
-    { baseUrl: 'http://127.0.0.1:8000' }
+    { baseUrl: 'http://127.0.0.1:8000/api/v1/' }
   )
   assert.throws(
     () =>
@@ -78,4 +80,44 @@ test('relay config rejects unsafe origins and IPv4 loopback aliases', () => {
       }),
     { message: 'Relay configuration is invalid' }
   )
+})
+
+test('relay config appends or keeps the /api/v1 prefix and rejects path aliases', () => {
+  assert.deepEqual(
+    {
+      ...config.loadRuntimeRelayConfig({
+        environment: { HANTONG_RELAY_URL: 'https://relay.example/api/v1/' },
+        isPackaged: true
+      })
+    },
+    { baseUrl: 'https://relay.example/api/v1/' }
+  )
+  assert.deepEqual(
+    {
+      ...config.loadRuntimeRelayConfig({
+        environment: { HANTONG_RELAY_URL: 'http://127.0.0.1:8000/api/v1' },
+        isPackaged: false
+      })
+    },
+    { baseUrl: 'http://127.0.0.1:8000/api/v1/' }
+  )
+  for (const value of [
+    'https://relay.example/api',
+    'https://relay.example/api/',
+    'https://relay.example/api/v2/',
+    'https://relay.example/api/v1/../other',
+    'https://relay.example/%61pi',
+    'https://relay.example/api%2f..%2fother',
+    'https://relay.example/api/v1?x=1',
+    'https://relay.example/api/v1#x'
+  ]) {
+    assert.throws(
+      () =>
+        config.loadRuntimeRelayConfig({
+          environment: { HANTONG_RELAY_URL: value },
+          isPackaged: true
+        }),
+      { message: 'Relay configuration is invalid' }
+    )
+  }
 })
