@@ -42,6 +42,8 @@ import {
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATE_EVENT,
+  UNREAD_COUNTS_CHANNEL,
+  UNREAD_COUNTS_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -364,7 +366,16 @@ void app
           signal: AbortSignal.timeout(30_000)
         }),
       notify: showMailNotification,
-      setBadge: (total) => app.setBadgeCount(total)
+      setBadge: (total) => {
+        app.setBadgeCount(total)
+        const window = mainWindow
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(
+            UNREAD_COUNTS_EVENT,
+            Object.fromEntries(mailAlerts.unreadCounts())
+          )
+        }
+      }
     })
     const topic = gmailTopic
     gmailRelaySync = createGmailRelaySync({
@@ -599,6 +610,10 @@ void app
       return accountAccessController.getState(accountId)
     })
 
+    ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
+      if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
+      return Object.fromEntries(mailAlerts.unreadCounts())
+    })
     ipcMain.handle(ACCOUNT_STATE_CHANNEL, (event, ...args: unknown[]) => {
       requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
