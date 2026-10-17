@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import {
   CLOSE_ACTION_OPTIONS,
+  ACCOUNT_SELECTOR_POSITION_OPTIONS,
+  ACCENT_COLOR_OPTIONS,
   DEFAULT_SETTINGS,
   LANGUAGE_OPTIONS,
   THEME_OPTIONS,
@@ -16,6 +18,9 @@ const FIELDS = {
   language: LANGUAGE_OPTIONS,
   theme: THEME_OPTIONS,
   closeAction: CLOSE_ACTION_OPTIONS,
+  accountSelectorPosition: ACCOUNT_SELECTOR_POSITION_OPTIONS,
+  accentColor: ACCENT_COLOR_OPTIONS,
+  sidebarCollapsed: BOOLEAN,
   hideGmailLogo: BOOLEAN,
   hideGemini: BOOLEAN,
   hideSidePanel: BOOLEAN,

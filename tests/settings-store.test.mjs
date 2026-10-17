@@ -17,7 +17,10 @@ const defaults = {
   hideGmailLogo: false,
   hideGemini: false,
   hideSidePanel: false,
-  hideStoragePromo: false
+  hideStoragePromo: false,
+  accountSelectorPosition: 'top',
+  sidebarCollapsed: false,
+  accentColor: 'blue'
 }
 
 function withDirectory(run) {
@@ -42,6 +45,18 @@ test('stored settings keep valid fields and fall back per field for invalid ones
   assert.deepEqual(
     { ...parseSettings({ version: 1, language: 'ko', theme: 'neon', closeAction: 'quit' }) },
     { ...defaults, language: 'ko', closeAction: 'quit' }
+  )
+  assert.deepEqual(
+    {
+      ...parseSettings({
+        version: 1,
+        language: 'ko',
+        accountSelectorPosition: 'center',
+        sidebarCollapsed: 'yes',
+        accentColor: 'red'
+      })
+    },
+    { ...defaults, language: 'ko' }
   )
   assert.deepEqual({ ...parseSettings({ version: 2, language: 'ko' }) }, defaults)
 })
@@ -90,4 +105,39 @@ test('Gmail cleanup toggles are booleans, off by default, and persist individual
     assert.equal(isSettingsPatch(patch), false)
   }
   assert.equal(parseSettings({ version: 1, hideStoragePromo: 'yes' }).hideStoragePromo, false)
+})
+
+test('navigation and accent preferences accept fixed values and persist across restarts', () => {
+  withDirectory((directory) => {
+    const store = createSettingsStore(directory)
+    for (const accountSelectorPosition of ['top', 'bottom', 'left', 'right']) {
+      assert.equal(isSettingsPatch({ accountSelectorPosition }), true)
+      store.update({ accountSelectorPosition })
+    }
+    for (const accentColor of ['blue', 'purple', 'green', 'orange', 'gray']) {
+      assert.equal(isSettingsPatch({ accentColor }), true)
+      store.update({ accentColor })
+    }
+    assert.equal(isSettingsPatch({ sidebarCollapsed: false }), true)
+    assert.equal(isSettingsPatch({ sidebarCollapsed: true }), true)
+    store.update({ sidebarCollapsed: false })
+    store.update({ sidebarCollapsed: true })
+    assert.deepEqual(
+      { ...createSettingsStore(directory).get() },
+      {
+        ...defaults,
+        accountSelectorPosition: 'right',
+        sidebarCollapsed: true,
+        accentColor: 'gray'
+      }
+    )
+    for (const patch of [
+      { accountSelectorPosition: 'center' },
+      { accentColor: 'red' },
+      { sidebarCollapsed: 'true' }
+    ]) {
+      assert.equal(isSettingsPatch(patch), false)
+      assert.throws(() => store.update(patch), { message: 'Invalid settings' })
+    }
+  })
 })
