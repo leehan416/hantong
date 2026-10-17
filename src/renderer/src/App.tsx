@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
 import {
   ACCOUNT_SELECTOR_POSITION_OPTIONS,
@@ -17,7 +17,8 @@ import { AccountSelector } from './AccountSelector'
 import {
   AccountAccessController,
   type AccountAccessUiState,
-  GoogleConnectionController,
+  GoogleConnectionControllerPool,
+  hasPendingGoogleConnection,
   type GoogleConnectionUiState
 } from './google-connection-controller'
 
@@ -39,11 +40,13 @@ const messages = {
     apiLabel: 'API 연결',
     apiChecking: 'API 상태 확인 중…',
     apiCheckError: 'API 연결 상태를 확인하지 못했습니다.',
-    apiDisconnected: 'API 연결 안 됨',
-    apiConnected: 'API 연결됨',
     apiConnecting: '브라우저에서 인증을 완료해 주세요.',
     apiCancelling: '연결 취소 중…',
     apiDisconnecting: '연결 해제 중…',
+    apiStatusUnknown: 'API 연결 상태 알 수 없음',
+    apiStatusDisconnected: 'API 연결 안 됨',
+    apiStatusConnected: 'API 연결됨',
+    apiSwitchToAccount: '계정으로 전환 후 연결',
     apiReconnect: '다시 연결',
     apiConnect: '연결',
     apiDisconnect: '연결 해제',
@@ -106,11 +109,13 @@ const messages = {
     apiLabel: 'API connection',
     apiChecking: 'Checking API status…',
     apiCheckError: 'Unable to check API connection status.',
-    apiDisconnected: 'API disconnected',
-    apiConnected: 'API connected',
     apiConnecting: 'Complete sign-in in your browser.',
     apiCancelling: 'Cancelling connection…',
     apiDisconnecting: 'Disconnecting…',
+    apiStatusUnknown: 'API connection status unknown',
+    apiStatusDisconnected: 'API disconnected',
+    apiStatusConnected: 'API connected',
+    apiSwitchToAccount: 'Switch to connect this account',
     apiReconnect: 'Reconnect',
     apiConnect: 'Connect',
     apiDisconnect: 'Disconnect',
@@ -162,21 +167,14 @@ function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [accounts, setAccounts] = useState<AccountState | null>(null)
   const [viewStatus, setViewStatus] = useState<AccountViewStatus | null>(null)
-  const [googleState, setGoogleState] = useState<GoogleConnectionUiState>({
-    accountId: null,
-    status: null,
-    loading: false,
-    readFailed: false,
-    operation: null,
-    operationFailed: false
-  })
+  const [googleStates, setGoogleStates] = useState<Record<string, GoogleConnectionUiState>>({})
   const [accessState, setAccessState] = useState<AccountAccessUiState>({
     accountId: null,
     state: null,
     loading: false,
     readFailed: false
   })
-  const googleController = useRef<GoogleConnectionController | null>(null)
+  const googleControllerPool = useRef<GoogleConnectionControllerPool | null>(null)
   const accessController = useRef<AccountAccessController | null>(null)
   const [busy, setBusy] = useState(false)
   const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({})
@@ -194,6 +192,8 @@ function App(): React.JSX.Element {
   const settingsWasOpenRef = useRef(false)
   const [operationFailed, setOperationFailed] = useState(false)
   const [removalFailed, setRemovalFailed] = useState(false)
+  const [statusStripLayoutVisible, setStatusStripLayoutVisible] = useState(true)
+  const statusStripLayoutRevision = useRef(0)
   const locale =
     settings && settings.language !== 'system'
       ? settings.language
@@ -205,37 +205,26 @@ function App(): React.JSX.Element {
   const activeIndex =
     accounts?.accounts.findIndex((account) => account.id === activeAccountId) ?? -1
   const currentStatus = viewStatus?.accountId === activeAccountId ? viewStatus.status : null
-  const googleStateMatches = googleState.accountId === activeAccountId
-  const googleStatus = googleStateMatches ? googleState.status : null
-  const googleOperation = googleStateMatches ? googleState.operation : null
+  const googleState = activeAccountId ? googleStates[activeAccountId] : undefined
+  const googleOperation = googleState?.operation ?? null
   const accessMatches = accessState.accountId === activeAccountId
   const access = accessMatches ? accessState.state : null
   const accessReady = access?.status === 'ready'
   const gateVisible = Boolean(activeAccountId && access?.status !== 'sign_in' && !accessReady)
   const accountActionsBusy =
     busy ||
-    googleOperation !== null ||
-    googleStatus === 'connecting' ||
+    hasPendingGoogleConnection(Object.values(googleStates)) ||
     access?.connectionStatus === 'connecting'
 
-  let googleMessage = text.apiChecking
-  if (googleStateMatches && googleState.loading) googleMessage = text.apiChecking
-  else if (googleOperation === 'cancelling') googleMessage = text.apiCancelling
-  else if (googleOperation === 'disconnecting') googleMessage = text.apiDisconnecting
-  else if (googleStateMatches && googleState.readFailed) googleMessage = text.apiCheckError
-  else if (googleStateMatches && googleState.operationFailed) googleMessage = text.apiFailure
-  else if (googleStatus === 'disconnected') googleMessage = text.apiDisconnected
-  else if (googleStatus === 'connected') googleMessage = text.apiConnected
-  else if (googleStatus === 'connecting') googleMessage = text.apiConnecting
-  else if (googleStatus === 'reconnect_required') googleMessage = text.apiReconnect
-  else if (googleStatus === 'error') googleMessage = text.apiFailure
-
   useEffect(() => {
-    const controller = new GoogleConnectionController(window.api, setGoogleState)
-    googleController.current = controller
+    const controller = new GoogleConnectionControllerPool(window.api, (state) => {
+      const { accountId } = state
+      if (accountId) setGoogleStates((states) => ({ ...states, [accountId]: state }))
+    })
+    googleControllerPool.current = controller
     return () => {
       controller.dispose()
-      if (googleController.current === controller) googleController.current = null
+      if (googleControllerPool.current === controller) googleControllerPool.current = null
     }
   }, [])
 
@@ -244,7 +233,7 @@ function App(): React.JSX.Element {
       window.api,
       setAccessState,
       (state: AccountAccessState) => {
-        googleController.current?.applyExternalStatus({
+        googleControllerPool.current?.applyExternalStatus({
           accountId: state.accountId,
           status: state.connectionStatus
         })
@@ -258,9 +247,16 @@ function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    googleController.current?.selectAccount(activeAccountId)
+    if (activeAccountId) googleControllerPool.current?.forAccount(activeAccountId)
     accessController.current?.selectAccount(activeAccountId)
   }, [activeAccountId])
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    for (const account of accounts?.accounts ?? []) {
+      googleControllerPool.current?.forAccount(account.id)
+    }
+  }, [settingsOpen, accounts?.accounts])
 
   useEffect(() => {
     let active = true
@@ -433,6 +429,12 @@ function App(): React.JSX.Element {
     setAccountSettingsFailed(false)
     try {
       const result = await window.api.removeAccount(accountId)
+      googleControllerPool.current?.remove(accountId)
+      setGoogleStates((states) => {
+        const next = { ...states }
+        delete next[accountId]
+        return next
+      })
       setAccounts(result.state)
       setRemovalFailed(result.outcome === 'failed')
       setAccountSettingsFailed(result.outcome === 'failed')
@@ -468,12 +470,14 @@ function App(): React.JSX.Element {
   }
 
   async function reconnectFromGate(): Promise<void> {
-    await googleController.current?.connect(true)
+    if (!activeAccountId) return
+    await googleControllerPool.current?.forAccount(activeAccountId).connect(true)
     await accessController.current?.refresh()
   }
 
   async function cancelFromGate(): Promise<void> {
-    await googleController.current?.cancel()
+    if (!activeAccountId) return
+    await googleControllerPool.current?.forAccount(activeAccountId).cancel()
     await accessController.current?.refresh()
   }
 
@@ -485,6 +489,27 @@ function App(): React.JSX.Element {
   else if (currentStatus === 'blocked') statusMessage = text.blocked
   if (removalFailed) statusMessage = text.removeError
   if (operationFailed) statusMessage = text.operationError
+  const showStatusStrip = Boolean(
+    statusMessage &&
+    (accounts === null || currentStatus !== 'ready' || operationFailed || removalFailed)
+  )
+
+  useEffect(() => {
+    if (showStatusStrip === statusStripLayoutVisible) return
+    const revision = ++statusStripLayoutRevision.current
+    void window.api.setStatusStripVisible(showStatusStrip).then(
+      () => {
+        if (statusStripLayoutRevision.current === revision) {
+          setStatusStripLayoutVisible(showStatusStrip)
+        }
+      },
+      () => undefined
+    )
+  }, [showStatusStrip, statusStripLayoutVisible])
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.statusStripVisible = String(statusStripLayoutVisible)
+  }, [statusStripLayoutVisible])
 
   return (
     <div className="app-shell">
@@ -572,76 +597,25 @@ function App(): React.JSX.Element {
             </>
           )}
         </header>
-        <div className="status-strip">
-          <span className="status-text" role="status" aria-live="polite">
-            {statusMessage}
-          </span>
-          {(currentStatus === 'error' ||
-            currentStatus === 'blocked' ||
-            (operationFailed && !removalFailed)) && (
-            <button
-              className="retry-button"
-              type="button"
-              disabled={accountActionsBusy}
-              onClick={() => void retry()}
-            >
-              {text.retry}
-            </button>
-          )}
-          {activeAccountId && (
-            <div className="api-connection" role="group" aria-label={text.apiLabel}>
-              <span
-                className="api-connection-status"
-                role="status"
-                aria-live="polite"
-                aria-busy={googleStateMatches && (googleState.loading || googleOperation !== null)}
-                title={googleMessage}
+        {showStatusStrip && statusStripLayoutVisible && (
+          <div className="status-strip">
+            <span className="status-text" role="status" aria-live="polite">
+              {statusMessage}
+            </span>
+            {(currentStatus === 'error' ||
+              currentStatus === 'blocked' ||
+              (operationFailed && !removalFailed)) && (
+              <button
+                className="retry-button"
+                type="button"
+                disabled={accountActionsBusy}
+                onClick={() => void retry()}
               >
-                {googleMessage}
-              </span>
-              {accessReady && googleStateMatches && googleState.readFailed ? (
-                <button
-                  className="api-action"
-                  type="button"
-                  disabled={busy || googleState.loading}
-                  onClick={() => void googleController.current?.refresh()}
-                >
-                  {text.retry}
-                </button>
-              ) : accessReady && googleStatus === 'connected' ? (
-                <button
-                  className="api-action"
-                  type="button"
-                  disabled={busy || googleOperation !== null}
-                  onClick={() => void googleController.current?.disconnect()}
-                >
-                  {text.apiDisconnect}
-                </button>
-              ) : accessReady && googleStatus === 'connecting' ? (
-                <button
-                  className="api-action"
-                  type="button"
-                  disabled={busy || googleOperation === 'cancelling'}
-                  onClick={() => void googleController.current?.cancel()}
-                >
-                  {text.apiCancel}
-                </button>
-              ) : accessReady &&
-                (googleStatus === 'disconnected' ||
-                  googleStatus === 'reconnect_required' ||
-                  googleStatus === 'error') ? (
-                <button
-                  className="api-action"
-                  type="button"
-                  disabled={busy || googleOperation !== null}
-                  onClick={() => void googleController.current?.connect()}
-                >
-                  {googleStatus === 'disconnected' ? text.apiConnect : text.apiReconnect}
-                </button>
-              ) : null}
-            </div>
-          )}
-        </div>
+                {text.retry}
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <dialog
         ref={settingsDialogRef}
@@ -776,6 +750,32 @@ function App(): React.JSX.Element {
                     const accountName =
                       account.displayName?.trim() || account.email || `Gmail ${index + 1}`
                     const isDefault = accounts.defaultAccountId === account.id
+                    const connection = googleStates[account.id]
+                    const isActiveAccount = account.id === activeAccountId
+                    const canAuthorize =
+                      isActiveAccount &&
+                      (accessReady || access?.status === 'required' || access?.status === 'error')
+                    const connectionMessage = connection?.loading
+                      ? text.apiChecking
+                      : connection?.operation === 'cancelling'
+                        ? text.apiCancelling
+                        : connection?.operation === 'disconnecting'
+                          ? text.apiDisconnecting
+                          : connection?.operationFailed
+                            ? text.apiFailure
+                            : connection?.readFailed
+                              ? text.apiCheckError
+                              : connection?.status === 'connected'
+                                ? text.apiStatusConnected
+                                : connection?.status === 'connecting'
+                                  ? text.apiConnecting
+                                  : connection?.status === 'reconnect_required'
+                                    ? text.apiReconnect
+                                    : connection?.status === 'error'
+                                      ? text.apiFailure
+                                      : connection?.status === 'disconnected'
+                                        ? text.apiStatusDisconnected
+                                        : text.apiStatusUnknown
                     return (
                       <li className="managed-account" key={account.id}>
                         <div className="managed-account-heading">
@@ -786,6 +786,97 @@ function App(): React.JSX.Element {
                           {isDefault && (
                             <span className="managed-account-default">{text.currentDefault}</span>
                           )}
+                        </div>
+                        <div
+                          className="managed-account-connection"
+                          role="group"
+                          aria-label={text.apiLabel}
+                          aria-busy={Boolean(
+                            connection && (connection.loading || connection.operation)
+                          )}
+                        >
+                          <span role="status" aria-live="polite">
+                            {connectionMessage}
+                          </span>
+                          {connection?.readFailed ? (
+                            <button
+                              className="api-action"
+                              type="button"
+                              disabled={busy || connection.loading || connection.operation !== null}
+                              onClick={() =>
+                                void googleControllerPool.current?.forAccount(account.id).refresh()
+                              }
+                            >
+                              {text.retry}
+                            </button>
+                          ) : connection?.status === 'connected' ? (
+                            <>
+                              {canAuthorize &&
+                                (access?.status === 'required' || access?.status === 'error') && (
+                                  <button
+                                    className="api-action"
+                                    type="button"
+                                    disabled={busy || connection.operation !== null}
+                                    onClick={() =>
+                                      void googleControllerPool.current
+                                        ?.forAccount(account.id)
+                                        .connect(true)
+                                    }
+                                  >
+                                    {text.apiReconnect}
+                                  </button>
+                                )}
+                              <button
+                                className="api-action"
+                                type="button"
+                                disabled={busy || connection.operation !== null}
+                                onClick={() =>
+                                  void googleControllerPool.current
+                                    ?.forAccount(account.id)
+                                    .disconnect()
+                                }
+                              >
+                                {connection.operation === 'disconnecting'
+                                  ? text.apiDisconnecting
+                                  : text.apiDisconnect}
+                              </button>
+                            </>
+                          ) : connection?.status === 'connecting' ? (
+                            <button
+                              className="api-action"
+                              type="button"
+                              disabled={busy || connection.operation === 'cancelling'}
+                              onClick={() =>
+                                void googleControllerPool.current?.forAccount(account.id).cancel()
+                              }
+                            >
+                              {connection.operation === 'cancelling'
+                                ? text.apiCancelling
+                                : text.apiCancel}
+                            </button>
+                          ) : connection?.status === 'disconnected' ||
+                            connection?.status === 'reconnect_required' ||
+                            connection?.status === 'error' ||
+                            connection?.operationFailed ? (
+                            <button
+                              className="api-action"
+                              type="button"
+                              disabled={busy || connection.operation !== null}
+                              onClick={() =>
+                                canAuthorize
+                                  ? void googleControllerPool.current
+                                      ?.forAccount(account.id)
+                                      .connect(true)
+                                  : void activateAccount(account.id)
+                              }
+                            >
+                              {canAuthorize
+                                ? connection.status === 'disconnected'
+                                  ? text.apiConnect
+                                  : text.apiReconnect
+                                : text.apiSwitchToAccount}
+                            </button>
+                          ) : null}
                         </div>
                         <label className="managed-account-name">
                           <span>{text.accountName}</span>

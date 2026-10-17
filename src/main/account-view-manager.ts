@@ -75,6 +75,7 @@ export function createAccountViewManager(
   getActiveAccountId: () => string | null
   setCovered: (covered: boolean) => void
   setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
+  setStatusStripVisible: (visible: boolean) => void
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -106,6 +107,7 @@ export function createAccountViewManager(
   let covered = false
   let layoutPosition: AccountSelectorPosition = 'top'
   let sidebarCollapsed = false
+  let statusStripVisible = true
   let disposed = false
 
   function alive(): boolean {
@@ -122,7 +124,8 @@ export function createAccountViewManager(
       getAccountViewBounds({
         ...window.getContentBounds(),
         position: layoutPosition,
-        sidebarCollapsed
+        sidebarCollapsed,
+        statusStripVisible
       })
     )
   }
@@ -474,6 +477,12 @@ export function createAccountViewManager(
     setLayout(position, collapsed) {
       layoutPosition = position
       sidebarCollapsed = collapsed
+      const entry = activeAccountId ? views.get(activeAccountId) : undefined
+      if (entry?.attached) setBounds(entry.handle.view)
+    },
+    setStatusStripVisible(visible) {
+      if (statusStripVisible === visible) return
+      statusStripVisible = visible
       const entry = activeAccountId ? views.get(activeAccountId) : undefined
       if (entry?.attached) setBounds(entry.handle.view)
     },

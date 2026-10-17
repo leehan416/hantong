@@ -215,6 +215,10 @@ test('settings IPC allows get with no args and update with one valid patch from 
     true
   )
   assert.equal(isAllowedSettingsRequest({ ...base, operation: 'panel', args: [true] }), true)
+  assert.equal(
+    isAllowedSettingsRequest({ ...base, operation: 'status-strip', args: [false] }),
+    true
+  )
   for (const request of [
     { ...base, operation: 'get', args: [{}] },
     { ...base, operation: 'update', args: [] },
@@ -223,6 +227,8 @@ test('settings IPC allows get with no args and update with one valid patch from 
     { ...base, operation: 'reset', args: [] },
     { ...base, operation: 'panel', args: ['true'] },
     { ...base, operation: 'panel', args: [] },
+    { ...base, operation: 'status-strip', args: ['false'] },
+    { ...base, operation: 'status-strip', args: [false, true] },
     { ...base, senderMatches: false, operation: 'get', args: [] },
     { ...base, senderUrl: 'https://mail.google.com/', operation: 'get', args: [] }
   ]) {

@@ -27,11 +27,19 @@
 
 .account-layout-top,
 .account-layout-bottom {
-  grid-template-rows: calc(var(--account-chrome-height, 88px) - 32px) 32px minmax(0, 1fr);
+  grid-template-rows:
+    calc(var(--account-chrome-height, 88px) - 32px) var(--account-status-strip-height, 32px)
+    minmax(0, 1fr);
 }
 
 .account-layout-bottom {
-  grid-template-rows: minmax(0, 1fr) 32px calc(var(--account-chrome-height, 88px) - 32px);
+  grid-template-rows:
+    minmax(0, 1fr) var(--account-status-strip-height, 32px)
+    calc(var(--account-chrome-height, 88px) - 32px);
+}
+
+[data-status-strip-visible='false'] {
+  --account-status-strip-height: 0px;
 }
 
 .account-layout-left,
@@ -373,23 +381,29 @@
   white-space: nowrap;
 }
 
-.api-connection {
+.managed-account-connection {
   display: flex;
   min-width: 0;
-  flex: 0 1 auto;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
-.api-connection-status {
+.managed-account-connection > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.retry-button,
 .api-action {
+  min-height: 24px;
+  color: var(--color-accent);
+}
+
+.retry-button {
   min-height: 24px;
   color: var(--color-accent);
 }

@@ -69,6 +69,7 @@ import {
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATE_EVENT,
+  ACCOUNT_STATUS_STRIP_CHANNEL,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
   SETTINGS_GET_CHANNEL,
@@ -833,7 +834,7 @@ void app
 
     function settingsRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'update' | 'panel',
+      operation: 'get' | 'update' | 'panel' | 'status-strip',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
@@ -871,6 +872,10 @@ void app
     ipcMain.handle(SETTINGS_PANEL_CHANNEL, (event, ...args: unknown[]) => {
       if (!settingsRequestAllowed(event, 'panel', args)) throw new Error('Request rejected')
       accountViewManager?.setCovered(args[0] === true)
+    })
+    ipcMain.handle(ACCOUNT_STATUS_STRIP_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'status-strip', args)) throw new Error('Request rejected')
+      accountViewManager?.setStatusStripVisible(args[0] === true)
     })
     ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')

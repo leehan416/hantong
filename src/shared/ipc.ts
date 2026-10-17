@@ -17,6 +17,7 @@ export const SETTINGS_GET_CHANNEL = 'hantong:settings-get'
 export const SETTINGS_UPDATE_CHANNEL = 'hantong:settings-update'
 export const SETTINGS_EVENT = 'hantong:settings-change'
 export const SETTINGS_PANEL_CHANNEL = 'hantong:settings-panel'
+export const ACCOUNT_STATUS_STRIP_CHANNEL = 'hantong:account-status-strip'
 export const SETTINGS_OPEN_EVENT = 'hantong:settings-open'
 export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
@@ -25,6 +26,7 @@ export const GOOGLE_CONNECTION_DISCONNECT_CHANNEL = 'hantong:google-connection-d
 export const ACCOUNT_ACCESS_STATE_CHANNEL = 'hantong:account-access-state'
 export const ACCOUNT_ACCESS_STATE_EVENT = 'hantong:account-access-state-change'
 export const ACCOUNT_CHROME_HEIGHT = 88
+export const ACCOUNT_STATUS_STRIP_HEIGHT = 32
 export const ACCOUNT_SIDEBAR_WIDTH = 248
 export const ACCOUNT_SIDEBAR_COLLAPSED_WIDTH = 44
 
@@ -77,6 +79,7 @@ export interface HantongApi {
   updateSettings: (patch: AppSettingsPatch) => Promise<AppSettings>
   onSettings: (listener: (settings: AppSettings) => void) => () => void
   setSettingsPanelOpen: (open: boolean) => Promise<void>
+  setStatusStripVisible: (visible: boolean) => Promise<void>
   onOpenSettings: (listener: () => void) => () => void
   getGoogleConnectionStatus: (accountId: string) => Promise<GoogleConnectionStatus>
   connectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>

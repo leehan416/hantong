@@ -40,6 +40,36 @@ test('left and right placements reserve the sidebar edge', () => {
   })
 })
 
+test('hidden status strip releases its vertical space for every placement', () => {
+  for (const position of ['top', 'bottom']) {
+    const view = getAccountViewBounds({
+      width: 900,
+      height: 700,
+      position,
+      statusStripVisible: false
+    })
+    assert.deepEqual(bounds(view), {
+      x: 0,
+      y: position === 'top' ? 56 : 0,
+      width: 900,
+      height: 644
+    })
+  }
+  for (const position of ['left', 'right']) {
+    assert.deepEqual(
+      bounds(
+        getAccountViewBounds({
+          width: 900,
+          height: 700,
+          position,
+          statusStripVisible: false
+        })
+      ),
+      { x: position === 'left' ? 248 : 0, y: 0, width: 652, height: 700 }
+    )
+  }
+})
+
 test('collapsed sidebars retain a narrow reopen rail without negative content bounds', () => {
   assert.deepEqual(
     bounds(

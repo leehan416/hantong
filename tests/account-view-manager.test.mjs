@@ -220,8 +220,22 @@ test('inactive load completion is cached and the view stays below the fixed chro
     width: 856,
     height: 668
   })
+  fixtureData.manager.setStatusStripVisible(false)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 0,
+    width: 856,
+    height: 700
+  })
+  fixtureData.manager.setStatusStripVisible(true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 32,
+    width: 856,
+    height: 668
+  })
   fixtureData.resize()
-  assert.equal(fixtureData.created[0].view.boundsCount, 4)
+  assert.equal(fixtureData.created[0].view.boundsCount, 6)
   assert.equal(fixtureData.created[0].loads, 1)
   assert.deepEqual(structuredClone(fixtureData.statuses.at(-1)), {
     accountId: firstId,

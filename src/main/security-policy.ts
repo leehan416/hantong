@@ -128,6 +128,9 @@ export function isAllowedSettingsRequest(request: SettingsRequest): boolean {
   if (request.operation === 'panel') {
     return request.args.length === 1 && typeof request.args[0] === 'boolean'
   }
+  if (request.operation === 'status-strip') {
+    return request.args.length === 1 && typeof request.args[0] === 'boolean'
+  }
   return (
     request.operation === 'update' && request.args.length === 1 && isSettingsPatch(request.args[0])
   )

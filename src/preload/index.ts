@@ -8,6 +8,7 @@ import {
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATE_EVENT,
+  ACCOUNT_STATUS_STRIP_CHANNEL,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
   SETTINGS_GET_CHANNEL,
@@ -71,6 +72,7 @@ const api: HantongApi = Object.freeze({
   getSettings: () => ipcRenderer.invoke(SETTINGS_GET_CHANNEL),
   updateSettings: (patch) => ipcRenderer.invoke(SETTINGS_UPDATE_CHANNEL, patch),
   setSettingsPanelOpen: (open) => ipcRenderer.invoke(SETTINGS_PANEL_CHANNEL, open),
+  setStatusStripVisible: (visible) => ipcRenderer.invoke(ACCOUNT_STATUS_STRIP_CHANNEL, visible),
   onOpenSettings: (listener) => {
     const handler = (): void => listener()
     ipcRenderer.on(SETTINGS_OPEN_EVENT, handler)
