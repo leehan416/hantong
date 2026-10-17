@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
 import {
   ACCOUNT_SELECTOR_POSITION_OPTIONS,
+  ACCENT_COLOR_OPTIONS,
   GMAIL_CLEANUP_FIELDS,
   type AccountSelectorPosition,
   type AppSettings,
@@ -69,6 +70,7 @@ const messages = {
     settingsClose: '닫기',
     settingsGeneral: '일반',
     settingsAccounts: '계정 관리',
+    settingsAppearance: '외관',
     accountName: '표시 이름',
     accountNamePlaceholder: '이메일 주소 사용',
     defaultAccount: '기본 계정',
@@ -82,6 +84,8 @@ const messages = {
     languageOptions: { system: '시스템 설정', ko: '한국어', en: 'English' },
     theme: '테마',
     themeOptions: { system: '시스템 설정', light: '밝게', dark: '어둡게' },
+    accentColor: '포인트 색상',
+    accentColors: { blue: '파랑', purple: '보라', green: '초록', orange: '주황', gray: '회색' },
     closeAction: '창을 닫을 때',
     closeActionOptions: { hide: '숨기기 (알림 계속 받기)', quit: '앱 종료' },
     gmailCleanup: 'Gmail 화면에서 숨기기',
@@ -138,6 +142,7 @@ const messages = {
     settingsClose: 'Close',
     settingsGeneral: 'General',
     settingsAccounts: 'Accounts',
+    settingsAppearance: 'Appearance',
     accountName: 'Display name',
     accountNamePlaceholder: 'Use email address',
     defaultAccount: 'Default account',
@@ -151,6 +156,14 @@ const messages = {
     languageOptions: { system: 'System', ko: '한국어', en: 'English' },
     theme: 'Theme',
     themeOptions: { system: 'System', light: 'Light', dark: 'Dark' },
+    accentColor: 'Accent color',
+    accentColors: {
+      blue: 'Blue',
+      purple: 'Purple',
+      green: 'Green',
+      orange: 'Orange',
+      gray: 'Gray'
+    },
     closeAction: 'When closing the window',
     closeActionOptions: { hide: 'Hide (keep notifications)', quit: 'Quit the app' },
     gmailCleanup: 'Hide in Gmail',
@@ -181,7 +194,9 @@ function App(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<'general' | 'accounts'>('general')
+  const [settingsSection, setSettingsSection] = useState<'general' | 'accounts' | 'appearance'>(
+    'general'
+  )
   const [accountNameDrafts, setAccountNameDrafts] = useState<Record<string, string>>({})
   const [accountSettingsBusy, setAccountSettingsBusy] = useState<string | null>(null)
   const [accountSettingsFailed, setAccountSettingsFailed] = useState(false)
@@ -379,6 +394,11 @@ function App(): React.JSX.Element {
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings?.theme ?? 'system'
+    document.documentElement.dataset.accentColor = settings?.accentColor ?? 'blue'
+  }, [settings?.theme, settings?.accentColor])
 
   useEffect(() => {
     document.documentElement.dataset.accountPosition = position
@@ -637,7 +657,7 @@ function App(): React.JSX.Element {
             </button>
           </header>
           <nav className="settings-navigation" aria-label={text.settings} role="tablist">
-            {(['general', 'accounts'] as const).map((section) => (
+            {(['general', 'accounts', 'appearance'] as const).map((section) => (
               <button
                 key={section}
                 className="settings-navigation-item"
@@ -648,7 +668,11 @@ function App(): React.JSX.Element {
                 aria-controls={`settings-panel-${section}`}
                 onClick={() => setSettingsSection(section)}
               >
-                {section === 'general' ? text.settingsGeneral : text.settingsAccounts}
+                {section === 'general'
+                  ? text.settingsGeneral
+                  : section === 'accounts'
+                    ? text.settingsAccounts
+                    : text.settingsAppearance}
               </button>
             ))}
           </nav>
@@ -689,7 +713,6 @@ function App(): React.JSX.Element {
               {(
                 [
                   ['language', text.language, text.languageOptions],
-                  ['theme', text.theme, text.themeOptions],
                   ['closeAction', text.closeAction, text.closeActionOptions]
                 ] as const
               ).map(([field, label, options]) => (
@@ -724,7 +747,7 @@ function App(): React.JSX.Element {
               </fieldset>
               {settingsFailed && <p role="alert">{text.settingsError}</p>}
             </div>
-          ) : (
+          ) : settingsSection === 'accounts' ? (
             <div
               id="settings-panel-accounts"
               role="tabpanel"
@@ -952,6 +975,51 @@ function App(): React.JSX.Element {
                   {accounts ? text.noAccounts : text.pending}
                 </p>
               )}
+            </div>
+          ) : (
+            <div
+              id="settings-panel-appearance"
+              role="tabpanel"
+              aria-labelledby="settings-tab-appearance"
+              className="settings-tab-panel"
+            >
+              <fieldset className="settings-group">
+                <legend>{text.theme}</legend>
+                {Object.entries(text.themeOptions).map(([value, optionLabel]) => (
+                  <label key={value} className="settings-option">
+                    <input
+                      type="radio"
+                      name="theme"
+                      value={value}
+                      checked={settings?.theme === value}
+                      onChange={() => void changeSettings({ theme: value as AppSettings['theme'] })}
+                    />
+                    {optionLabel}
+                  </label>
+                ))}
+              </fieldset>
+              <fieldset className="settings-group">
+                <legend>{text.accentColor}</legend>
+                <div className="accent-color-options">
+                  {ACCENT_COLOR_OPTIONS.map((color) => (
+                    <label key={color} className="accent-color-option">
+                      <input
+                        type="radio"
+                        name="accent-color"
+                        value={color}
+                        checked={settings?.accentColor === color}
+                        onChange={() => void changeSettings({ accentColor: color })}
+                      />
+                      <span
+                        className={`accent-color-swatch accent-color-${color}`}
+                        aria-hidden="true"
+                      />
+                      <span>{text.accentColors[color]}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              {settingsFailed && <p role="alert">{text.settingsError}</p>}
             </div>
           )}
         </section>

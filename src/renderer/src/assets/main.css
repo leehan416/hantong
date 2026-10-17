@@ -182,6 +182,7 @@
 
 .account-menu-item[aria-current='true'] {
   color: var(--color-accent);
+  background: var(--color-accent-soft);
 }
 
 .account-menu-copy {
@@ -226,8 +227,8 @@
   min-width: 18px;
   border-radius: 9px;
   padding: 0 5px;
-  background: var(--color-accent);
-  color: var(--color-background);
+  background: var(--color-accent-strong);
+  color: var(--color-accent-contrast);
   font-size: 11px;
   font-weight: 600;
   line-height: 18px;
@@ -637,6 +638,88 @@
   padding: 4px 0;
   color: var(--color-text);
   font-size: 14px;
+}
+
+.settings-option input,
+.settings-position-option input,
+.accent-color-option input {
+  accent-color: var(--color-accent-strong);
+}
+
+.accent-color-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+
+.accent-color-option {
+  display: grid;
+  min-width: 54px;
+  justify-items: center;
+  gap: 4px;
+  color: var(--color-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.accent-color-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.accent-color-swatch {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--swatch-color);
+}
+
+.accent-color-swatch::after {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--color-accent-contrast);
+  border-radius: 50%;
+  content: '';
+  opacity: 0;
+}
+
+.accent-color-option input:checked + .accent-color-swatch {
+  border-color: var(--color-accent-strong);
+}
+
+.accent-color-option input:checked + .accent-color-swatch::after {
+  opacity: 1;
+}
+
+.accent-color-option input:focus-visible + .accent-color-swatch {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.accent-color-blue {
+  --swatch-color: #397da9;
+}
+.accent-color-purple {
+  --swatch-color: #865eb3;
+}
+.accent-color-green {
+  --swatch-color: #43875f;
+}
+.accent-color-orange {
+  --swatch-color: #bd6a32;
+}
+.accent-color-gray {
+  --swatch-color: #74818b;
+}
+
+input[type='radio'],
+input[type='checkbox'] {
+  accent-color: var(--color-accent-strong);
 }
 
 .settings-position {
