@@ -4,7 +4,7 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node executes this JavaScript test without a TypeScript loader. */
 const { getAccountViewBounds } = loadTypeScript(
-  new URL('../src/main/account-layout.ts', import.meta.url)
+  new URL('../src/shared/account-layout.ts', import.meta.url)
 )
 function bounds(value) {
   return JSON.parse(JSON.stringify(value))

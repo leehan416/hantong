@@ -3,8 +3,8 @@ import {
   ACCOUNT_STATUS_STRIP_HEIGHT,
   ACCOUNT_SIDEBAR_COLLAPSED_WIDTH,
   ACCOUNT_SIDEBAR_WIDTH
-} from '../shared/ipc'
-import type { AccountSelectorPosition } from '../shared/settings'
+} from './ipc'
+import type { AccountSelectorPosition } from './settings'
 
 export interface AccountLayoutInput {
   width: number

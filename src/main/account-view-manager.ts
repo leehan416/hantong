@@ -6,7 +6,7 @@ import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
 import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './google-web-identity'
 import { classifyGmailNavigation } from './gmail-navigation'
-import { getAccountViewBounds } from './account-layout'
+import { getAccountViewBounds } from '../shared/account-layout'
 
 interface AccountStore {
   getState: () => AccountState
