@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Notification,
+  powerMonitor,
+  safeStorage,
+  shell
+} from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAccountStore } from './account-store'
@@ -397,6 +406,16 @@ void app
         void mailAlerts.onChanges(accountId, result).catch(() => undefined)
       }
     })
+    const allAccountIds = (): string[] =>
+      requireAccountStore()
+        .getState()
+        .accounts.map((account) => account.id)
+    powerMonitor.on('suspend', () => gmailRelaySync?.suspend())
+    powerMonitor.on('resume', () => gmailRelaySync?.resume(allAccountIds()))
+    // ponytail: fixed 15-minute fallback poll; derive from relay health if quota or latency matters.
+    const fallbackSync = setInterval(() => gmailRelaySync?.syncAll(allAccountIds()), 15 * 60_000)
+    // Catch up on mail that arrived while the app was closed; never-connected accounts just fail.
+    gmailRelaySync.syncAll(allAccountIds())
     relayRuntime = createRelayRuntime({
       client: {
         createSession: (...args) => {
@@ -699,6 +718,7 @@ void app
       if (quitCleanupPending) return
       appQuitting = true
       quitCleanupPending = true
+      clearInterval(fallbackSync)
       gmailRelaySync?.dispose()
       const cleanup = Promise.all([
         requireGoogleConnectionRuntime().cancelAll(),

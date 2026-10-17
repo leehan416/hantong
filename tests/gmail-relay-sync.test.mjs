@@ -30,8 +30,8 @@ function fakeWatch(nextDueAt = null) {
     disconnect: (id) => log.push(['disconnect', id]),
     dispose: () => log.push(['dispose']),
     getNextDueAt: () => nextDueAt,
-    pause: () => undefined,
-    resume: async () => []
+    pause: () => log.push(['pause']),
+    resume: async (now) => (log.push(['resume', now]), [])
   }
 }
 
@@ -151,4 +151,42 @@ test('dispose stops watches and ignores later signals', async () => {
   await turn()
   assert.deepEqual(watch.log, [['dispose']])
   assert.equal(syncs, 0)
+})
+
+test('suspend pauses watches and cancels the timer; resume renews and resyncs every account', async () => {
+  const cleared = []
+  const synced = []
+  const watch = fakeWatch(5000)
+  const second = 'b1b2c3d4-e5f6-4789-8abc-123456789abc'
+  const relay = createGmailRelaySync(
+    base({
+      watch,
+      sync: async (id) => (synced.push(id), changes),
+      setTimeout: () => 'timer',
+      clearTimeout: (timer) => cleared.push(timer)
+    })
+  )
+  relay.onSignal(account, { type: 'ready', resync: true })
+  await turn()
+  await turn()
+  relay.suspend()
+  assert.deepEqual(cleared.at(-1), 'timer')
+  synced.length = 0
+  relay.resume([account, second])
+  await turn()
+  assert.deepEqual(watch.log.slice(-2), [['pause'], ['resume', 1000]])
+  assert.deepEqual(synced, [account, second])
+})
+
+test('syncAll runs one pass per account and coalesces with in-flight passes', async () => {
+  const deferred = deferredSync()
+  const relay = createGmailRelaySync(base({ sync: deferred.sync }))
+  relay.onSignal(account, { type: 'mailbox_changed', historyId: '20' })
+  await turn()
+  relay.syncAll([account])
+  assert.equal(deferred.calls.length, 1)
+  deferred.calls[0](changes)
+  await turn()
+  await turn()
+  assert.equal(deferred.calls.length, 2)
 })

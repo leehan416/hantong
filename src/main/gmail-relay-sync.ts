@@ -15,6 +15,9 @@ export interface GmailRelaySyncDependencies {
 
 export function createGmailRelaySync(dependencies: GmailRelaySyncDependencies): {
   onSignal(accountId: string, event: RelaySignal): void
+  syncAll(accountIds: readonly string[]): void
+  suspend(): void
+  resume(accountIds: readonly string[]): void
   disconnect(accountId: string): void
   dispose(): void
 } {
@@ -85,6 +88,21 @@ export function createGmailRelaySync(dependencies: GmailRelaySyncDependencies): 
         runWatch(() => dependencies.watch?.connect(accountId, dependencies.now()))
       }
       sync(accountId)
+    },
+    // Fallback for hints lost while no relay stream was open (restart, expiry, outage).
+    syncAll(accountIds): void {
+      for (const accountId of accountIds) sync(accountId)
+    },
+    suspend(): void {
+      if (disposed) return
+      dependencies.watch?.pause()
+      if (timer) unschedule(timer)
+      timer = undefined
+    },
+    resume(accountIds): void {
+      // Renewals that fell due during sleep run now; history catches up on everything missed.
+      runWatch(() => dependencies.watch?.resume(dependencies.now()))
+      for (const accountId of accountIds) sync(accountId)
     },
     disconnect(accountId): void {
       running.delete(accountId)
