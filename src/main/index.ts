@@ -9,6 +9,7 @@ import {
   Notification,
   powerMonitor,
   safeStorage,
+  screen,
   shell
 } from 'electron'
 import { join } from 'node:path'
@@ -30,6 +31,7 @@ import { createRelayRuntime } from './relay-runtime'
 import { createRelayCredentialStore } from './relay-credential-store'
 import { createSettingsStore } from './settings-store'
 import { buildAppMenuTemplate, buildContextMenuTemplate } from './app-menu'
+import { createWindowStateStore, fitWindowBounds } from './window-state'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
@@ -86,6 +88,9 @@ import {
 
 app.setName('Hantong')
 
+// A second launch only brings the running instance forward (see 'second-instance' below).
+if (!app.requestSingleInstanceLock()) app.exit(0)
+
 const rendererFile = join(__dirname, '../renderer/index.html')
 const rendererUrl =
   is.dev && process.env['ELECTRON_RENDERER_URL']
@@ -95,6 +100,7 @@ const rendererUrl =
 let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
 let settingsStore: ReturnType<typeof createSettingsStore> | null = null
+let windowStateStore: ReturnType<typeof createWindowStateStore> | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
@@ -133,10 +139,16 @@ function openExternal(url: string): void {
 }
 
 function createWindow(): void {
+  const saved = windowStateStore?.read() ?? null
+  const bounds = saved
+    ? fitWindowBounds(
+        saved.bounds,
+        screen.getAllDisplays().map((display) => display.workArea)
+      )
+    : null
   const window = new BrowserWindow({
     title: 'Hantong',
-    width: 1000,
-    height: 720,
+    ...(bounds ?? { width: 1000, height: 720 }),
     minWidth: 640,
     minHeight: 480,
     show: false,
@@ -151,6 +163,10 @@ function createWindow(): void {
     }
   })
   mainWindow = window
+  if (bounds && saved?.maximized) window.maximize()
+  window.on('close', () => {
+    windowStateStore?.write({ bounds: window.getNormalBounds(), maximized: window.isMaximized() })
+  })
   let windowAccessController: ReturnType<typeof createAccountAccessController> | null = null
   const windowViewManager = createAccountViewManager(
     window,
@@ -283,6 +299,17 @@ function installAppMenu(): void {
   )
 }
 
+app.on('second-instance', () => {
+  const window = mainWindow
+  if (!window || window.isDestroyed()) {
+    if (app.isReady() && accountStore) createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+})
+
 app.on('web-contents-created', (_event, contents) => {
   contents.on('context-menu', (_menuEvent, params) => {
     const template = buildContextMenuTemplate(params, uiLocale(), {
@@ -344,6 +371,7 @@ void app
   .then(() => {
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
+    windowStateStore = createWindowStateStore(app.getPath('userData'))
     nativeTheme.themeSource = settingsStore.get().theme
     installAppMenu()
     const credentialStore = createGoogleCredentialStore({
