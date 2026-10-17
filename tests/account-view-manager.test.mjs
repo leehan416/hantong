@@ -317,6 +317,7 @@ test('covering an attached mailbox captures its current bounds before detaching 
   fixtureData.manager.setStatusStripVisible(false)
   const snapshot = await fixtureData.manager.setCovered(true)
   assert.deepEqual(structuredClone(snapshot), {
+    accountId: firstId,
     bounds: { x: 0, y: 0, width: 844, height: 700 },
     dataUrl: 'data:image/png;base64,bWFpbA=='
   })

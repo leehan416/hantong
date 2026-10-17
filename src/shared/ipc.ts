@@ -47,6 +47,7 @@ export interface AccountRemovalResult {
 export type UnreadCounts = Record<string, number>
 
 export interface AccountViewSnapshot {
+  accountId: string
   bounds: { x: number; y: number; width: number; height: number }
   dataUrl: string
 }

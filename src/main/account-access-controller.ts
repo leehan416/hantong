@@ -40,7 +40,7 @@ interface AccessDependencies {
   loadConfig: () => GoogleOAuthConfig
   fetchProfile: (accessToken: string, signal: AbortSignal) => Promise<string>
   accountExists: (accountId: string) => boolean
-  onVerifiedIdentity: (accountId: string, emailAddress: string) => void
+  onWebIdentity: (accountId: string, emailAddress: string) => void
   publish: (state: AccountAccessState) => void
   setTimeout?: typeof setTimeout
   clearTimeout?: typeof clearTimeout
@@ -196,7 +196,7 @@ export function createAccountAccessController(dependencies: AccessDependencies):
       }
       if (!identity.accountExists || !identity.emailAddress)
         return publish(accountId, 'required', 'disconnected')
-      dependencies.onVerifiedIdentity(accountId, identity.emailAddress)
+      dependencies.onWebIdentity(accountId, identity.emailAddress)
       publish(accountId, 'checking', 'connecting')
       if (!explicit && autoSuppressed.has(accountId))
         return publish(accountId, 'required', 'disconnected')

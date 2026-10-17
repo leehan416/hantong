@@ -150,8 +150,21 @@ test('account IPC validates operation arguments and requires a stored account fo
       true
     )
   }
+  assert.equal(
+    policy.isAllowedAccountRequest({
+      ...base,
+      operation: 'setColor',
+      args: [base.args[0], 'green']
+    }),
+    true
+  )
   for (const patch of [
     { operation: 'setDefault', args: [base.args[0]] },
+    { operation: 'setColor', args: [base.args[0], 'red'] },
+    { operation: 'setColor', args: [base.args[0]] },
+    { operation: 'setColor', args: [base.args[0], 'green', 'extra'] },
+    { operation: 'setColor', args: ['../other-session', 'green'] },
+    { operation: 'setColor', args: [base.args[0], 'green'], accountExists: false },
     { operation: 'move', args: [base.args[0], '1'] },
     { operation: 'move', args: [base.args[0], 0.5] },
     { operation: 'move', args: [base.args[0]] },
@@ -161,7 +174,7 @@ test('account IPC validates operation arguments and requires a stored account fo
     { operation: 'setDisplayName', args: [base.args[0], 'unknown@example.com', 'extra'] },
     { operation: 'setDisplayName', args: ['../other-session', 'Personal'] },
     { operation: 'setDisplayName', args: [base.args[0], null], accountExists: false },
-    { operation: 'recordVerifiedEmail', args: [base.args[0], 'user@example.com'] }
+    { operation: 'recordWebIdentityEmail', args: [base.args[0], 'user@example.com'] }
   ]) {
     assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
   }

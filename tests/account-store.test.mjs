@@ -184,7 +184,7 @@ test('account metadata persists independently of active selection', (t) => {
   store.add()
   store.add()
   store.setDisplayName(firstId, '  Personal  ')
-  store.recordVerifiedEmail(firstId, 'personal@example.com')
+  store.recordWebIdentityEmail(firstId, 'personal@example.com')
   store.activate(firstId)
   assert.deepEqual(structuredClone(store.getState()), {
     version: 1,
@@ -209,9 +209,9 @@ test('invalid account metadata and unknown account updates do not persist', (t) 
   const saved = readFileSync(join(directory, 'accounts.json'), 'utf8')
   assert.throws(() => store.setDisplayName(firstId, '  '), /Invalid account data/)
   assert.throws(() => store.setDisplayName(firstId, 'x'.repeat(81)), /Invalid account data/)
-  assert.throws(() => store.recordVerifiedEmail(firstId, 'not-an-email'), /Invalid account data/)
+  assert.throws(() => store.recordWebIdentityEmail(firstId, 'not-an-email'), /Invalid account data/)
   assert.throws(
-    () => store.recordVerifiedEmail(firstId, 'personal..name@example.com'),
+    () => store.recordWebIdentityEmail(firstId, 'personal..name@example.com'),
     /Invalid account data/
   )
   assert.throws(() => store.setDisplayName(secondId, 'Other'), /Invalid account data/)

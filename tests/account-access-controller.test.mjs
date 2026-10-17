@@ -21,7 +21,7 @@ function fixture(overrides = {}) {
   }
   const grants = []
   const published = []
-  const verifiedEmails = []
+  const webIdentityEmails = []
   let accessTokenReads = 0
   let profileReads = 0
   const controller = createAccountAccessController({
@@ -58,7 +58,7 @@ function fixture(overrides = {}) {
       return profileEmail
     },
     accountExists: (id) => id === accountId,
-    onVerifiedIdentity: (id, email) => verifiedEmails.push([id, email]),
+    onWebIdentity: (id, email) => webIdentityEmails.push([id, email]),
     publish: (state) => published.push(structuredClone(state)),
     ...overrides
   })
@@ -66,7 +66,7 @@ function fixture(overrides = {}) {
     controller,
     grants,
     published,
-    verifiedEmails,
+    webIdentityEmails,
     get accessTokenReads() {
       return accessTokenReads
     },
@@ -101,7 +101,7 @@ test('automatic OAuth grants mail only after live token profile and web identity
   assert.deepEqual(f.grants.at(-1), [accountId, true, 4])
   assert.equal(f.controller.getState(accountId).status, 'ready')
   assert.equal(f.controller.getState(accountId).connectionStatus, 'connected')
-  assert.deepEqual(f.verifiedEmails, [[accountId, 'user@example.com']])
+  assert.deepEqual(f.webIdentityEmails, [[accountId, 'user@example.com']])
   f.controller.dispose()
 })
 
@@ -109,7 +109,7 @@ test('missing or untrusted Gmail web identity is never recorded as a verified em
   const f = fixture()
   f.setIdentity({ accountExists: false, emailAddress: 'spoof@example.com' })
   await f.controller.connect(accountId)
-  assert.deepEqual(f.verifiedEmails, [])
+  assert.deepEqual(f.webIdentityEmails, [])
   f.controller.dispose()
 })
 

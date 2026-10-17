@@ -486,7 +486,11 @@ export function createAccountViewManager(
               entry.attached &&
               !contents.isDestroyed()
             ) {
-              snapshot = { bounds: entry.handle.view.getBounds(), dataUrl: image.toDataURL() }
+              snapshot = {
+                accountId: id,
+                bounds: entry.handle.view.getBounds(),
+                dataUrl: image.toDataURL()
+              }
             }
           } catch {
             // A failed snapshot must not keep a native view above the modal.

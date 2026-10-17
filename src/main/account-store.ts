@@ -6,7 +6,7 @@ import {
   activateGmailAccount,
   addGmailAccount,
   parseAccountState,
-  recordVerifiedGmailEmail,
+  recordWebIdentityGmailEmail,
   removeGmailAccount,
   setGmailAccountColor,
   moveGmailAccount,
@@ -20,7 +20,7 @@ interface AccountStore {
   remove: (id: string) => AccountState
   setDisplayName: (id: string, displayName: string | null) => AccountState
   setColor: (id: string, color: AccountColor) => AccountState
-  recordVerifiedEmail: (id: string, email: string) => AccountState
+  recordWebIdentityEmail: (id: string, email: string) => AccountState
   move: (id: string, toIndex: number) => AccountState
 }
 
@@ -86,7 +86,7 @@ export function createAccountStore(
     remove: (id) => save(removeGmailAccount(state, id)),
     setDisplayName: (id, displayName) => save(setGmailAccountDisplayName(state, id, displayName)),
     setColor: (id, color) => save(setGmailAccountColor(state, id, color)),
-    recordVerifiedEmail: (id, email) => save(recordVerifiedGmailEmail(state, id, email)),
+    recordWebIdentityEmail: (id, email) => save(recordWebIdentityGmailEmail(state, id, email)),
     move: (id, toIndex) => save(moveGmailAccount(state, id, toIndex))
   }
 }

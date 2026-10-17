@@ -53,6 +53,10 @@ export function parseSettings(value: unknown): AppSettings {
   for (const key of Object.keys(FIELDS) as (keyof typeof FIELDS)[]) {
     if (isOption(FIELDS[key], value[key])) Object.assign(settings, { [key]: value[key] })
   }
+  // `hideGemini` was folded into `hideHeaderButtons`; keep Gemini hidden for users who hid it.
+  if (value.hideHeaderButtons === undefined && value.hideGemini === true) {
+    settings.hideHeaderButtons = true
+  }
   return settings
 }
 

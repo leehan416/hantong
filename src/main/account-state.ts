@@ -142,7 +142,7 @@ export function setGmailAccountColor(
   return parseAccountState({ ...state, accounts })
 }
 
-export function recordVerifiedGmailEmail(
+export function recordWebIdentityGmailEmail(
   state: AccountState,
   id: string,
   email: string

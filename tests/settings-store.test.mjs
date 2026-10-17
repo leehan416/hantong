@@ -143,3 +143,12 @@ test('navigation preferences accept fixed values and persist across restarts', (
     }
   })
 })
+
+test('a saved hideGemini choice carries over to the top-bar extras toggle', () => {
+  assert.equal(parseSettings({ version: 1, hideGemini: true }).hideHeaderButtons, true)
+  assert.equal(parseSettings({ version: 1, hideGemini: false }).hideHeaderButtons, false)
+  assert.equal(
+    parseSettings({ version: 1, hideGemini: true, hideHeaderButtons: false }).hideHeaderButtons,
+    false
+  )
+})

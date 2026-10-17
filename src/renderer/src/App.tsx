@@ -569,15 +569,18 @@ function App(): React.JSX.Element {
 
   // The snapshot stands in for the detached Gmail view, so it follows layout changes made in
   // settings instead of staying where the view was captured.
-  const snapshotBounds = settingsBackground
-    ? getAccountViewBounds({
-        width: window.innerWidth,
-        height: window.innerHeight,
-        position,
-        sidebarCollapsed,
-        statusStripVisible: statusStripLayoutVisible
-      })
-    : null
+  // Once another account is active (removal, notification click) the snapshot would show the
+  // wrong mailbox, so it is only drawn for the account it was captured from.
+  const snapshotBounds =
+    settingsBackground?.accountId === activeAccountId
+      ? getAccountViewBounds({
+          width: window.innerWidth,
+          height: window.innerHeight,
+          position,
+          sidebarCollapsed,
+          statusStripVisible: statusStripLayoutVisible
+        })
+      : null
 
   useEffect(() => {
     if (showStatusStrip === statusStripLayoutVisible) return
@@ -588,7 +591,12 @@ function App(): React.JSX.Element {
           setStatusStripLayoutVisible(showStatusStrip)
         }
       },
-      () => undefined
+      // Main could not move the Gmail view; still show the strip so its error text is reachable.
+      () => {
+        if (statusStripLayoutRevision.current === revision) {
+          setStatusStripLayoutVisible(showStatusStrip)
+        }
+      }
     )
   }, [showStatusStrip, statusStripLayoutVisible])
 

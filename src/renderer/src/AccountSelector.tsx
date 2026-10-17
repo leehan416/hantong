@@ -30,7 +30,8 @@ interface DragProps {
 // Native HTML drag and drop; the dropped account takes the target's index.
 function useAccountDrag(
   accounts: GmailAccount[],
-  onMove: AccountNavigationProps['onMove']
+  onMove: AccountNavigationProps['onMove'],
+  disabled: boolean
 ): (accountId: string, index: number) => DragProps {
   const [dragId, setDragId] = useState<string | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
@@ -40,7 +41,7 @@ function useAccountDrag(
     setOverIndex(null)
   }
   return (accountId, index) => ({
-    draggable: true,
+    draggable: !disabled,
     'data-dragging': dragId === accountId || undefined,
     'data-drop':
       fromIndex >= 0 && overIndex === index && fromIndex !== index
@@ -60,7 +61,7 @@ function useAccountDrag(
     },
     onDrop: (event) => {
       event.preventDefault()
-      if (dragId && dragId !== accountId) onMove(dragId, index)
+      if (!disabled && dragId && dragId !== accountId) onMove(dragId, index)
       reset()
     },
     onDragEnd: reset
@@ -114,7 +115,7 @@ export function AccountCardNavigation({
   onAdd,
   onMove
 }: AccountNavigationProps): React.JSX.Element {
-  const dragProps = useAccountDrag(accounts, onMove)
+  const dragProps = useAccountDrag(accounts, onMove, disabled)
   return (
     <div
       className="account-tabs"
@@ -168,7 +169,7 @@ export function SidebarAccountNavigation({
   onAdd,
   onMove
 }: SidebarAccountNavigationProps): React.JSX.Element {
-  const dragProps = useAccountDrag(accounts, onMove)
+  const dragProps = useAccountDrag(accounts, onMove, disabled)
   const addLabel = locale === 'ko' ? '계정 추가' : 'Add account'
   return (
     <div

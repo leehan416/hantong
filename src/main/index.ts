@@ -37,7 +37,7 @@ import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate }
 import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import { buildGmailCleanupCss } from './gmail-cleanup'
-import { isAccountColor, type AccountState } from '../shared/accounts'
+import { accountLabel, isAccountColor, type AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
@@ -232,7 +232,7 @@ function createWindow(): void {
     publish: (state) => {
       if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
     },
-    onVerifiedIdentity: (accountId, emailAddress) => {
+    onWebIdentity: (accountId, emailAddress) => {
       try {
         const store = requireAccountStore()
         if (
@@ -241,11 +241,11 @@ function createWindow(): void {
         ) {
           return
         }
-        const state = store.recordVerifiedEmail(accountId, emailAddress)
+        const state = store.recordWebIdentityEmail(accountId, emailAddress)
         publishAccountState(window, state)
       } catch {
         // Identity persistence must not block mailbox access; never log the account email.
-        console.error('Unable to save verified Gmail account identity')
+        console.error('Unable to save Gmail web identity')
       }
     }
   })
@@ -537,11 +537,11 @@ void app
     const korean = (): boolean => uiLocale() === 'ko'
     const mailAlerts = createGmailMailAlerts({
       accountExists,
+      // Same label as the account tabs, so renaming or reordering keeps alerts recognisable.
       accountLabel: (accountId) => {
-        const index = requireAccountStore()
-          .getState()
-          .accounts.findIndex((account) => account.id === accountId)
-        return `Gmail ${index + 1}`
+        const { accounts } = requireAccountStore().getState()
+        const index = accounts.findIndex((account) => account.id === accountId)
+        return index < 0 ? 'Gmail' : accountLabel(accounts[index], index)
       },
       korean,
       readUnreadCount: async (accountId) =>
