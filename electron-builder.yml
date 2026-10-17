@@ -12,10 +12,24 @@ files:
   - '!**/.env.*'
 asarUnpack:
   - resources/**
+# License and notice files ship in Contents/Resources; electron-builder omits Electron's own on macOS.
+extraResources:
+  - from: LICENSE.md
+    to: LICENSE.md
+  - from: THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+  - from: node_modules/electron/dist/LICENSE
+    to: LICENSE.electron.txt
+  - from: node_modules/electron/dist/LICENSES.chromium.html
+    to: LICENSES.chromium.html
 mac:
   category: public.app-category.productivity
+  # Apple Silicon only: the only architecture the project can verify.
   target:
-    - dmg
+    - target: dmg
+      arch:
+        - arm64
+  minimumSystemVersion: '14.0'
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
 dmg:

@@ -1,10 +1,11 @@
 {
   "name": "hantong",
   "version": "0.1.0",
-  "description": "An Electron application with React and TypeScript",
+  "description": "Desktop Gmail client for macOS",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "Whal3 <leehan416@gmail.com>",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "homepage": "https://github.com/leehan416/hantong",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
@@ -22,8 +23,7 @@
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
-    "@electron-toolkit/utils": "^4.0.0",
-    "electron-updater": "^6.8.9"
+    "@electron-toolkit/utils": "^4.0.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.1",
