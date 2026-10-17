@@ -12,7 +12,8 @@ import {
   powerMonitor,
   safeStorage,
   screen,
-  shell
+  shell,
+  webContents
 } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -35,6 +36,7 @@ import { createSettingsStore } from './settings-store'
 import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate } from './app-menu'
 import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
+import { buildGmailCleanupCss } from './gmail-cleanup'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
@@ -343,7 +345,38 @@ app.on('second-instance', () => {
   window.focus()
 })
 
+// Each Gmail document gets at most one cleanup stylesheet; calls are chained so toggles cannot
+// interleave and leave a stale stylesheet behind.
+const gmailCleanupKeys = new WeakMap<Electron.WebContents, string>()
+const gmailCleanupQueue = new WeakMap<Electron.WebContents, Promise<void>>()
+
+function isGmailDocument(contents: Electron.WebContents): boolean {
+  try {
+    return new URL(contents.getURL()).origin === 'https://mail.google.com'
+  } catch {
+    return false
+  }
+}
+
+function applyGmailCleanup(contents: Electron.WebContents): void {
+  const run = async (): Promise<void> => {
+    if (contents.isDestroyed()) return
+    const previous = gmailCleanupKeys.get(contents)
+    gmailCleanupKeys.delete(contents)
+    // A key from an earlier document is already gone; removing it is a harmless no-op.
+    if (previous) await contents.removeInsertedCSS(previous).catch(() => undefined)
+    const css = settingsStore ? buildGmailCleanupCss(settingsStore.get()) : ''
+    if (!css || contents.isDestroyed() || !isGmailDocument(contents)) return
+    gmailCleanupKeys.set(contents, await contents.insertCSS(css))
+  }
+  const next = (gmailCleanupQueue.get(contents) ?? Promise.resolve()).then(run).catch(() => {
+    // CSS that fails to apply leaves Gmail's original interface in place.
+  })
+  gmailCleanupQueue.set(contents, next)
+}
+
 app.on('web-contents-created', (_event, contents) => {
+  contents.on('dom-ready', () => applyGmailCleanup(contents))
   contents.on('context-menu', (_menuEvent, params) => {
     const template = buildContextMenuTemplate(params, uiLocale(), {
       copyLink: (url) => clipboard.writeText(url),
@@ -793,6 +826,7 @@ void app
       }
       const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
       nativeTheme.themeSource = settings.theme
+      for (const contents of webContents.getAllWebContents()) applyGmailCleanup(contents)
       installAppMenu()
       const owner = mainWindow
       if (owner && !owner.isDestroyed()) owner.webContents.send(SETTINGS_EVENT, settings)
