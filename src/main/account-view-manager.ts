@@ -1,10 +1,12 @@
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { AccountState } from '../shared/accounts'
-import { ACCOUNT_CHROME_HEIGHT, type AccountViewStatus } from '../shared/ipc'
+import type { AccountSelectorPosition } from '../shared/settings'
+import type { AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
 import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './google-web-identity'
 import { classifyGmailNavigation } from './gmail-navigation'
+import { getAccountViewBounds } from './account-layout'
 
 interface AccountStore {
   getState: () => AccountState
@@ -72,6 +74,7 @@ export function createAccountViewManager(
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   getActiveAccountId: () => string | null
   setCovered: (covered: boolean) => void
+  setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -101,6 +104,8 @@ export function createAccountViewManager(
   let activeAccountId: string | null = null
   // A full-window local panel (settings) is showing, so the native Gmail view must not sit on top.
   let covered = false
+  let layoutPosition: AccountSelectorPosition = 'top'
+  let sidebarCollapsed = false
   let disposed = false
 
   function alive(): boolean {
@@ -113,13 +118,13 @@ export function createAccountViewManager(
 
   function setBounds(view: WebContentsView): void {
     if (!alive()) return
-    const { width, height } = window.getContentBounds()
-    view.setBounds({
-      x: 0,
-      y: ACCOUNT_CHROME_HEIGHT,
-      width,
-      height: Math.max(0, height - ACCOUNT_CHROME_HEIGHT)
-    })
+    view.setBounds(
+      getAccountViewBounds({
+        ...window.getContentBounds(),
+        position: layoutPosition,
+        sidebarCollapsed
+      })
+    )
   }
 
   function reconcileVisibility(id: string, entry: ViewEntry): void {
@@ -465,6 +470,12 @@ export function createAccountViewManager(
       if (covered === next) return
       covered = next
       for (const [id, entry] of views) reconcileVisibility(id, entry)
+    },
+    setLayout(position, collapsed) {
+      layoutPosition = position
+      sidebarCollapsed = collapsed
+      const entry = activeAccountId ? views.get(activeAccountId) : undefined
+      if (entry?.attached) setBounds(entry.handle.view)
     },
     disposeAccount,
     async readWebIdentity(id, signal) {

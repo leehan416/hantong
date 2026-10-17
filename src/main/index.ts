@@ -203,6 +203,11 @@ function createWindow(): void {
     (reason) => reportOAuthDiagnostic('identity', reason)
   )
   accountViewManager = windowViewManager
+  const savedSettings = settingsStore?.get()
+  windowViewManager.setLayout(
+    savedSettings?.accountSelectorPosition ?? 'top',
+    savedSettings?.sidebarCollapsed ?? false
+  )
   windowAccessController = createAccountAccessController({
     views: windowViewManager,
     runtime: requireGoogleConnectionRuntime(),
@@ -856,6 +861,7 @@ void app
       }
       const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
       nativeTheme.themeSource = settings.theme
+      accountViewManager?.setLayout(settings.accountSelectorPosition, settings.sidebarCollapsed)
       for (const contents of webContents.getAllWebContents()) applyGmailCleanup(contents)
       installAppMenu()
       const owner = mainWindow

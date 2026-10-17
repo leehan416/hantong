@@ -2,6 +2,7 @@ export const LANGUAGE_OPTIONS = ['system', 'ko', 'en'] as const
 export const THEME_OPTIONS = ['system', 'light', 'dark'] as const
 export const CLOSE_ACTION_OPTIONS = ['hide', 'quit'] as const
 export const ACCOUNT_SELECTOR_POSITION_OPTIONS = ['top', 'bottom', 'left', 'right'] as const
+export type AccountSelectorPosition = (typeof ACCOUNT_SELECTOR_POSITION_OPTIONS)[number]
 export const ACCENT_COLOR_OPTIONS = ['blue', 'purple', 'green', 'orange', 'gray'] as const
 // Gmail interface elements a user may hide; each is off by default so Gmail looks unchanged.
 export const GMAIL_CLEANUP_FIELDS = [

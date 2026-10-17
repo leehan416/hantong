@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
 import {
+  ACCOUNT_SELECTOR_POSITION_OPTIONS,
   GMAIL_CLEANUP_FIELDS,
+  type AccountSelectorPosition,
   type AppSettings,
   type AppSettingsPatch
 } from '../../shared/settings'
 import type { AccountAccessState, AccountViewStatus, AppInfo, UnreadCounts } from '../../shared/ipc'
+import {
+  ACCOUNT_CHROME_HEIGHT,
+  ACCOUNT_SIDEBAR_COLLAPSED_WIDTH,
+  ACCOUNT_SIDEBAR_WIDTH
+} from '../../shared/ipc'
+import { AccountSelector } from './AccountSelector'
 import {
   AccountAccessController,
   type AccountAccessUiState,
@@ -41,6 +49,10 @@ const messages = {
     apiDisconnect: '연결 해제',
     apiCancel: '취소',
     apiFailure: '연결을 완료하지 못했습니다. 다시 시도해 주세요.',
+    position: '계정 선택 영역 위치',
+    positions: { top: '상단', bottom: '하단', left: '좌측', right: '우측' },
+    collapse: '사이드바 접기',
+    expand: '사이드바 펼치기',
     accessCheckingTitle: '메일을 준비하고 있습니다',
     accessChecking: 'Google 연결 상태를 확인하고 있습니다.',
     accessRequiredTitle: 'Google 계정을 연결해 주세요',
@@ -94,6 +106,10 @@ const messages = {
     apiDisconnect: 'Disconnect',
     apiCancel: 'Cancel',
     apiFailure: 'Unable to complete the connection. Please try again.',
+    position: 'Account selector position',
+    positions: { top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right' },
+    collapse: 'Collapse sidebar',
+    expand: 'Expand sidebar',
     accessCheckingTitle: 'Preparing your mail',
     accessChecking: 'Checking the Google connection.',
     accessRequiredTitle: 'Connect a Google account',
@@ -154,6 +170,8 @@ function App(): React.JSX.Element {
       ? settings.language
       : (info?.locale ?? (navigator.language.startsWith('ko') ? 'ko' : 'en'))
   const text = messages[locale]
+  const position = settings?.accountSelectorPosition ?? 'top'
+  const sidebarCollapsed = settings?.sidebarCollapsed ?? false
   const activeAccountId = accounts?.activeAccountId ?? null
   const activeIndex =
     accounts?.accounts.findIndex((account) => account.id === activeAccountId) ?? -1
@@ -321,6 +339,19 @@ function App(): React.JSX.Element {
     document.documentElement.lang = locale
   }, [locale])
 
+  useEffect(() => {
+    document.documentElement.dataset.accountPosition = position
+    document.documentElement.dataset.sidebarCollapsed = String(sidebarCollapsed)
+    document.documentElement.style.setProperty(
+      '--account-sidebar-width',
+      `${sidebarCollapsed ? ACCOUNT_SIDEBAR_COLLAPSED_WIDTH : ACCOUNT_SIDEBAR_WIDTH}px`
+    )
+    document.documentElement.style.setProperty(
+      '--account-chrome-height',
+      `${ACCOUNT_CHROME_HEIGHT}px`
+    )
+  }, [position, sidebarCollapsed])
+
   async function addAccount(): Promise<void> {
     setBusy(true)
     setOperationFailed(false)
@@ -408,132 +439,198 @@ function App(): React.JSX.Element {
 
   return (
     <div className="app-shell">
-      <header className="account-chrome">
-        <nav
-          className="account-list"
-          aria-label={locale === 'ko' ? 'Gmail 계정' : 'Gmail accounts'}
-        >
-          {accounts?.accounts.map((account, index) => {
-            const unread = unreadCounts[account.id] ?? 0
-            return (
-              <button
-                className="account-button"
-                key={account.id}
-                type="button"
-                aria-pressed={account.id === activeAccountId}
-                aria-label={unread ? text.unreadLabel(index + 1, unread) : undefined}
-                disabled={accountActionsBusy}
-                onClick={() => void activateAccount(account.id)}
-              >
-                Gmail {index + 1}
-                {unread > 0 && (
-                  <span className="unread-badge" aria-hidden="true">
-                    {unread > 99 ? '99+' : unread}
-                  </span>
+      <div className={`account-layout account-layout-${position}`}>
+        <header className="account-chrome">
+          {position === 'left' || position === 'right' ? (
+            <>
+              <div className="sidebar-main">
+                <AccountSelector
+                  accounts={accounts?.accounts ?? []}
+                  activeAccountId={activeAccountId}
+                  unreadCounts={unreadCounts}
+                  locale={locale}
+                  disabled={accountActionsBusy}
+                  addDisabled={accountActionsBusy || accounts === null}
+                  onActivate={(id) => void activateAccount(id)}
+                  onAdd={() => void addAccount()}
+                />
+                {!sidebarCollapsed && (
+                  <>
+                    <button
+                      className="sidebar-add"
+                      type="button"
+                      disabled={accountActionsBusy || accounts === null}
+                      onClick={() => void addAccount()}
+                    >
+                      <span aria-hidden="true">＋</span> {text.add}
+                    </button>
+                    <button
+                      className="remove-account"
+                      type="button"
+                      disabled={accountActionsBusy || activeAccountId === null}
+                      onClick={() => void removeActiveAccount()}
+                    >
+                      {text.remove}
+                    </button>
+                  </>
                 )}
+              </div>
+              <div className="sidebar-footer">
+                <button
+                  className="sidebar-toggle"
+                  type="button"
+                  aria-label={sidebarCollapsed ? text.expand : text.collapse}
+                  title={sidebarCollapsed ? text.expand : text.collapse}
+                  onClick={() => void changeSettings({ sidebarCollapsed: !sidebarCollapsed })}
+                >
+                  <span aria-hidden="true">{sidebarCollapsed ? '›' : '‹'}</span>
+                  {!sidebarCollapsed && <span>{text.collapse}</span>}
+                </button>
+                <button
+                  className="settings-button"
+                  type="button"
+                  aria-pressed={settingsOpen}
+                  onClick={() => setSettingsOpen((open) => !open)}
+                >
+                  {text.settings}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <AccountSelector
+                accounts={accounts?.accounts ?? []}
+                activeAccountId={activeAccountId}
+                unreadCounts={unreadCounts}
+                locale={locale}
+                disabled={accountActionsBusy}
+                addDisabled={accountActionsBusy || accounts === null}
+                onActivate={(id) => void activateAccount(id)}
+                onAdd={() => void addAccount()}
+              />
+              <button
+                className="add-account"
+                type="button"
+                disabled={accountActionsBusy || accounts === null}
+                aria-label={text.add}
+                title={text.add}
+                onClick={() => void addAccount()}
+              >
+                <span aria-hidden="true">＋</span>
               </button>
-            )
-          })}
-        </nav>
-        <button
-          className="add-account"
-          type="button"
-          disabled={accountActionsBusy || accounts === null}
-          onClick={() => void addAccount()}
-        >
-          <span aria-hidden="true">＋</span> {text.add}
-        </button>
-        <button
-          className="remove-account"
-          type="button"
-          disabled={accountActionsBusy || activeAccountId === null}
-          onClick={() => void removeActiveAccount()}
-        >
-          {text.remove}
-        </button>
-        <button
-          className="settings-button"
-          type="button"
-          aria-pressed={settingsOpen}
-          onClick={() => setSettingsOpen((open) => !open)}
-        >
-          {text.settings}
-        </button>
-      </header>
-      <div className="status-strip">
-        <span className="status-text" role="status" aria-live="polite">
-          {statusMessage}
-        </span>
-        {(currentStatus === 'error' ||
-          currentStatus === 'blocked' ||
-          (operationFailed && !removalFailed)) && (
-          <button
-            className="retry-button"
-            type="button"
-            disabled={accountActionsBusy}
-            onClick={() => void retry()}
-          >
-            {text.retry}
-          </button>
-        )}
-        {activeAccountId && (
-          <div className="api-connection" role="group" aria-label={text.apiLabel}>
-            <span
-              className="api-connection-status"
-              role="status"
-              aria-live="polite"
-              aria-busy={googleStateMatches && (googleState.loading || googleOperation !== null)}
-              title={googleMessage}
+              <button
+                className="settings-button"
+                type="button"
+                aria-pressed={settingsOpen}
+                onClick={() => setSettingsOpen((open) => !open)}
+              >
+                {text.settings}
+              </button>
+            </>
+          )}
+        </header>
+        <div className="status-strip">
+          <span className="status-text" role="status" aria-live="polite">
+            {statusMessage}
+          </span>
+          {(currentStatus === 'error' ||
+            currentStatus === 'blocked' ||
+            (operationFailed && !removalFailed)) && (
+            <button
+              className="retry-button"
+              type="button"
+              disabled={accountActionsBusy}
+              onClick={() => void retry()}
             >
-              {googleMessage}
-            </span>
-            {accessReady && googleStateMatches && googleState.readFailed ? (
-              <button
-                className="api-action"
-                type="button"
-                disabled={busy || googleState.loading}
-                onClick={() => void googleController.current?.refresh()}
+              {text.retry}
+            </button>
+          )}
+          {activeAccountId && (
+            <div className="api-connection" role="group" aria-label={text.apiLabel}>
+              <span
+                className="api-connection-status"
+                role="status"
+                aria-live="polite"
+                aria-busy={googleStateMatches && (googleState.loading || googleOperation !== null)}
+                title={googleMessage}
               >
-                {text.retry}
-              </button>
-            ) : accessReady && googleStatus === 'connected' ? (
-              <button
-                className="api-action"
-                type="button"
-                disabled={busy || googleOperation !== null}
-                onClick={() => void googleController.current?.disconnect()}
-              >
-                {text.apiDisconnect}
-              </button>
-            ) : accessReady && googleStatus === 'connecting' ? (
-              <button
-                className="api-action"
-                type="button"
-                disabled={busy || googleOperation === 'cancelling'}
-                onClick={() => void googleController.current?.cancel()}
-              >
-                {text.apiCancel}
-              </button>
-            ) : accessReady &&
-              (googleStatus === 'disconnected' ||
-                googleStatus === 'reconnect_required' ||
-                googleStatus === 'error') ? (
-              <button
-                className="api-action"
-                type="button"
-                disabled={busy || googleOperation !== null}
-                onClick={() => void googleController.current?.connect()}
-              >
-                {googleStatus === 'disconnected' ? text.apiConnect : text.apiReconnect}
-              </button>
-            ) : null}
-          </div>
-        )}
+                {googleMessage}
+              </span>
+              {accessReady && googleStateMatches && googleState.readFailed ? (
+                <button
+                  className="api-action"
+                  type="button"
+                  disabled={busy || googleState.loading}
+                  onClick={() => void googleController.current?.refresh()}
+                >
+                  {text.retry}
+                </button>
+              ) : accessReady && googleStatus === 'connected' ? (
+                <button
+                  className="api-action"
+                  type="button"
+                  disabled={busy || googleOperation !== null}
+                  onClick={() => void googleController.current?.disconnect()}
+                >
+                  {text.apiDisconnect}
+                </button>
+              ) : accessReady && googleStatus === 'connecting' ? (
+                <button
+                  className="api-action"
+                  type="button"
+                  disabled={busy || googleOperation === 'cancelling'}
+                  onClick={() => void googleController.current?.cancel()}
+                >
+                  {text.apiCancel}
+                </button>
+              ) : accessReady &&
+                (googleStatus === 'disconnected' ||
+                  googleStatus === 'reconnect_required' ||
+                  googleStatus === 'error') ? (
+                <button
+                  className="api-action"
+                  type="button"
+                  disabled={busy || googleOperation !== null}
+                  onClick={() => void googleController.current?.connect()}
+                >
+                  {googleStatus === 'disconnected' ? text.apiConnect : text.apiReconnect}
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
       </div>
       {settingsOpen && (
         <main className="settings-panel" aria-labelledby="settings-title">
           <section className="settings-content">
             <h1 id="settings-title">{text.settings}</h1>
+            <details className="settings-position">
+              <summary className="settings-position-trigger">
+                <span>{text.position}</span>
+                <span className="settings-position-current">
+                  {text.positions[position]} <span aria-hidden="true">⌄</span>
+                </span>
+              </summary>
+              <fieldset className="settings-position-options">
+                <legend className="visually-hidden">{text.position}</legend>
+                {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
+                  <label key={option} className="settings-position-option">
+                    <input
+                      type="radio"
+                      name="account-selector-position"
+                      value={option}
+                      checked={position === option}
+                      onChange={() =>
+                        void changeSettings({
+                          accountSelectorPosition: option as AccountSelectorPosition
+                        })
+                      }
+                    />
+                    {text.positions[option]}
+                  </label>
+                ))}
+              </fieldset>
+            </details>
             {(
               [
                 ['language', text.language, text.languageOptions],

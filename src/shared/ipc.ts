@@ -25,6 +25,8 @@ export const GOOGLE_CONNECTION_DISCONNECT_CHANNEL = 'hantong:google-connection-d
 export const ACCOUNT_ACCESS_STATE_CHANNEL = 'hantong:account-access-state'
 export const ACCOUNT_ACCESS_STATE_EVENT = 'hantong:account-access-state-change'
 export const ACCOUNT_CHROME_HEIGHT = 88
+export const ACCOUNT_SIDEBAR_WIDTH = 248
+export const ACCOUNT_SIDEBAR_COLLAPSED_WIDTH = 44
 
 export type AccountViewStatus = {
   accountId: string
