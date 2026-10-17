@@ -11,6 +11,7 @@ import {
   SETTINGS_GET_CHANNEL,
   SETTINGS_UPDATE_CHANNEL,
   SETTINGS_EVENT,
+  SETTINGS_PANEL_CHANNEL,
   ACCOUNT_VIEW_STATUS_EVENT,
   ACCOUNT_ACCESS_STATE_CHANNEL,
   ACCOUNT_ACCESS_STATE_EVENT,
@@ -63,6 +64,7 @@ const api: HantongApi = Object.freeze({
   },
   getSettings: () => ipcRenderer.invoke(SETTINGS_GET_CHANNEL),
   updateSettings: (patch) => ipcRenderer.invoke(SETTINGS_UPDATE_CHANNEL, patch),
+  setSettingsPanelOpen: (open) => ipcRenderer.invoke(SETTINGS_PANEL_CHANNEL, open),
   onSettings: (listener) => {
     const handler = (_event: IpcRendererEvent, settings: AppSettings): void => listener(settings)
     ipcRenderer.on(SETTINGS_EVENT, handler)

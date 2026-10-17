@@ -71,6 +71,7 @@ export function createAccountViewManager(
   getDocumentState: (id: string) => GmailDocumentState
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   getActiveAccountId: () => string | null
+  setCovered: (covered: boolean) => void
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -98,6 +99,8 @@ export function createAccountViewManager(
       : undefined
   }, reportIdentityFailure)
   let activeAccountId: string | null = null
+  // A full-window local panel (settings) is showing, so the native Gmail view must not sit on top.
+  let covered = false
   let disposed = false
 
   function alive(): boolean {
@@ -121,6 +124,7 @@ export function createAccountViewManager(
 
   function reconcileVisibility(id: string, entry: ViewEntry): void {
     const shouldAttach =
+      !covered &&
       activeAccountId === id &&
       !entry.disposePromise &&
       !entry.loading &&
@@ -457,6 +461,11 @@ export function createAccountViewManager(
   return {
     activate,
     retry,
+    setCovered(next) {
+      if (covered === next) return
+      covered = next
+      for (const [id, entry] of views) reconcileVisibility(id, entry)
+    },
     disposeAccount,
     async readWebIdentity(id, signal) {
       const accountExists = (): boolean =>

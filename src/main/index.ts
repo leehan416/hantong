@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  nativeTheme,
   Notification,
   powerMonitor,
   safeStorage,
@@ -59,6 +60,7 @@ import {
   SETTINGS_GET_CHANNEL,
   SETTINGS_UPDATE_CHANNEL,
   SETTINGS_EVENT,
+  SETTINGS_PANEL_CHANNEL,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -251,6 +253,13 @@ function requireGoogleConnectionManager(): NonNullable<typeof googleConnectionMa
   return googleConnectionManager
 }
 
+// The language setting wins; 'system' follows the OS locale.
+function uiLocale(): 'ko' | 'en' {
+  const language = settingsStore?.get().language ?? 'system'
+  if (language !== 'system') return language
+  return app.getLocale().startsWith('ko') ? 'ko' : 'en'
+}
+
 // Electron drops click handlers of notifications that get garbage-collected, so keep them alive.
 const shownNotifications = new Set<Notification>()
 
@@ -302,6 +311,7 @@ void app
   .then(() => {
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
+    nativeTheme.themeSource = settingsStore.get().theme
     const credentialStore = createGoogleCredentialStore({
       directory: join(app.getPath('userData'), 'google-credentials'),
       platform: process.platform,
@@ -363,7 +373,7 @@ void app
           signal
         })
     })
-    const korean = (): boolean => app.getLocale().startsWith('ko')
+    const korean = (): boolean => uiLocale() === 'ko'
     const mailAlerts = createGmailMailAlerts({
       accountExists,
       accountLabel: (accountId) => {
@@ -660,7 +670,7 @@ void app
 
     function settingsRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'update',
+      operation: 'get' | 'update' | 'panel',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
@@ -687,9 +697,14 @@ void app
         throw new Error('Request rejected')
       }
       const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
+      nativeTheme.themeSource = settings.theme
       const owner = mainWindow
       if (owner && !owner.isDestroyed()) owner.webContents.send(SETTINGS_EVENT, settings)
       return settings
+    })
+    ipcMain.handle(SETTINGS_PANEL_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'panel', args)) throw new Error('Request rejected')
+      accountViewManager?.setCovered(args[0] === true)
     })
     ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
@@ -737,7 +752,7 @@ void app
         ownerIsAlive,
         async confirm(accountNumber): Promise<boolean> {
           if (!ownerIsAlive()) return false
-          const isKorean = app.getLocale().startsWith('ko')
+          const isKorean = uiLocale() === 'ko'
           const accountLabel = `Gmail ${accountNumber}`
           const response = await dialog.showMessageBox(owner, {
             type: 'warning',

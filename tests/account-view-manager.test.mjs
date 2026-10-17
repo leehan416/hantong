@@ -415,3 +415,20 @@ test('load timeout reports an error and a late success cannot replace it', async
   })
   await fixtureData.manager.dispose()
 })
+
+test('covering the window detaches the granted mail view and uncovering restores it', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  const state = fixtureData.manager.getDocumentState(firstId)
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, state.revision), true)
+  assert.equal(fixtureData.attached.length, 1)
+  fixtureData.manager.setCovered(true)
+  assert.equal(fixtureData.detached.length, 1)
+  // Switching accounts while covered must not bring a view back on top of the panel.
+  await fixtureData.manager.activate(firstId)
+  assert.equal(fixtureData.attached.length, 1)
+  fixtureData.manager.setCovered(false)
+  assert.equal(fixtureData.attached.length, 2)
+  await fixtureData.manager.dispose()
+})

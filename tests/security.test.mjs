@@ -190,12 +190,15 @@ test('settings IPC allows get with no args and update with one valid patch from 
     isAllowedSettingsRequest({ ...base, operation: 'update', args: [{ theme: 'dark' }] }),
     true
   )
+  assert.equal(isAllowedSettingsRequest({ ...base, operation: 'panel', args: [true] }), true)
   for (const request of [
     { ...base, operation: 'get', args: [{}] },
     { ...base, operation: 'update', args: [] },
     { ...base, operation: 'update', args: [{ theme: 'neon' }] },
     { ...base, operation: 'update', args: [{ theme: 'dark' }, {}] },
     { ...base, operation: 'reset', args: [] },
+    { ...base, operation: 'panel', args: ['true'] },
+    { ...base, operation: 'panel', args: [] },
     { ...base, senderMatches: false, operation: 'get', args: [] },
     { ...base, senderUrl: 'https://mail.google.com/', operation: 'get', args: [] }
   ]) {
