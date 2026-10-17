@@ -24,6 +24,7 @@ import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 import { loadRuntimeRelayConfig } from './relay-config'
 import { createRelayClient } from './relay-client'
 import { createRelayRuntime } from './relay-runtime'
+import { createRelayCredentialStore } from './relay-credential-store'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
@@ -423,14 +424,34 @@ void app
           if (!client) return Promise.reject(new Error('Relay is disabled'))
           return client.createSession(...args)
         },
+        refreshSession: (...args) => {
+          const client = relayClient ?? resolveRelayClient()
+          if (!client) return Promise.reject(new Error('Relay is disabled'))
+          return client.refreshSession(...args)
+        },
         consumeEvents: (...args) =>
           relayClient?.consumeEvents(...args) ?? Promise.reject(new Error('Relay is disabled')),
         deleteSession: (token) => relayClient?.deleteSession(token) ?? Promise.resolve()
       },
       accountExists,
       now: () => Date.now(),
+      credentials: createRelayCredentialStore({
+        directory: join(app.getPath('userData'), 'relay-credentials'),
+        platform: process.platform,
+        safeStorage
+      }),
       onSignal: (accountId, event) => gmailRelaySync?.onSignal(accountId, event)
     })
+    let relayEnabled = false
+    try {
+      relayEnabled = relayConfig() !== undefined
+    } catch {
+      // Invalid relay settings leave the relay off; Gmail still syncs through the fallback poll.
+    }
+    // Reattach saved relay sessions without a browser round-trip; unknown accounts are skipped.
+    if (relayEnabled) {
+      for (const accountId of allAccountIds()) void relayRuntime.resume(accountId)
+    }
     googleConnectionRuntime = createGoogleConnectionRuntime({
       accountExists,
       readWebIdentity: (id, signal) =>

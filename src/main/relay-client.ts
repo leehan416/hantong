@@ -45,6 +45,8 @@ interface Challenge {
 interface RelaySession {
   readonly accessToken: string
   readonly expiresAt: number
+  // Absent when the relay predates refresh tokens; the session then simply ends at expiry.
+  readonly refreshToken?: string
 }
 
 const SAFE_OPAQUE = /^[A-Za-z0-9._~-]{1,2048}$/
@@ -142,6 +144,7 @@ export function createRelayClient(options: RelayClientOptions): {
     installationId: string,
     signal?: AbortSignal
   ): Promise<RelaySession>
+  refreshSession(refreshToken: string, signal?: AbortSignal): Promise<RelaySession>
   deleteSession(token: string): Promise<void>
   consumeEvents(
     token: string,
@@ -235,6 +238,29 @@ export function createRelayClient(options: RelayClientOptions): {
     }
   }
 
+  const parseSession = (payload: unknown): RelaySession => {
+    if (
+      !record(payload) ||
+      typeof payload.access_token !== 'string' ||
+      !SAFE_OPAQUE.test(payload.access_token) ||
+      payload.token_type !== 'Bearer' ||
+      typeof payload.expires_in !== 'number' ||
+      !Number.isSafeInteger(payload.expires_in) ||
+      payload.expires_in < 1 ||
+      payload.expires_in > 3600 ||
+      (payload.refresh_token !== undefined &&
+        (typeof payload.refresh_token !== 'string' || !SAFE_OPAQUE.test(payload.refresh_token)))
+    )
+      throw new RelayFailure('invalid_response')
+    const expiresAt = options.now() + payload.expires_in * 1000
+    if (!Number.isSafeInteger(expiresAt)) throw new RelayFailure('invalid_response')
+    return {
+      accessToken: payload.access_token,
+      expiresAt,
+      ...(typeof payload.refresh_token === 'string' ? { refreshToken: payload.refresh_token } : {})
+    }
+  }
+
   return {
     async fetchChallenge(signal): Promise<Challenge> {
       const payload = await readJson('/auth/challenge', { method: 'POST' }, signal)
@@ -254,29 +280,31 @@ export function createRelayClient(options: RelayClientOptions): {
       if (!idToken.trim() || !SAFE_OPAQUE.test(nonce) || !installationId.trim()) {
         throw new RelayFailure('invalid_response')
       }
-      const payload = await readJson(
-        '/auth/session',
-        {
-          method: 'POST',
-          headers: { accept: 'application/json', 'content-type': 'application/json' },
-          body: JSON.stringify({ id_token: idToken, nonce, installation_id: installationId })
-        },
-        signal
+      return parseSession(
+        await readJson(
+          '/auth/session',
+          {
+            method: 'POST',
+            headers: { accept: 'application/json', 'content-type': 'application/json' },
+            body: JSON.stringify({ id_token: idToken, nonce, installation_id: installationId })
+          },
+          signal
+        )
       )
-      if (
-        !record(payload) ||
-        typeof payload.access_token !== 'string' ||
-        !SAFE_OPAQUE.test(payload.access_token) ||
-        payload.token_type !== 'Bearer' ||
-        typeof payload.expires_in !== 'number' ||
-        !Number.isSafeInteger(payload.expires_in) ||
-        payload.expires_in < 1 ||
-        payload.expires_in > 3600
+    },
+    async refreshSession(refreshToken, signal): Promise<RelaySession> {
+      if (!SAFE_OPAQUE.test(refreshToken)) throw new RelayFailure('invalid_response')
+      return parseSession(
+        await readJson(
+          '/auth/refresh',
+          {
+            method: 'POST',
+            headers: { accept: 'application/json', 'content-type': 'application/json' },
+            body: JSON.stringify({ refresh_token: refreshToken })
+          },
+          signal
+        )
       )
-        throw new RelayFailure('invalid_response')
-      const expiresAt = options.now() + payload.expires_in * 1000
-      if (!Number.isSafeInteger(expiresAt)) throw new RelayFailure('invalid_response')
-      return { accessToken: payload.access_token, expiresAt }
     },
     async deleteSession(token): Promise<void> {
       const { response, controller, done } = await request('/auth/session', {

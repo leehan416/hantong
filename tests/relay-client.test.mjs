@@ -283,3 +283,32 @@ test('relay challenge, session, deletion and events retain an approved base path
     ]
   )
 })
+
+test('relay refresh posts only the refresh token and returns the rotated one', async () => {
+  const requests = []
+  const client = relay.createRelayClient({
+    baseUrl: 'https://relay.example/api/v1/',
+    fetch: async (url, init) => {
+      requests.push({ url, body: init.body })
+      return response(200, {
+        access_token: 'opaque-token_2',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'refresh_2'
+      })
+    },
+    now: () => 1000
+  })
+  const session = await client.refreshSession('refresh_1')
+  assert.deepEqual(requests, [
+    {
+      url: 'https://relay.example/api/v1/auth/refresh',
+      body: JSON.stringify({ refresh_token: 'refresh_1' })
+    }
+  ])
+  assert.deepEqual(
+    { ...session },
+    { accessToken: 'opaque-token_2', expiresAt: 3_601_000, refreshToken: 'refresh_2' }
+  )
+  await assert.rejects(client.refreshSession('bad token'), { code: 'invalid_response' })
+})

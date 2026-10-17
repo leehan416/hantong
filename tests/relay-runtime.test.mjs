@@ -154,3 +154,126 @@ test('a stale expiry timer cannot invalidate a newer relay session', async () =>
   assert.equal(streamSignals[1].aborted, false)
   runtime.disconnect(account)
 })
+
+function refreshHarness(overrides = {}) {
+  const timers = []
+  const calls = { refresh: [], deleted: [], streams: [], saved: [], removed: [] }
+  const stored = new Map(overrides.stored ?? [])
+  const runtime = runtimeModule.createRelayRuntime({
+    client: {
+      createSession: async () => ({
+        accessToken: 'session-one',
+        expiresAt: 100_000,
+        refreshToken: 'refresh-one'
+      }),
+      refreshSession:
+        overrides.refreshSession ??
+        (async (token) => {
+          calls.refresh.push(token)
+          return { accessToken: 'session-two', expiresAt: 200_000, refreshToken: 'refresh-two' }
+        }),
+      deleteSession: async (token) => calls.deleted.push(token),
+      consumeEvents: async (token, _onEvent, signal) => {
+        calls.streams.push(token)
+        return new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+      }
+    },
+    credentials: {
+      read: async (id) => stored.get(id) ?? null,
+      write: async (id, token) => (calls.saved.push(token), stored.set(id, token)),
+      delete: async (id) => (calls.removed.push(id), stored.delete(id))
+    },
+    accountExists: () => true,
+    now: () => 1000,
+    onSignal: () => undefined,
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay }
+      timers.push(timer)
+      return timer
+    },
+    clearTimeout: () => undefined
+  })
+  return { runtime, timers, calls, stored }
+}
+
+test('a refreshable session is saved and renewed before expiry without logging out', async () => {
+  const { runtime, timers, calls } = refreshHarness()
+  runtime.accept(account, { idToken: 'proof', nonce: 'nonce_1' })
+  await turn()
+  await turn()
+  assert.deepEqual(calls.saved, ['refresh-one'])
+  const renewTimer = timers.find((timer) => timer.delay === 100_000 - 60_000 - 1000)
+  assert.ok(renewTimer)
+  renewTimer.callback()
+  await turn()
+  await turn()
+  assert.deepEqual(calls.refresh, ['refresh-one'])
+  assert.deepEqual(calls.streams, ['session-one', 'session-two'])
+  assert.deepEqual(calls.saved, ['refresh-one', 'refresh-two'])
+  assert.deepEqual(calls.deleted, [])
+})
+
+test('resume reattaches a stored refresh token and quitting keeps the server session', async () => {
+  const { runtime, calls } = refreshHarness({ stored: [[account, 'refresh-saved']] })
+  await runtime.resume(account)
+  await turn()
+  await turn()
+  assert.deepEqual(calls.refresh, ['refresh-saved'])
+  assert.deepEqual(calls.streams, ['session-two'])
+  await runtime.dispose()
+  assert.deepEqual(calls.deleted, [])
+  assert.deepEqual(calls.removed, [])
+})
+
+test('a dead refresh token is forgotten while a transient failure retries later', async () => {
+  const dead = refreshHarness({
+    stored: [[account, 'refresh-saved']],
+    refreshSession: async () => {
+      throw new relayClientModule.RelayFailure('unauthorized')
+    }
+  })
+  await dead.runtime.resume(account)
+  await turn()
+  await turn()
+  assert.deepEqual(dead.calls.removed, [account])
+  assert.equal(dead.timers.length, 0)
+
+  let attempts = 0
+  const flaky = refreshHarness({
+    stored: [[account, 'refresh-saved']],
+    refreshSession: async () => {
+      attempts += 1
+      throw new relayClientModule.RelayFailure('network_error')
+    }
+  })
+  await flaky.runtime.resume(account)
+  await turn()
+  await turn()
+  assert.deepEqual(flaky.calls.removed, [])
+  assert.equal(flaky.timers.at(-1).delay, 60_000)
+  flaky.timers.at(-1).callback()
+  await turn()
+  await turn()
+  assert.equal(attempts, 2)
+  assert.equal(flaky.timers.at(-1).delay, 120_000)
+  // Disconnect cancels the pending retry.
+  flaky.runtime.disconnect(account)
+  flaky.timers.at(-1).callback()
+  await turn()
+  assert.equal(attempts, 2)
+})
+
+test('disconnect logs out and forgets the refresh token; a new login does not log out', async () => {
+  const { runtime, calls } = refreshHarness()
+  runtime.accept(account, { idToken: 'proof', nonce: 'nonce_1' })
+  await turn()
+  await turn()
+  runtime.accept(account, { idToken: 'proof', nonce: 'nonce_2' })
+  await turn()
+  await turn()
+  assert.deepEqual(calls.deleted, [])
+  runtime.disconnect(account)
+  await turn()
+  assert.deepEqual(calls.deleted, ['session-one'])
+  assert.deepEqual(calls.removed, [account])
+})
