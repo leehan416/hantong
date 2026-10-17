@@ -1,4 +1,4 @@
-import { isAccountId } from './account-state'
+import { isAccountId, isValidGmailAccountDisplayName } from './account-state'
 import { isSettingsPatch } from './settings-store'
 
 interface AppInfoRequest {
@@ -83,8 +83,18 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
   if (request.operation === 'retry') {
     return request.args.length === 0 && request.accountExists
   }
+  if (request.operation === 'setDisplayName') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      isValidGmailAccountDisplayName(request.args[1]) &&
+      request.accountExists
+    )
+  }
   return (
-    (request.operation === 'activate' || request.operation === 'remove') &&
+    (request.operation === 'activate' ||
+      request.operation === 'remove' ||
+      request.operation === 'setDefault') &&
     request.args.length === 1 &&
     isAccountId(request.args[0]) &&
     request.accountExists

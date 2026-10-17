@@ -136,6 +136,30 @@ test('account IPC validates operation arguments and requires a stored account fo
     policy.isAllowedAccountRequest({ ...base, operation: 'remove', accountExists: true }),
     true
   )
+  for (const operation of ['setDefault']) {
+    assert.equal(policy.isAllowedAccountRequest({ ...base, operation, args: [base.args[0]] }), true)
+  }
+  for (const displayName of ['Personal', null]) {
+    assert.equal(
+      policy.isAllowedAccountRequest({
+        ...base,
+        operation: 'setDisplayName',
+        args: [base.args[0], displayName]
+      }),
+      true
+    )
+  }
+  for (const patch of [
+    { operation: 'setDefault', args: [base.args[0], 'extra'] },
+    { operation: 'setDisplayName', args: [base.args[0], '  '] },
+    { operation: 'setDisplayName', args: [base.args[0], 'x'.repeat(81)] },
+    { operation: 'setDisplayName', args: [base.args[0], 'unknown@example.com', 'extra'] },
+    { operation: 'setDisplayName', args: ['../other-session', 'Personal'] },
+    { operation: 'setDisplayName', args: [base.args[0], null], accountExists: false },
+    { operation: 'recordVerifiedEmail', args: [base.args[0], 'user@example.com'] }
+  ]) {
+    assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
+  }
   for (const patch of [
     { operation: 'remove', args: ['../other-session'], accountExists: true },
     { operation: 'remove', accountExists: false },

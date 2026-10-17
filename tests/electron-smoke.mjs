@@ -65,6 +65,8 @@ async function verify(window) {
     'getAccounts',
     'addAccount',
     'activateAccount',
+    'setAccountDisplayName',
+    'setDefaultAccount',
     'retryAccount',
     'removeAccount',
     'onAccountViewStatus',

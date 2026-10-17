@@ -7,6 +7,8 @@ export const ACCOUNT_ADD_CHANNEL = 'hantong:accounts-add'
 export const ACCOUNT_ACTIVATE_CHANNEL = 'hantong:accounts-activate'
 export const ACCOUNT_RETRY_CHANNEL = 'hantong:accounts-retry'
 export const ACCOUNT_REMOVE_CHANNEL = 'hantong:accounts-remove'
+export const ACCOUNT_DISPLAY_NAME_CHANNEL = 'hantong:accounts-display-name'
+export const ACCOUNT_DEFAULT_CHANNEL = 'hantong:accounts-default'
 export const ACCOUNT_VIEW_STATUS_EVENT = 'hantong:account-view-status'
 export const ACCOUNT_STATE_EVENT = 'hantong:accounts-change'
 export const UNREAD_COUNTS_CHANNEL = 'hantong:unread-counts-get'
@@ -61,6 +63,8 @@ export interface HantongApi {
   getAccounts: () => Promise<AccountState>
   addAccount: () => Promise<AccountState>
   activateAccount: (accountId: string) => Promise<AccountState>
+  setAccountDisplayName: (accountId: string, displayName: string | null) => Promise<AccountState>
+  setDefaultAccount: (accountId: string) => Promise<AccountState>
   retryAccount: () => Promise<void>
   removeAccount: (accountId: string) => Promise<AccountRemovalResult>
   onAccountViewStatus: (listener: (status: AccountViewStatus) => void) => () => void

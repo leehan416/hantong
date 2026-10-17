@@ -37,6 +37,7 @@ import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate }
 import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import { buildGmailCleanupCss } from './gmail-cleanup'
+import type { AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
@@ -62,6 +63,8 @@ import { is, optimizer } from '@electron-toolkit/utils'
 import {
   ACCOUNT_ACTIVATE_CHANNEL,
   ACCOUNT_ADD_CHANNEL,
+  ACCOUNT_DEFAULT_CHANNEL,
+  ACCOUNT_DISPLAY_NAME_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
@@ -221,6 +224,22 @@ function createWindow(): void {
         .accounts.some((account) => account.id === id),
     publish: (state) => {
       if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
+    },
+    onVerifiedIdentity: (accountId, emailAddress) => {
+      try {
+        const store = requireAccountStore()
+        if (
+          store.getState().accounts.find((account) => account.id === accountId)?.email ===
+          emailAddress
+        ) {
+          return
+        }
+        const state = store.recordVerifiedEmail(accountId, emailAddress)
+        publishAccountState(window, state)
+      } catch {
+        // Identity persistence must not block mailbox access; never log the account email.
+        console.error('Unable to save verified Gmail account identity')
+      }
     }
   })
   accountAccessController = windowAccessController
@@ -421,6 +440,12 @@ function showAccount(accountId: string): void {
   window.focus()
   window.webContents.send(ACCOUNT_STATE_EVENT, state)
   if (state.activeAccountId) activateAccountView(state.activeAccountId)
+}
+
+function publishAccountState(owner: BrowserWindow, state: AccountState): void {
+  if (mainWindow === owner && !owner.isDestroyed()) {
+    owner.webContents.send(ACCOUNT_STATE_EVENT, state)
+  }
 }
 
 function activateAccountView(accountId: string): void {
@@ -694,12 +719,12 @@ void app
 
     function accountRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'add' | 'activate' | 'retry' | 'remove',
+      operation: 'get' | 'add' | 'activate' | 'retry' | 'remove' | 'setDisplayName' | 'setDefault',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
       const ownerAlive = owner !== null && !owner.isDestroyed()
-      const id = args.length === 1 && typeof args[0] === 'string' ? args[0] : ''
+      const id = typeof args[0] === 'string' ? args[0] : ''
       const state = requireAccountStore().getState()
       return isAllowedAccountRequest({
         ownerAlive,
@@ -711,7 +736,10 @@ void app
         operation,
         args,
         accountExists:
-          operation === 'activate' || operation === 'remove'
+          operation === 'activate' ||
+          operation === 'remove' ||
+          operation === 'setDisplayName' ||
+          operation === 'setDefault'
             ? state.accounts.some((account) => account.id === id)
             : operation === 'retry' && state.activeAccountId !== null
       })
@@ -863,6 +891,38 @@ void app
       if (typeof id !== 'string') throw new Error('Request rejected')
       const state = requireAccountStore().activate(id)
       if (state.activeAccountId) activateAccountView(state.activeAccountId)
+      return state
+    })
+    ipcMain.handle(ACCOUNT_DISPLAY_NAME_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'setDisplayName', args)) {
+        throw new Error('Request rejected')
+      }
+      const accountId = args[0]
+      const displayName = args[1]
+      if (
+        typeof accountId !== 'string' ||
+        (displayName !== null && typeof displayName !== 'string')
+      ) {
+        throw new Error('Request rejected')
+      }
+      const owner = mainWindow
+      if (!owner) throw new Error('Request rejected')
+      const state = requireAccountStore().setDisplayName(accountId, displayName)
+      publishAccountState(owner, state)
+      return state
+    })
+    ipcMain.handle(ACCOUNT_DEFAULT_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'setDefault', args)) {
+        throw new Error('Request rejected')
+      }
+      const accountId = args[0]
+      if (typeof accountId !== 'string') throw new Error('Request rejected')
+      const owner = mainWindow
+      if (!owner) throw new Error('Request rejected')
+      const state = requireAccountStore().setDefault(accountId)
+      publishAccountState(owner, state)
       return state
     })
     ipcMain.handle(ACCOUNT_RETRY_CHANNEL, (event, ...args: unknown[]) => {

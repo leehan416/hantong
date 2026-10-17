@@ -23,7 +23,8 @@ function isValidEmail(value: unknown): value is string {
   )
 }
 
-function isValidDisplayName(value: unknown): value is string {
+export function isValidGmailAccountDisplayName(value: unknown): value is string | null {
+  if (value === null) return true
   return (
     typeof value === 'string' &&
     value.trim().length > 0 &&
@@ -55,7 +56,7 @@ export function parseAccountState(value: unknown): AccountState {
       account.email = entry.email
     }
     if (entry.displayName !== undefined) {
-      if (entry.displayName !== null && !isValidDisplayName(entry.displayName)) {
+      if (!isValidGmailAccountDisplayName(entry.displayName)) {
         throw new Error('Invalid account data')
       }
       account.displayName = entry.displayName
@@ -112,7 +113,7 @@ export function setGmailAccountDisplayName(
   if (!isAccountId(id) || !state.accounts.some((account) => account.id === id)) {
     throw new Error('Invalid account data')
   }
-  if (displayName !== null && !isValidDisplayName(displayName)) {
+  if (!isValidGmailAccountDisplayName(displayName)) {
     throw new Error('Invalid account data')
   }
   const accounts = state.accounts.map((account) =>
