@@ -11,6 +11,8 @@ interface RuntimeConfigOptions {
   readonly environment: Record<string, string | undefined>
   readonly isPackaged: boolean
   readonly localEnvPath?: string
+  // Build-time values; used only by packaged builds when the launcher supplies neither key.
+  readonly bundled?: Record<string, string | undefined>
 }
 
 interface RuntimeConfigIO {
@@ -33,7 +35,7 @@ export function loadRuntimeGoogleOAuthConfig(
   options: RuntimeConfigOptions,
   io: RuntimeConfigIO = {}
 ): GoogleOAuthConfig {
-  const { environment, isPackaged, localEnvPath } = options
+  const { environment, isPackaged, localEnvPath, bundled } = options
   if (hasLauncherConfig(environment)) return loadGoogleOAuthConfig(environment)
 
   if (!isPackaged && localEnvPath) {
@@ -61,5 +63,5 @@ export function loadRuntimeGoogleOAuthConfig(
     })
   }
 
-  return loadGoogleOAuthConfig({})
+  return loadGoogleOAuthConfig(isPackaged && bundled ? bundled : {})
 }

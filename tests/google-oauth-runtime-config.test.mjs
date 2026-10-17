@@ -219,3 +219,24 @@ test('reading local config does not mutate process.env', async () => {
     assert.deepEqual({ ...process.env }, before)
   })
 })
+
+test('packaged runtime falls back to build-time values only when the launcher supplies none', () => {
+  const bundled = { HANTONG_GOOGLE_CLIENT_ID: clientId, HANTONG_GOOGLE_CLIENT_SECRET: 'bundled' }
+  assert.deepEqual(
+    {
+      ...runtimeConfig.loadRuntimeGoogleOAuthConfig({ environment: {}, isPackaged: true, bundled })
+    },
+    { clientId, clientSecret: 'bundled' }
+  )
+  const launcherId = 'launcher.apps.googleusercontent.com'
+  assert.deepEqual(
+    {
+      ...runtimeConfig.loadRuntimeGoogleOAuthConfig({
+        environment: { HANTONG_GOOGLE_CLIENT_ID: launcherId },
+        isPackaged: true,
+        bundled
+      })
+    },
+    { clientId: launcherId }
+  )
+})

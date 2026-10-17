@@ -162,3 +162,27 @@ test('relay config carries a valid Gmail topic from the same source and rejects 
     )
   }
 })
+
+test('packaged relay config falls back to build-time values and still requires HTTPS', () => {
+  const topic = 'projects/demo/topics/gmail'
+  assert.deepEqual(
+    {
+      ...config.loadRuntimeRelayConfig({
+        environment: {},
+        isPackaged: true,
+        bundled: { HANTONG_RELAY_URL: 'https://relay.example', HANTONG_GMAIL_TOPIC: topic }
+      })
+    },
+    { baseUrl: 'https://relay.example/api/v1/', gmailTopic: topic }
+  )
+  assert.equal(config.loadRuntimeRelayConfig({ environment: {}, isPackaged: true }), undefined)
+  assert.throws(
+    () =>
+      config.loadRuntimeRelayConfig({
+        environment: {},
+        isPackaged: true,
+        bundled: { HANTONG_RELAY_URL: 'http://127.0.0.1:8080' }
+      }),
+    /Relay configuration is invalid/
+  )
+})

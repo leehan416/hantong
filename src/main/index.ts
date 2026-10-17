@@ -102,6 +102,9 @@ app.setName('Hantong')
 // A second launch only brings the running instance forward (see 'second-instance' below).
 if (!app.requestSingleInstanceLock()) app.exit(0)
 
+// Injected by electron.vite.config.ts at build time.
+declare const __HANTONG_BUNDLED_ENV__: Record<string, string | undefined>
+
 const rendererFile = join(__dirname, '../renderer/index.html')
 const rendererUrl =
   is.dev && process.env['ELECTRON_RENDERER_URL']
@@ -218,7 +221,8 @@ function createWindow(): void {
       loadRuntimeGoogleOAuthConfig({
         environment: process.env,
         isPackaged: app.isPackaged,
-        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env'),
+        bundled: __HANTONG_BUNDLED_ENV__
       }),
     fetchProfile: async (accessToken, signal) => {
       const email = await fetchGoogleProfileEmail(accessToken, { fetch, signal })
@@ -494,7 +498,8 @@ void app
       loadRuntimeRelayConfig({
         environment: process.env,
         isPackaged: app.isPackaged,
-        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+        localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env'),
+        bundled: __HANTONG_BUNDLED_ENV__
       })
     const accountExists = (id: string): boolean =>
       requireAccountStore()
@@ -513,7 +518,8 @@ void app
         loadRuntimeGoogleOAuthConfig({
           environment: process.env,
           isPackaged: app.isPackaged,
-          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env'),
+          bundled: __HANTONG_BUNDLED_ENV__
         })
       )
     let gmailTopic: string | undefined
@@ -640,7 +646,8 @@ void app
         loadRuntimeGoogleOAuthConfig({
           environment: process.env,
           isPackaged: app.isPackaged,
-          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env'),
+          bundled: __HANTONG_BUNDLED_ENV__
         }),
       prepareRelayChallenge: async (signal) => {
         try {

@@ -7,6 +7,7 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 function fixture({ allowed = false } = {}) {
   const opened = []
   let blocked = 0
+  let reloads = 0
   const webSession = {
     setPermissionCheckHandler(handler) {
       this.checkPermission = handler
@@ -23,6 +24,9 @@ function fixture({ allowed = false } = {}) {
     }
     async loadURL(url) {
       this.loads.push(url)
+    }
+    reload() {
+      reloads += 1
     }
     isDestroyed() {
       return this.destroyed
@@ -55,7 +59,7 @@ function fixture({ allowed = false } = {}) {
     isMailAccessAllowed: () => allowed
   })
   const navigated = []
-  return { handle, webSession, opened, blocked: () => blocked, navigated }
+  return { handle, webSession, opened, blocked: () => blocked, navigated, reloads: () => reloads }
 }
 
 test('creating a Gmail view grants no Node or preload access and does not load eagerly', async () => {
@@ -133,12 +137,96 @@ test('authentication popups share the session and inherit the navigation guards'
     child.webContents.destroyed = true
     child.webContents.emit('destroyed')
   }
-  handle.view.webContents.emit('did-create-window', child)
+  handle.view.webContents.emit('did-create-window', child, {
+    url: 'https://accounts.google.com/ServiceLogin'
+  })
   assert.equal(child.webContents.openWindow({ url: 'https://example.com/' }).action, 'deny')
   assert.deepEqual(opened, ['https://example.com/'])
   await handle.dispose()
   assert.equal(destroyed, true)
   assert.equal(handle.view.webContents.isDestroyed(), true)
+})
+
+test('locked Gmail view permits a Google sign-in popup and reloads after it visits auth and closes', () => {
+  const { handle, webSession, reloads } = fixture()
+  const popup = handle.view.webContents.openWindow({
+    url: 'https://accounts.google.com/ServiceLogin'
+  })
+  assert.equal(popup.action, 'allow')
+  const popupPreferences = popup.overrideBrowserWindowOptions.webPreferences
+  assert.equal(popupPreferences.session, webSession)
+  assert.equal(popupPreferences.sandbox, true)
+  assert.equal(popupPreferences.contextIsolation, true)
+  assert.equal(popupPreferences.nodeIntegration, false)
+  assert.equal(popupPreferences.preload, undefined)
+  for (const url of [
+    'https://mail.google.com/mail/u/0/',
+    'https://accounts.google.com/o/oauth2/v2/auth',
+    'javascript:alert(1)'
+  ]) {
+    assert.equal(handle.view.webContents.openWindow({ url }).action, 'deny')
+  }
+  const child = new EventEmitter()
+  child.webContents = new handle.view.webContents.constructor()
+  child.isDestroyed = () => false
+  child.destroy = () => {}
+  handle.view.webContents.emit('did-create-window', child, {
+    url: 'https://accounts.google.com/ServiceLogin'
+  })
+  let prevented = false
+  child.webContents.emit('will-frame-navigate', {
+    url: 'https://accounts.google.com/signin/v2/identifier',
+    isMainFrame: true,
+    preventDefault() {
+      prevented = true
+    }
+  })
+  assert.equal(prevented, false)
+  assert.equal(
+    child.webContents.openWindow({ url: 'https://mail.google.com/mail/u/0/' }).action,
+    'deny'
+  )
+  assert.equal(
+    child.webContents.openWindow({ url: 'https://accounts.google.com/o/oauth2/v2/auth' }).action,
+    'deny'
+  )
+  child.emit('closed')
+  assert.equal(reloads(), 1)
+  assert.equal(webSession, handle.view.options.webPreferences.session)
+})
+
+test('locked unrelated popup close does not reload the Gmail view', () => {
+  const { handle, reloads } = fixture({ allowed: true })
+  assert.equal(
+    handle.view.webContents.openWindow({ url: 'https://mail.google.com/mail/u/0/' }).action,
+    'allow'
+  )
+  const child = new EventEmitter()
+  child.webContents = new handle.view.webContents.constructor()
+  child.isDestroyed = () => false
+  child.destroy = () => {}
+  handle.view.webContents.emit('did-create-window', child, {
+    url: 'https://mail.google.com/mail/u/0/'
+  })
+  child.emit('closed')
+  assert.equal(reloads(), 0)
+})
+
+test('initial Google auth popup URL is enough to reload its parent when it closes', () => {
+  const { handle, reloads } = fixture()
+  assert.equal(
+    handle.view.webContents.openWindow({ url: 'https://accounts.google.com/ServiceLogin' }).action,
+    'allow'
+  )
+  const child = new EventEmitter()
+  child.webContents = new handle.view.webContents.constructor()
+  child.isDestroyed = () => false
+  child.destroy = () => {}
+  handle.view.webContents.emit('did-create-window', child, {
+    url: 'https://accounts.google.com/ServiceLogin'
+  })
+  child.emit('closed')
+  assert.equal(reloads(), 1)
 })
 
 test('disposing a Gmail view waits for its webContents destroyed event', async () => {

@@ -51,6 +51,7 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
   }
   const view = new WebContentsView({ webPreferences })
   const children = new Set<BrowserWindow>()
+  const pendingPopupRecovery: boolean[] = []
   let disposed = false
   let disposePromise: Promise<void> | null = null
 
@@ -61,10 +62,16 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
     void callbacks.openExternal(url).catch(callbacks.onNavigationBlocked)
   }
 
-  function guard(contents: WebContents, child = false): void {
+  function guard(
+    contents: WebContents,
+    child = false,
+    authPopup?: { recoverAfterClose: boolean; visitedAuthHost: boolean }
+  ): void {
     contents.on('will-frame-navigate', (event) => {
       if (!event.isMainFrame) return
       const target = classifyGmailNavigation(event.url)
+      if (child && authPopup?.recoverAfterClose && isGoogleAuthUrl(event.url))
+        authPopup.visitedAuthHost = true
       if (!child && target === 'internal') callbacks.onMainFrameNavigation(event.url)
       if (child && !callbacks.isMailAccessAllowed() && isMailUrl(event.url)) {
         event.preventDefault()
@@ -77,6 +84,8 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
     })
     contents.on('will-redirect', (event) => {
       const target = classifyGmailNavigation(event.url)
+      if (child && authPopup?.recoverAfterClose && isGoogleAuthUrl(event.url))
+        authPopup.visitedAuthHost = true
       if (event.isMainFrame && !child && target === 'internal')
         callbacks.onMainFrameNavigation(event.url)
       if (event.isMainFrame && child && !callbacks.isMailAccessAllowed() && isMailUrl(event.url)) {
@@ -96,11 +105,14 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
         openExternal(url)
         return { action: 'deny' }
       }
-      if (!callbacks.isMailAccessAllowed()) {
+      const lockedGoogleSignIn =
+        !callbacks.isMailAccessAllowed() && target === 'internal' && isGoogleAuthUrl(url)
+      if (!callbacks.isMailAccessAllowed() && !lockedGoogleSignIn) {
         callbacks.onNavigationBlocked()
         return { action: 'deny' }
       }
       if (target === 'internal') {
+        pendingPopupRecovery.push(lockedGoogleSignIn)
         return {
           action: 'allow',
           outlivesOpener: false,
@@ -110,10 +122,25 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       callbacks.onNavigationBlocked()
       return { action: 'deny' }
     })
-    contents.on('did-create-window', (child) => {
+    contents.on('did-create-window', (child, details) => {
       children.add(child)
-      guard(child.webContents, true)
-      child.once('closed', () => children.delete(child))
+      const recoverAfterAuthClose = pendingPopupRecovery.shift() ?? false
+      const authPopup = {
+        recoverAfterClose: recoverAfterAuthClose,
+        visitedAuthHost: recoverAfterAuthClose && isGoogleAuthUrl(details.url)
+      }
+      guard(child.webContents, true, authPopup)
+      child.once('closed', () => {
+        children.delete(child)
+        if (
+          authPopup.recoverAfterClose &&
+          authPopup.visitedAuthHost &&
+          !disposed &&
+          !view.webContents.isDestroyed()
+        ) {
+          view.webContents.reload()
+        }
+      })
     })
   }
 
@@ -163,6 +190,15 @@ function isMailUrl(value: string): boolean {
   try {
     const url = new URL(value)
     return url.protocol === 'https:' && url.hostname === 'mail.google.com' && url.port === ''
+  } catch {
+    return false
+  }
+}
+
+function isGoogleAuthUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname === 'accounts.google.com' && url.port === ''
   } catch {
     return false
   }
