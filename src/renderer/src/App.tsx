@@ -64,6 +64,16 @@ const messages = {
     accessConnecting: '브라우저에서 Google 로그인을 완료해 주세요.',
     settings: '설정',
     settingsClose: '닫기',
+    settingsGeneral: '일반',
+    settingsAccounts: '계정 관리',
+    accountName: '표시 이름',
+    accountNamePlaceholder: '이메일 주소 사용',
+    defaultAccount: '기본 계정',
+    currentDefault: '기본',
+    setDefault: '기본 계정으로 설정',
+    noAccounts: '연결된 계정이 없습니다.',
+    accountSaveError: '계정 설정을 저장하지 못했습니다. 다시 시도해 주세요.',
+    accountActionError: '계정 작업을 완료하지 못했습니다. 다시 시도해 주세요.',
     settingsError: '설정을 저장하지 못했습니다. 다시 시도해 주세요.',
     language: '언어',
     languageOptions: { system: '시스템 설정', ko: '한국어', en: 'English' },
@@ -121,6 +131,16 @@ const messages = {
     accessConnecting: 'Complete Google sign-in in your browser.',
     settings: 'Settings',
     settingsClose: 'Close',
+    settingsGeneral: 'General',
+    settingsAccounts: 'Accounts',
+    accountName: 'Display name',
+    accountNamePlaceholder: 'Use email address',
+    defaultAccount: 'Default account',
+    currentDefault: 'Default',
+    setDefault: 'Set as default',
+    noAccounts: 'No connected accounts.',
+    accountSaveError: 'Unable to save account settings. Please try again.',
+    accountActionError: 'Unable to complete the account action. Please try again.',
     settingsError: 'Unable to save settings. Please try again.',
     language: 'Language',
     languageOptions: { system: 'System', ko: '한국어', en: 'English' },
@@ -163,6 +183,11 @@ function App(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<'general' | 'accounts'>('general')
+  const [accountNameDrafts, setAccountNameDrafts] = useState<Record<string, string>>({})
+  const [accountSettingsBusy, setAccountSettingsBusy] = useState<string | null>(null)
+  const [accountSettingsFailed, setAccountSettingsFailed] = useState(false)
+  const [accountNameSaveFailed, setAccountNameSaveFailed] = useState(false)
   const settingsDialogRef = useRef<HTMLDialogElement | null>(null)
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
   const settingsReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -376,10 +401,12 @@ function App(): React.JSX.Element {
     setBusy(true)
     setOperationFailed(false)
     setRemovalFailed(false)
+    setAccountSettingsFailed(false)
     try {
       setAccounts(await window.api.addAccount())
     } catch {
       setOperationFailed(true)
+      setAccountSettingsFailed(true)
     } finally {
       setBusy(false)
     }
@@ -399,17 +426,19 @@ function App(): React.JSX.Element {
     }
   }
 
-  async function removeActiveAccount(): Promise<void> {
-    if (!activeAccountId) return
+  async function removeAccount(accountId: string): Promise<void> {
     setBusy(true)
     setOperationFailed(false)
     setRemovalFailed(false)
+    setAccountSettingsFailed(false)
     try {
-      const result = await window.api.removeAccount(activeAccountId)
+      const result = await window.api.removeAccount(accountId)
       setAccounts(result.state)
       setRemovalFailed(result.outcome === 'failed')
+      setAccountSettingsFailed(result.outcome === 'failed')
     } catch {
       setRemovalFailed(true)
+      setAccountSettingsFailed(true)
     } finally {
       setBusy(false)
     }
@@ -483,14 +512,6 @@ function App(): React.JSX.Element {
                       onClick={() => void addAccount()}
                     >
                       <span aria-hidden="true">＋</span> {text.add}
-                    </button>
-                    <button
-                      className="remove-account"
-                      type="button"
-                      disabled={accountActionsBusy || activeAccountId === null}
-                      onClick={() => void removeActiveAccount()}
-                    >
-                      {text.remove}
                     </button>
                   </>
                 )}
@@ -641,70 +662,207 @@ function App(): React.JSX.Element {
               <span aria-hidden="true">×</span>
             </button>
           </header>
-          <details className="settings-position">
-            <summary className="settings-position-trigger">
-              <span>{text.position}</span>
-              <span className="settings-position-current">
-                {text.positions[position]} <span aria-hidden="true">⌄</span>
-              </span>
-            </summary>
-            <fieldset className="settings-position-options">
-              <legend className="visually-hidden">{text.position}</legend>
-              {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
-                <label key={option} className="settings-position-option">
-                  <input
-                    type="radio"
-                    name="account-selector-position"
-                    value={option}
-                    checked={position === option}
-                    onChange={() =>
-                      void changeSettings({
-                        accountSelectorPosition: option as AccountSelectorPosition
-                      })
-                    }
-                  />
-                  {text.positions[option]}
-                </label>
-              ))}
-            </fieldset>
-          </details>
-          {(
-            [
-              ['language', text.language, text.languageOptions],
-              ['theme', text.theme, text.themeOptions],
-              ['closeAction', text.closeAction, text.closeActionOptions]
-            ] as const
-          ).map(([field, label, options]) => (
-            <fieldset key={field} className="settings-group">
-              <legend>{label}</legend>
-              {Object.entries(options).map(([value, optionLabel]) => (
-                <label key={value} className="settings-option">
-                  <input
-                    type="radio"
-                    name={field}
-                    value={value}
-                    checked={settings?.[field] === value}
-                    onChange={() => void changeSettings({ [field]: value })}
-                  />
-                  {optionLabel}
-                </label>
-              ))}
-            </fieldset>
-          ))}
-          <fieldset className="settings-group">
-            <legend>{text.gmailCleanup}</legend>
-            {GMAIL_CLEANUP_FIELDS.map((field) => (
-              <label key={field} className="settings-option">
-                <input
-                  type="checkbox"
-                  checked={settings?.[field] === true}
-                  onChange={(event) => void changeSettings({ [field]: event.target.checked })}
-                />
-                {text.gmailCleanupOptions[field]}
-              </label>
+          <nav className="settings-navigation" aria-label={text.settings} role="tablist">
+            {(['general', 'accounts'] as const).map((section) => (
+              <button
+                key={section}
+                className="settings-navigation-item"
+                type="button"
+                role="tab"
+                id={`settings-tab-${section}`}
+                aria-selected={settingsSection === section}
+                aria-controls={`settings-panel-${section}`}
+                onClick={() => setSettingsSection(section)}
+              >
+                {section === 'general' ? text.settingsGeneral : text.settingsAccounts}
+              </button>
             ))}
-          </fieldset>
-          {settingsFailed && <p role="alert">{text.settingsError}</p>}
+          </nav>
+          {settingsSection === 'general' ? (
+            <div
+              id="settings-panel-general"
+              role="tabpanel"
+              aria-labelledby="settings-tab-general"
+              className="settings-tab-panel"
+            >
+              <details className="settings-position">
+                <summary className="settings-position-trigger">
+                  <span>{text.position}</span>
+                  <span className="settings-position-current">
+                    {text.positions[position]} <span aria-hidden="true">⌄</span>
+                  </span>
+                </summary>
+                <fieldset className="settings-position-options">
+                  <legend className="visually-hidden">{text.position}</legend>
+                  {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
+                    <label key={option} className="settings-position-option">
+                      <input
+                        type="radio"
+                        name="account-selector-position"
+                        value={option}
+                        checked={position === option}
+                        onChange={() =>
+                          void changeSettings({
+                            accountSelectorPosition: option as AccountSelectorPosition
+                          })
+                        }
+                      />
+                      {text.positions[option]}
+                    </label>
+                  ))}
+                </fieldset>
+              </details>
+              {(
+                [
+                  ['language', text.language, text.languageOptions],
+                  ['theme', text.theme, text.themeOptions],
+                  ['closeAction', text.closeAction, text.closeActionOptions]
+                ] as const
+              ).map(([field, label, options]) => (
+                <fieldset key={field} className="settings-group">
+                  <legend>{label}</legend>
+                  {Object.entries(options).map(([value, optionLabel]) => (
+                    <label key={value} className="settings-option">
+                      <input
+                        type="radio"
+                        name={field}
+                        value={value}
+                        checked={settings?.[field] === value}
+                        onChange={() => void changeSettings({ [field]: value })}
+                      />
+                      {optionLabel}
+                    </label>
+                  ))}
+                </fieldset>
+              ))}
+              <fieldset className="settings-group">
+                <legend>{text.gmailCleanup}</legend>
+                {GMAIL_CLEANUP_FIELDS.map((field) => (
+                  <label key={field} className="settings-option">
+                    <input
+                      type="checkbox"
+                      checked={settings?.[field] === true}
+                      onChange={(event) => void changeSettings({ [field]: event.target.checked })}
+                    />
+                    {text.gmailCleanupOptions[field]}
+                  </label>
+                ))}
+              </fieldset>
+              {settingsFailed && <p role="alert">{text.settingsError}</p>}
+            </div>
+          ) : (
+            <div
+              id="settings-panel-accounts"
+              role="tabpanel"
+              aria-labelledby="settings-tab-accounts"
+              className="settings-tab-panel"
+            >
+              <div className="settings-section-heading">
+                <h2>{text.settingsAccounts}</h2>
+                <button
+                  className="settings-add-account"
+                  type="button"
+                  disabled={accountActionsBusy || accounts === null}
+                  onClick={() => void addAccount()}
+                >
+                  <span aria-hidden="true">＋</span> {text.add}
+                </button>
+              </div>
+              {accountSettingsFailed && <p role="alert">{text.accountActionError}</p>}
+              {accountNameSaveFailed && <p role="alert">{text.accountSaveError}</p>}
+              {accounts?.accounts.length ? (
+                <ul className="managed-account-list">
+                  {accounts.accounts.map((account, index) => {
+                    const accountName =
+                      account.displayName?.trim() || account.email || `Gmail ${index + 1}`
+                    const isDefault = accounts.defaultAccountId === account.id
+                    return (
+                      <li className="managed-account" key={account.id}>
+                        <div className="managed-account-heading">
+                          <div className="managed-account-identity">
+                            <strong>{accountName}</strong>
+                            <span>{account.email || '—'}</span>
+                          </div>
+                          {isDefault && (
+                            <span className="managed-account-default">{text.currentDefault}</span>
+                          )}
+                        </div>
+                        <label className="managed-account-name">
+                          <span>{text.accountName}</span>
+                          <input
+                            type="text"
+                            value={accountNameDrafts[account.id] ?? account.displayName ?? ''}
+                            placeholder={text.accountNamePlaceholder}
+                            maxLength={80}
+                            disabled={accountSettingsBusy !== null || accountActionsBusy}
+                            onChange={(event) =>
+                              setAccountNameDrafts((drafts) => ({
+                                ...drafts,
+                                [account.id]: event.target.value
+                              }))
+                            }
+                            onBlur={() => {
+                              const value = accountNameDrafts[account.id]
+                              if (value === undefined || value === (account.displayName ?? ''))
+                                return
+                              const displayName = value.trim() || null
+                              setAccountSettingsBusy(account.id)
+                              setAccountNameSaveFailed(false)
+                              void window.api
+                                .setAccountDisplayName(account.id, displayName)
+                                .then(
+                                  (state) => {
+                                    setAccounts(state)
+                                    setAccountNameDrafts((drafts) => {
+                                      const next = { ...drafts }
+                                      delete next[account.id]
+                                      return next
+                                    })
+                                  },
+                                  () => setAccountNameSaveFailed(true)
+                                )
+                                .finally(() => setAccountSettingsBusy(null))
+                            }}
+                            aria-label={`${text.accountName}: ${account.email ?? accountName}`}
+                          />
+                        </label>
+                        <div className="managed-account-actions">
+                          {!isDefault && (
+                            <button
+                              type="button"
+                              disabled={accountActionsBusy || accountSettingsBusy !== null}
+                              onClick={() => {
+                                setAccountSettingsBusy(account.id)
+                                setAccountSettingsFailed(false)
+                                void window.api
+                                  .setDefaultAccount(account.id)
+                                  .then(setAccounts, () => setAccountSettingsFailed(true))
+                                  .finally(() => setAccountSettingsBusy(null))
+                              }}
+                            >
+                              {text.setDefault}
+                            </button>
+                          )}
+                          <button
+                            className="managed-account-remove"
+                            type="button"
+                            disabled={accountActionsBusy || accountSettingsBusy !== null}
+                            onClick={() => void removeAccount(account.id)}
+                          >
+                            {text.remove}
+                          </button>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              ) : (
+                <p className="settings-empty-accounts">
+                  {accounts ? text.noAccounts : text.pending}
+                </p>
+              )}
+            </div>
+          )}
         </section>
       </dialog>
       {!settingsOpen && accounts?.accounts.length === 0 && (
