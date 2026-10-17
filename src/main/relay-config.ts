@@ -3,6 +3,8 @@ import { parseEnv } from 'node:util'
 
 export interface RelayConfig {
   readonly baseUrl: string
+  // Gmail watch target; without it the app only syncs on relay hints and never registers a watch.
+  readonly gmailTopic?: string
 }
 
 interface RelayConfigOptions {
@@ -19,6 +21,17 @@ interface RelayConfigIO {
 // The relay server mounts every route under /api/v1; a bare origin gets the prefix appended.
 const API_PREFIX = '/api/v1/'
 const API_PATHS = new Set(['', '/', '/api/v1', API_PREFIX])
+
+const GMAIL_TOPIC = /^projects\/[A-Za-z0-9_-]+\/topics\/[A-Za-z0-9._~+%-]+$/
+
+function withTopic(
+  config: RelayConfig | undefined,
+  topic: string | undefined
+): RelayConfig | undefined {
+  if (!config || !topic?.trim()) return config
+  if (!GMAIL_TOPIC.test(topic.trim())) throw new Error('Relay configuration is invalid')
+  return { ...config, gmailTopic: topic.trim() }
+}
 
 function validBaseUrl(value: string | undefined, isPackaged: boolean): RelayConfig | undefined {
   if (!value?.trim()) return undefined
@@ -55,7 +68,12 @@ export function loadRuntimeRelayConfig(
   io: RelayConfigIO = {}
 ): RelayConfig | undefined {
   const launcherValue = options.environment.HANTONG_RELAY_URL
-  if (launcherValue !== undefined) return validBaseUrl(launcherValue, options.isPackaged)
+  if (launcherValue !== undefined) {
+    return withTopic(
+      validBaseUrl(launcherValue, options.isPackaged),
+      options.environment.HANTONG_GMAIL_TOPIC
+    )
+  }
   if (options.isPackaged || !options.localEnvPath) return undefined
   let source: string
   let readFailed = false
@@ -75,5 +93,5 @@ export function loadRuntimeRelayConfig(
   } catch {
     throw new Error('Relay configuration is invalid')
   }
-  return validBaseUrl(parsed.HANTONG_RELAY_URL, false)
+  return withTopic(validBaseUrl(parsed.HANTONG_RELAY_URL, false), parsed.HANTONG_GMAIL_TOPIC)
 }

@@ -121,3 +121,44 @@ test('relay config appends or keeps the /api/v1 prefix and rejects path aliases'
     )
   }
 })
+
+test('relay config carries a valid Gmail topic from the same source and rejects malformed ones', () => {
+  const topic = 'projects/hantong-dev/topics/gmail-changes'
+  assert.deepEqual(
+    {
+      ...config.loadRuntimeRelayConfig({
+        environment: { HANTONG_RELAY_URL: 'https://relay.example', HANTONG_GMAIL_TOPIC: topic },
+        isPackaged: true
+      })
+    },
+    { baseUrl: 'https://relay.example/api/v1/', gmailTopic: topic }
+  )
+  assert.deepEqual(
+    {
+      ...config.loadRuntimeRelayConfig(
+        { environment: {}, isPackaged: false, localEnvPath: '/dev/.env' },
+        {
+          readFile: () => `HANTONG_RELAY_URL=http://127.0.0.1:8000\nHANTONG_GMAIL_TOPIC=${topic}`
+        }
+      )
+    },
+    { baseUrl: 'http://127.0.0.1:8000/api/v1/', gmailTopic: topic }
+  )
+  assert.equal(
+    config.loadRuntimeRelayConfig({
+      environment: { HANTONG_GMAIL_TOPIC: topic },
+      isPackaged: true
+    }),
+    undefined
+  )
+  for (const value of ['gmail-changes', 'projects/x/subscriptions/y', 'projects/x/topics/y\nz']) {
+    assert.throws(
+      () =>
+        config.loadRuntimeRelayConfig({
+          environment: { HANTONG_RELAY_URL: 'https://relay.example', HANTONG_GMAIL_TOPIC: value },
+          isPackaged: true
+        }),
+      { message: 'Relay configuration is invalid' }
+    )
+  }
+})

@@ -15,6 +15,11 @@ import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 import { loadRuntimeRelayConfig } from './relay-config'
 import { createRelayClient } from './relay-client'
 import { createRelayRuntime } from './relay-runtime'
+import { createGmailSyncStore } from './gmail-sync-store'
+import { createGmailHistorySync } from './gmail-history-sync'
+import { createGmailWatchManager } from './gmail-watch-manager'
+import { createGmailRelaySync } from './gmail-relay-sync'
+import { fetchGmailHistoryId, fetchGmailHistoryPage, registerGmailWatch } from './gmail-metadata'
 import { startGoogleAuthorization } from './google-authorization'
 import type { AuthorizationErrorCode } from './google-authorization'
 import {
@@ -62,6 +67,7 @@ let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = n
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
 let googleConnectionManager: ReturnType<typeof createGoogleConnectionManager> | null = null
 let relayRuntime: ReturnType<typeof createRelayRuntime> | null = null
+let gmailRelaySync: ReturnType<typeof createGmailRelaySync> | null = null
 let accountAccessController: ReturnType<typeof createAccountAccessController> | null = null
 let appQuitting = false
 let quitCleanupPending = false
@@ -266,6 +272,53 @@ void app
       relayClient = createRelayClient({ baseUrl: config.baseUrl, fetch, now: () => Date.now() })
       return relayClient
     }
+    const gmailAccessToken = (accountId: string): Promise<string> =>
+      connectionManager.getAccessToken(
+        accountId,
+        loadRuntimeGoogleOAuthConfig({
+          environment: process.env,
+          isPackaged: app.isPackaged,
+          localEnvPath: app.isPackaged ? undefined : join(app.getAppPath(), '.env')
+        })
+      )
+    let gmailTopic: string | undefined
+    try {
+      gmailTopic = relayConfig()?.gmailTopic
+    } catch {
+      // Invalid relay settings already disable the relay session; a watch is useless without it.
+      gmailTopic = undefined
+    }
+    const historySync = createGmailHistorySync({
+      store: createGmailSyncStore(app.getPath('userData')),
+      accountExists,
+      readHistoryId: async (accountId, signal) =>
+        fetchGmailHistoryId(await gmailAccessToken(accountId), { fetch, signal }),
+      readHistoryPage: async (accountId, startHistoryId, pageToken, signal) =>
+        fetchGmailHistoryPage(await gmailAccessToken(accountId), startHistoryId, pageToken, {
+          fetch,
+          signal
+        })
+    })
+    const topic = gmailTopic
+    gmailRelaySync = createGmailRelaySync({
+      sync: (accountId) => historySync.sync(accountId),
+      resetSync: (accountId) => historySync.reset(accountId),
+      watch: topic
+        ? createGmailWatchManager({
+            accountExists,
+            registerWatch: async (accountId, signal) =>
+              registerGmailWatch(await gmailAccessToken(accountId), topic, {
+                fetch,
+                signal,
+                now: () => Date.now()
+              })
+          })
+        : undefined,
+      now: () => Date.now(),
+      onChanges: () => {
+        // Unread badges and notifications consume these results in the next client unit.
+      }
+    })
     relayRuntime = createRelayRuntime({
       client: {
         createSession: (...args) => {
@@ -279,9 +332,7 @@ void app
       },
       accountExists,
       now: () => Date.now(),
-      onSignal: () => {
-        // Gmail history reconciliation and badge wiring are handled in a later client unit.
-      }
+      onSignal: (accountId, event) => gmailRelaySync?.onSignal(accountId, event)
     })
     googleConnectionRuntime = createGoogleConnectionRuntime({
       accountExists,
@@ -334,7 +385,10 @@ void app
             ? { idToken: result.tokens.idToken, nonce: result.relayNonce }
             : {}
         ),
-      onDisconnected: (accountId) => relayRuntime?.disconnect(accountId),
+      onDisconnected: (accountId) => {
+        relayRuntime?.disconnect(accountId)
+        gmailRelaySync?.disconnect(accountId)
+      },
       reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
     })
     accountRemoval = createAccountRemovalController(
@@ -562,6 +616,7 @@ void app
       if (quitCleanupPending) return
       appQuitting = true
       quitCleanupPending = true
+      gmailRelaySync?.dispose()
       const cleanup = Promise.all([
         requireGoogleConnectionRuntime().cancelAll(),
         relayRuntime?.dispose() ?? Promise.resolve()
