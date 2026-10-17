@@ -25,6 +25,8 @@ import { loadRuntimeRelayConfig } from './relay-config'
 import { createRelayClient } from './relay-client'
 import { createRelayRuntime } from './relay-runtime'
 import { createRelayCredentialStore } from './relay-credential-store'
+import { createSettingsStore } from './settings-store'
+import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
@@ -54,6 +56,9 @@ import {
   ACCOUNT_STATE_EVENT,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
+  SETTINGS_GET_CHANNEL,
+  SETTINGS_UPDATE_CHANNEL,
+  SETTINGS_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -69,6 +74,7 @@ import {
   isAllowedAppInfoRequest,
   isAllowedExternalUrl,
   isAllowedGoogleConnectionRequest,
+  isAllowedSettingsRequest,
   isTrustedRendererUrl
 } from './security-policy'
 
@@ -82,6 +88,7 @@ const rendererUrl =
 
 let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
+let settingsStore: ReturnType<typeof createSettingsStore> | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
@@ -294,6 +301,7 @@ void app
   .whenReady()
   .then(() => {
     accountStore = createAccountStore(app.getPath('userData'))
+    settingsStore = createSettingsStore(app.getPath('userData'))
     const credentialStore = createGoogleCredentialStore({
       directory: join(app.getPath('userData'), 'google-credentials'),
       platform: process.platform,
@@ -650,6 +658,39 @@ void app
       return accountAccessController.getState(accountId)
     })
 
+    function settingsRequestAllowed(
+      event: Electron.IpcMainInvokeEvent,
+      operation: 'get' | 'update',
+      args: unknown[]
+    ): boolean {
+      const owner = mainWindow
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      return isAllowedSettingsRequest({
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl,
+        operation,
+        args
+      })
+    }
+    ipcMain.handle(SETTINGS_GET_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'get', args) || !settingsStore) {
+        throw new Error('Request rejected')
+      }
+      return settingsStore.get()
+    })
+    ipcMain.handle(SETTINGS_UPDATE_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'update', args) || !settingsStore) {
+        throw new Error('Request rejected')
+      }
+      const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
+      const owner = mainWindow
+      if (owner && !owner.isDestroyed()) owner.webContents.send(SETTINGS_EVENT, settings)
+      return settings
+    })
     ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
       return Object.fromEntries(mailAlerts.unreadCounts())

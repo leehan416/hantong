@@ -8,6 +8,7 @@ const {
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
   isAllowedGoogleConnectionRequest,
+  isAllowedSettingsRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
 const policy = {
@@ -172,5 +173,32 @@ test('Google connection IPC accepts only known operations for the live owner mai
   }
   for (const operation of ['get', 'connect', 'cancel', 'disconnect']) {
     assert.equal(policy.isAllowedGoogleConnectionRequest({ ...valid, operation }), true)
+  }
+})
+
+test('settings IPC allows get with no args and update with one valid patch from the owner frame', () => {
+  const rendererUrl = 'file:///app/out/renderer/index.html'
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl
+  }
+  assert.equal(isAllowedSettingsRequest({ ...base, operation: 'get', args: [] }), true)
+  assert.equal(
+    isAllowedSettingsRequest({ ...base, operation: 'update', args: [{ theme: 'dark' }] }),
+    true
+  )
+  for (const request of [
+    { ...base, operation: 'get', args: [{}] },
+    { ...base, operation: 'update', args: [] },
+    { ...base, operation: 'update', args: [{ theme: 'neon' }] },
+    { ...base, operation: 'update', args: [{ theme: 'dark' }, {}] },
+    { ...base, operation: 'reset', args: [] },
+    { ...base, senderMatches: false, operation: 'get', args: [] },
+    { ...base, senderUrl: 'https://mail.google.com/', operation: 'get', args: [] }
+  ]) {
+    assert.equal(isAllowedSettingsRequest(request), false)
   }
 })
