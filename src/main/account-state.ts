@@ -1,4 +1,10 @@
-import type { AccountState, GmailAccount } from '../shared/accounts'
+import {
+  isAccountColor,
+  MAX_ACCOUNTS,
+  type AccountColor,
+  type AccountState,
+  type GmailAccount
+} from '../shared/accounts'
 
 export function isAccountId(value: unknown): value is string {
   return (
@@ -61,6 +67,10 @@ export function parseAccountState(value: unknown): AccountState {
       }
       account.displayName = entry.displayName
     }
+    if (entry.color !== undefined) {
+      if (!isAccountColor(entry.color)) throw new Error('Invalid account data')
+      account.color = entry.color
+    }
     accounts.push(account)
   }
   const activeAccountId = value.activeAccountId
@@ -74,29 +84,19 @@ export function parseAccountState(value: unknown): AccountState {
   ) {
     throw new Error('Invalid account data')
   }
-  const defaultAccountId =
-    value.defaultAccountId === undefined ? activeAccountId : value.defaultAccountId
-  if (defaultAccountId !== null && !isAccountId(defaultAccountId)) {
-    throw new Error('Invalid account data')
-  }
-  if (defaultAccountId !== null && !ids.has(defaultAccountId)) {
-    throw new Error('Invalid account data')
-  }
-  if (accounts.length === 0 && defaultAccountId !== null) {
-    throw new Error('Invalid account data')
-  }
-  return { version: 1, accounts, activeAccountId, defaultAccountId }
+  // Older files may carry a `defaultAccountId`; the first account now plays that role.
+  return { version: 1, accounts, activeAccountId }
 }
 
 export function addGmailAccount(state: AccountState, id: string): AccountState {
   if (!isAccountId(id) || state.accounts.some((account) => account.id === id)) {
     throw new Error('Invalid account data')
   }
+  if (state.accounts.length >= MAX_ACCOUNTS) throw new Error('Account limit reached')
   return parseAccountState({
     version: 1,
     accounts: [...state.accounts, { id }],
-    activeAccountId: id,
-    defaultAccountId: state.defaultAccountId ?? id
+    activeAccountId: id
   })
 }
 
@@ -124,6 +124,24 @@ export function setGmailAccountDisplayName(
   return parseAccountState({ ...state, accounts })
 }
 
+export function setGmailAccountColor(
+  state: AccountState,
+  id: string,
+  color: AccountColor
+): AccountState {
+  if (
+    !isAccountId(id) ||
+    !state.accounts.some((account) => account.id === id) ||
+    !isAccountColor(color)
+  ) {
+    throw new Error('Invalid account data')
+  }
+  const accounts = state.accounts.map((account) =>
+    account.id === id ? { ...account, color } : account
+  )
+  return parseAccountState({ ...state, accounts })
+}
+
 export function recordVerifiedGmailEmail(
   state: AccountState,
   id: string,
@@ -142,11 +160,14 @@ export function recordVerifiedGmailEmail(
   return parseAccountState({ ...state, accounts })
 }
 
-export function setDefaultGmailAccount(state: AccountState, id: string): AccountState {
-  if (!isAccountId(id) || !state.accounts.some((account) => account.id === id)) {
+export function moveGmailAccount(state: AccountState, id: string, toIndex: number): AccountState {
+  const from = state.accounts.findIndex((account) => account.id === id)
+  if (from < 0 || !Number.isInteger(toIndex) || toIndex < 0 || toIndex >= state.accounts.length) {
     throw new Error('Invalid account data')
   }
-  return parseAccountState({ ...state, defaultAccountId: id })
+  const accounts = [...state.accounts]
+  accounts.splice(toIndex, 0, ...accounts.splice(from, 1))
+  return parseAccountState({ ...state, accounts })
 }
 
 export function removeGmailAccount(state: AccountState, id: string): AccountState {
@@ -157,7 +178,5 @@ export function removeGmailAccount(state: AccountState, id: string): AccountStat
     state.activeAccountId !== id
       ? state.activeAccountId
       : (accounts[index]?.id ?? accounts[index - 1]?.id ?? null)
-  const defaultAccountId =
-    state.defaultAccountId === id ? (accounts[0]?.id ?? null) : state.defaultAccountId
-  return parseAccountState({ version: 1, accounts, activeAccountId, defaultAccountId })
+  return parseAccountState({ version: 1, accounts, activeAccountId })
 }

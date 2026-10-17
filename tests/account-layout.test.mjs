@@ -13,15 +13,15 @@ function bounds(value) {
 test('top and bottom placements reserve the account chrome edge', () => {
   assert.deepEqual(bounds(getAccountViewBounds({ width: 900, height: 700, position: 'top' })), {
     x: 0,
-    y: 88,
+    y: 72,
     width: 900,
-    height: 612
+    height: 628
   })
   assert.deepEqual(bounds(getAccountViewBounds({ width: 900, height: 700, position: 'bottom' })), {
     x: 0,
     y: 0,
     width: 900,
-    height: 612
+    height: 628
   })
 })
 
@@ -50,9 +50,9 @@ test('hidden status strip releases its vertical space for every placement', () =
     })
     assert.deepEqual(bounds(view), {
       x: 0,
-      y: position === 'top' ? 56 : 0,
+      y: position === 'top' ? 40 : 0,
       width: 900,
-      height: 644
+      height: 660
     })
   }
   for (const position of ['left', 'right']) {
@@ -75,13 +75,13 @@ test('collapsed sidebars retain a narrow reopen rail without negative content bo
     bounds(
       getAccountViewBounds({ width: 900, height: 700, position: 'left', sidebarCollapsed: true })
     ),
-    { x: 44, y: 32, width: 856, height: 668 }
+    { x: 56, y: 32, width: 844, height: 668 }
   )
   assert.deepEqual(
     bounds(
       getAccountViewBounds({ width: 640, height: 480, position: 'right', sidebarCollapsed: true })
     ),
-    { x: 0, y: 32, width: 596, height: 448 }
+    { x: 0, y: 32, width: 584, height: 448 }
   )
 })
 

@@ -37,7 +37,7 @@ import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate }
 import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import { buildGmailCleanupCss } from './gmail-cleanup'
-import type { AccountState } from '../shared/accounts'
+import { isAccountColor, type AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
@@ -63,8 +63,9 @@ import { is, optimizer } from '@electron-toolkit/utils'
 import {
   ACCOUNT_ACTIVATE_CHANNEL,
   ACCOUNT_ADD_CHANNEL,
-  ACCOUNT_DEFAULT_CHANNEL,
+  ACCOUNT_MOVE_CHANNEL,
   ACCOUNT_DISPLAY_NAME_CHANNEL,
+  ACCOUNT_COLOR_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
@@ -725,7 +726,8 @@ void app
 
     function accountRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'add' | 'activate' | 'retry' | 'remove' | 'setDisplayName' | 'setDefault',
+      operation:
+        'get' | 'add' | 'activate' | 'retry' | 'remove' | 'setDisplayName' | 'setColor' | 'move',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
@@ -745,7 +747,8 @@ void app
           operation === 'activate' ||
           operation === 'remove' ||
           operation === 'setDisplayName' ||
-          operation === 'setDefault'
+          operation === 'setColor' ||
+          operation === 'move'
             ? state.accounts.some((account) => account.id === id)
             : operation === 'retry' && state.activeAccountId !== null
       })
@@ -871,7 +874,7 @@ void app
     })
     ipcMain.handle(SETTINGS_PANEL_CHANNEL, (event, ...args: unknown[]) => {
       if (!settingsRequestAllowed(event, 'panel', args)) throw new Error('Request rejected')
-      accountViewManager?.setCovered(args[0] === true)
+      return accountViewManager?.setCovered(args[0] === true) ?? null
     })
     ipcMain.handle(ACCOUNT_STATUS_STRIP_CHANNEL, (event, ...args: unknown[]) => {
       if (!settingsRequestAllowed(event, 'status-strip', args)) throw new Error('Request rejected')
@@ -923,16 +926,30 @@ void app
       publishAccountState(owner, state)
       return state
     })
-    ipcMain.handle(ACCOUNT_DEFAULT_CHANNEL, (event, ...args: unknown[]) => {
+    ipcMain.handle(ACCOUNT_COLOR_CHANNEL, (event, ...args: unknown[]) => {
       requireAccountRemoval().assertIdle()
-      if (!accountRequestAllowed(event, 'setDefault', args)) {
-        throw new Error('Request rejected')
-      }
+      if (!accountRequestAllowed(event, 'setColor', args)) throw new Error('Request rejected')
       const accountId = args[0]
-      if (typeof accountId !== 'string') throw new Error('Request rejected')
+      const color = args[1]
+      if (typeof accountId !== 'string' || typeof color !== 'string')
+        throw new Error('Request rejected')
       const owner = mainWindow
       if (!owner) throw new Error('Request rejected')
-      const state = requireAccountStore().setDefault(accountId)
+      if (!isAccountColor(color)) throw new Error('Request rejected')
+      const state = requireAccountStore().setColor(accountId, color)
+      publishAccountState(owner, state)
+      return state
+    })
+    ipcMain.handle(ACCOUNT_MOVE_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'move', args)) throw new Error('Request rejected')
+      const [accountId, toIndex] = args
+      if (typeof accountId !== 'string' || typeof toIndex !== 'number') {
+        throw new Error('Request rejected')
+      }
+      const owner = mainWindow
+      if (!owner) throw new Error('Request rejected')
+      const state = requireAccountStore().move(accountId, toIndex)
       publishAccountState(owner, state)
       return state
     })
@@ -953,16 +970,13 @@ void app
       const ownerIsAlive = (): boolean => mainWindow === owner && !owner.isDestroyed()
       const result = await requireAccountRemoval().remove(accountId, {
         ownerIsAlive,
-        async confirm(accountNumber): Promise<boolean> {
+        async confirm(): Promise<boolean> {
           if (!ownerIsAlive()) return false
           const isKorean = uiLocale() === 'ko'
-          const accountLabel = `Gmail ${accountNumber}`
           const response = await dialog.showMessageBox(owner, {
             type: 'warning',
             title: isKorean ? '계정 삭제' : 'Remove account',
-            message: isKorean
-              ? `${accountLabel} 계정을 한통에서 삭제할까요?`
-              : `Remove ${accountLabel} from Hantong?`,
+            message: isKorean ? '계정을 삭제할까요?' : 'Remove this account?',
             detail: isKorean
               ? '이 기기의 로그인 정보와 세션을 삭제합니다. Google 계정과 메일은 삭제되지 않습니다.'
               : 'This removes its local sign-in and session from this device. Your Google account and email are not deleted.',

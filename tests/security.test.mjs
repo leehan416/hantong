@@ -136,9 +136,10 @@ test('account IPC validates operation arguments and requires a stored account fo
     policy.isAllowedAccountRequest({ ...base, operation: 'remove', accountExists: true }),
     true
   )
-  for (const operation of ['setDefault']) {
-    assert.equal(policy.isAllowedAccountRequest({ ...base, operation, args: [base.args[0]] }), true)
-  }
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'move', args: [base.args[0], 0] }),
+    true
+  )
   for (const displayName of ['Personal', null]) {
     assert.equal(
       policy.isAllowedAccountRequest({
@@ -150,7 +151,11 @@ test('account IPC validates operation arguments and requires a stored account fo
     )
   }
   for (const patch of [
-    { operation: 'setDefault', args: [base.args[0], 'extra'] },
+    { operation: 'setDefault', args: [base.args[0]] },
+    { operation: 'move', args: [base.args[0], '1'] },
+    { operation: 'move', args: [base.args[0], 0.5] },
+    { operation: 'move', args: [base.args[0]] },
+    { operation: 'move', args: [base.args[0], 0], accountExists: false },
     { operation: 'setDisplayName', args: [base.args[0], '  '] },
     { operation: 'setDisplayName', args: [base.args[0], 'x'.repeat(81)] },
     { operation: 'setDisplayName', args: [base.args[0], 'unknown@example.com', 'extra'] },

@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import {
   CLOSE_ACTION_OPTIONS,
   ACCOUNT_SELECTOR_POSITION_OPTIONS,
-  ACCENT_COLOR_OPTIONS,
   DEFAULT_SETTINGS,
   LANGUAGE_OPTIONS,
   THEME_OPTIONS,
@@ -19,10 +18,9 @@ const FIELDS = {
   theme: THEME_OPTIONS,
   closeAction: CLOSE_ACTION_OPTIONS,
   accountSelectorPosition: ACCOUNT_SELECTOR_POSITION_OPTIONS,
-  accentColor: ACCENT_COLOR_OPTIONS,
   sidebarCollapsed: BOOLEAN,
   hideGmailLogo: BOOLEAN,
-  hideGemini: BOOLEAN,
+  hideHeaderButtons: BOOLEAN,
   hideSidePanel: BOOLEAN,
   hideStoragePromo: BOOLEAN
 } as const satisfies Record<keyof AppSettingsPatch, readonly (string | boolean)[]>

@@ -1,4 +1,5 @@
 import { isAccountId, isValidGmailAccountDisplayName } from './account-state'
+import { isAccountColor } from '../shared/accounts'
 import { isSettingsPatch } from './settings-store'
 
 interface AppInfoRequest {
@@ -91,10 +92,24 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
       request.accountExists
     )
   }
+  if (request.operation === 'move') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      Number.isInteger(request.args[1]) &&
+      request.accountExists
+    )
+  }
+  if (request.operation === 'setColor') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      isAccountColor(request.args[1]) &&
+      request.accountExists
+    )
+  }
   return (
-    (request.operation === 'activate' ||
-      request.operation === 'remove' ||
-      request.operation === 'setDefault') &&
+    (request.operation === 'activate' || request.operation === 'remove') &&
     request.args.length === 1 &&
     isAccountId(request.args[0]) &&
     request.accountExists

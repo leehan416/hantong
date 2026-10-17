@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import type { AccountState } from '../shared/accounts'
+import type { AccountColor, AccountState } from '../shared/accounts'
 import {
   activateGmailAccount,
   addGmailAccount,
   parseAccountState,
   recordVerifiedGmailEmail,
   removeGmailAccount,
-  setDefaultGmailAccount,
+  setGmailAccountColor,
+  moveGmailAccount,
   setGmailAccountDisplayName
 } from './account-state'
 
@@ -18,8 +19,9 @@ interface AccountStore {
   activate: (id: string) => AccountState
   remove: (id: string) => AccountState
   setDisplayName: (id: string, displayName: string | null) => AccountState
+  setColor: (id: string, color: AccountColor) => AccountState
   recordVerifiedEmail: (id: string, email: string) => AccountState
-  setDefault: (id: string) => AccountState
+  move: (id: string, toIndex: number) => AccountState
 }
 
 export function createAccountStore(
@@ -27,8 +29,6 @@ export function createAccountStore(
   createId: () => string = randomUUID
 ): AccountStore {
   const file = join(directory, 'accounts.json')
-  let needsMigration = false
-
   function read(): AccountState {
     let content: string
     try {
@@ -40,17 +40,12 @@ export function createAccountStore(
         'code' in error &&
         error.code === 'ENOENT'
       ) {
-        return { version: 1, accounts: [], activeAccountId: null, defaultAccountId: null }
+        return { version: 1, accounts: [], activeAccountId: null }
       }
       throw new Error('Unable to load account data', { cause: error })
     }
     try {
       const value: unknown = JSON.parse(content)
-      needsMigration =
-        typeof value === 'object' &&
-        value !== null &&
-        !Array.isArray(value) &&
-        !('defaultAccountId' in value)
       return parseAccountState(value)
     } catch {
       // Never reset a malformed or future-version file and silently lose accounts.
@@ -78,8 +73,6 @@ export function createAccountStore(
     }
   }
 
-  if (needsMigration) persist(state)
-
   function save(next: AccountState): AccountState {
     persist(next)
     state = next
@@ -92,7 +85,8 @@ export function createAccountStore(
     activate: (id) => save(activateGmailAccount(state, id)),
     remove: (id) => save(removeGmailAccount(state, id)),
     setDisplayName: (id, displayName) => save(setGmailAccountDisplayName(state, id, displayName)),
+    setColor: (id, color) => save(setGmailAccountColor(state, id, color)),
     recordVerifiedEmail: (id, email) => save(recordVerifiedGmailEmail(state, id, email)),
-    setDefault: (id) => save(setDefaultGmailAccount(state, id))
+    move: (id, toIndex) => save(moveGmailAccount(state, id, toIndex))
   }
 }

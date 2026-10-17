@@ -1,7 +1,7 @@
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { AccountState } from '../shared/accounts'
 import type { AccountSelectorPosition } from '../shared/settings'
-import type { AccountViewStatus } from '../shared/ipc'
+import type { AccountViewSnapshot, AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
 import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './google-web-identity'
@@ -73,7 +73,7 @@ export function createAccountViewManager(
   getDocumentState: (id: string) => GmailDocumentState
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   getActiveAccountId: () => string | null
-  setCovered: (covered: boolean) => void
+  setCovered: (covered: boolean) => Promise<AccountViewSnapshot | null>
   setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
   setStatusStripVisible: (visible: boolean) => void
   dispose: () => Promise<void>
@@ -469,10 +469,33 @@ export function createAccountViewManager(
   return {
     activate,
     retry,
-    setCovered(next) {
-      if (covered === next) return
+    async setCovered(next) {
+      if (covered === next) return null
+      let snapshot: AccountViewSnapshot | null = null
+      if (next && activeAccountId) {
+        const id = activeAccountId
+        const entry = views.get(id)
+        const contents = entry?.handle.view.webContents
+        if (entry?.attached && contents && !contents.isDestroyed()) {
+          try {
+            const image = await contents.capturePage()
+            if (
+              alive() &&
+              activeAccountId === id &&
+              views.get(id) === entry &&
+              entry.attached &&
+              !contents.isDestroyed()
+            ) {
+              snapshot = { bounds: entry.handle.view.getBounds(), dataUrl: image.toDataURL() }
+            }
+          } catch {
+            // A failed snapshot must not keep a native view above the modal.
+          }
+        }
+      }
       covered = next
       for (const [id, entry] of views) reconcileVisibility(id, entry)
+      return snapshot
     },
     setLayout(position, collapsed) {
       layoutPosition = position

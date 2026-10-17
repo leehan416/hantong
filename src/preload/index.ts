@@ -2,8 +2,9 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import {
   ACCOUNT_ACTIVATE_CHANNEL,
   ACCOUNT_ADD_CHANNEL,
-  ACCOUNT_DEFAULT_CHANNEL,
+  ACCOUNT_MOVE_CHANNEL,
   ACCOUNT_DISPLAY_NAME_CHANNEL,
+  ACCOUNT_COLOR_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
@@ -51,7 +52,9 @@ const api: HantongApi = Object.freeze({
   activateAccount: (accountId) => ipcRenderer.invoke(ACCOUNT_ACTIVATE_CHANNEL, accountId),
   setAccountDisplayName: (accountId, displayName) =>
     ipcRenderer.invoke(ACCOUNT_DISPLAY_NAME_CHANNEL, accountId, displayName),
-  setDefaultAccount: (accountId) => ipcRenderer.invoke(ACCOUNT_DEFAULT_CHANNEL, accountId),
+  updateAccountColor: (accountId, color) =>
+    ipcRenderer.invoke(ACCOUNT_COLOR_CHANNEL, accountId, color),
+  moveAccount: (accountId, toIndex) => ipcRenderer.invoke(ACCOUNT_MOVE_CHANNEL, accountId, toIndex),
   retryAccount: () => ipcRenderer.invoke(ACCOUNT_RETRY_CHANNEL),
   onAccountViewStatus: (listener) => {
     const handler = (_event: IpcRendererEvent, status: AccountViewStatus): void => listener(status)

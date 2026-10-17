@@ -28,14 +28,14 @@
 .account-layout-top,
 .account-layout-bottom {
   grid-template-rows:
-    calc(var(--account-chrome-height, 88px) - 32px) var(--account-status-strip-height, 32px)
+    calc(var(--account-chrome-height, 72px) - 32px) var(--account-status-strip-height, 32px)
     minmax(0, 1fr);
 }
 
 .account-layout-bottom {
   grid-template-rows:
     minmax(0, 1fr) var(--account-status-strip-height, 32px)
-    calc(var(--account-chrome-height, 88px) - 32px);
+    calc(var(--account-chrome-height, 72px) - 32px);
 }
 
 [data-status-strip-visible='false'] {
@@ -92,138 +92,41 @@
 
 .account-chrome {
   min-width: 0;
-  background: var(--color-background);
+  background: var(--color-surface);
 }
 
-.account-disclosure {
-  position: relative;
-  min-width: 0;
-  flex: 1 1 auto;
+[data-account-color='blue'] {
+  --account-color: #3b78d8;
+}
+[data-account-color='purple'] {
+  --account-color: #8b5cf6;
+}
+[data-account-color='green'] {
+  --account-color: #16a36a;
+}
+[data-account-color='orange'] {
+  --account-color: #e88a24;
+}
+[data-account-color='gray'] {
+  --account-color: #7b8794;
 }
 
-.account-disclosure-trigger {
-  display: flex;
-  min-width: 0;
-  min-height: 34px;
-  align-items: center;
-  gap: 8px;
-  border-radius: 5px;
-  padding: 5px 8px;
-  color: var(--color-text);
-  font-size: 13px;
+.account-avatar {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--account-color);
+  color: #fff;
+  font-size: 15px;
   font-weight: 600;
-  list-style: none;
-  cursor: pointer;
-}
-
-.account-disclosure-trigger::-webkit-details-marker {
-  display: none;
-}
-
-.account-disclosure-trigger:hover,
-.account-disclosure[open] .account-disclosure-trigger {
-  background: var(--color-hover);
-}
-
-.account-disclosure-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-disclosure-chevron {
-  flex: 0 0 auto;
-  color: var(--color-muted);
-}
-
-.account-menu {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 4px);
-  left: 0;
-  width: min(280px, calc(100vw - 32px));
-  max-height: min(60vh, 420px);
-  overflow-y: auto;
-  border: 1px solid var(--color-rule);
-  border-radius: 8px;
-  padding: 5px;
-  background: var(--color-background);
-  box-shadow: 0 8px 24px rgb(15 23 42 / 14%);
-}
-
-.account-layout-right .account-menu {
-  right: 0;
-  left: auto;
-}
-
-.account-menu-item,
-.account-menu-add {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 0;
-  border-radius: 5px;
-  padding: 7px 8px;
-  background: transparent;
-  color: var(--color-text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.account-menu-item:hover:not(:disabled),
-.account-menu-add:hover:not(:disabled) {
-  background: var(--color-hover);
-}
-
-.account-menu-item[aria-current='true'] {
-  color: var(--color-accent);
-  background: var(--color-accent-soft);
-}
-
-.account-menu-copy {
-  display: grid;
-  min-width: 0;
-}
-
-.account-menu-name,
-.account-menu-email {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-menu-name {
-  font-size: 13px;
-}
-
-.account-menu-email {
-  color: var(--color-muted);
-  font-size: 11px;
-}
-
-.account-menu-meta {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.account-menu-add {
-  justify-content: flex-start;
-  border-top: 1px solid var(--color-rule);
-  margin-top: 4px;
-  padding-top: 9px;
-  color: var(--color-accent);
-  font-size: 13px;
+  line-height: 1;
 }
 
 .unread-badge {
-  display: inline-block;
+  flex: 0 0 auto;
   min-width: 18px;
   border-radius: 9px;
   padding: 0 5px;
@@ -235,42 +138,13 @@
   text-align: center;
 }
 
-.add-account,
-.remove-account,
-.retry-button,
-.sidebar-add,
-.sidebar-toggle,
-.settings-button,
-.api-action {
-  min-height: 30px;
-  flex: 0 0 auto;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  padding: 4px 8px;
+/* Zero-specificity reset so each control's own class wins. */
+:where(.account-chrome button) {
+  border: 0;
   background: transparent;
-  color: var(--color-text);
+  color: inherit;
   font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
   cursor: pointer;
-}
-
-.add-account,
-.sidebar-add {
-  color: var(--color-accent);
-}
-
-.remove-account {
-  color: var(--color-danger);
-  text-align: left;
-}
-
-.settings-button {
-  border-color: var(--color-rule);
-}
-
-.account-chrome button:hover:not(:disabled) {
-  background: var(--color-hover);
 }
 
 .account-chrome button:disabled {
@@ -278,45 +152,262 @@
   opacity: 0.55;
 }
 
-.sidebar-main {
+.account-chrome button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.account-chrome svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+/* Top / bottom: browser-style tab strip. */
+.account-layout-top .account-chrome,
+.account-layout-bottom .account-chrome {
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+
+.account-layout-top .account-chrome {
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.account-layout-bottom .account-chrome {
+  border-top: 1px solid var(--color-rule);
+}
+
+.account-tabs {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
 }
 
-.sidebar-main > .account-disclosure {
-  flex: 0 1 auto;
-}
-
-.sidebar-footer {
-  display: grid;
-  gap: 6px;
-}
-
-.sidebar-toggle {
+.account-tab {
   display: flex;
+  min-width: 120px;
+  max-width: 280px;
+  flex: 1 1 0;
   align-items: center;
   gap: 8px;
+  border-right: 1px solid var(--color-rule);
+  padding: 0 14px;
   color: var(--color-muted);
+  font-size: 13px;
   text-align: left;
 }
 
-.sidebar-toggle span:first-child {
-  font-size: 18px;
-  line-height: 1;
+.account-tab:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
 }
 
-[data-sidebar-collapsed='true'] .sidebar-main {
-  display: none;
+.account-tab[aria-current='true'],
+.account-tab[aria-current='true']:hover {
+  background: var(--color-background);
+  color: var(--color-text);
+  box-shadow: inset 0 2px 0 var(--account-color);
+}
+
+.account-layout-bottom .account-tab[aria-current='true'] {
+  box-shadow: inset 0 -2px 0 var(--account-color);
+}
+
+/* Drag reorder: the dragged item fades, the target shows where it will land. */
+[data-dragging] {
+  opacity: 0.4;
+}
+
+.account-tab[data-drop='before'] {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.account-tab[data-drop='after'] {
+  box-shadow: inset -2px 0 0 var(--color-accent);
+}
+
+.sidebar-account-row[data-drop='before'] {
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+
+.sidebar-account-row[data-drop='after'] {
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+.account-tab-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-tab-add {
+  display: grid;
+  width: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  color: var(--color-muted);
+}
+
+.account-tab-add:hover:not(:disabled),
+.icon-action-button:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.account-tab-add svg {
+  width: 18px;
+  height: 18px;
+}
+
+.account-layout-top .settings-trigger,
+.account-layout-bottom .settings-trigger {
+  align-self: center;
+  margin: 0 6px;
+}
+
+/* Left / right: plain one-line rows; the rail shows avatars only. */
+.account-layout-left .account-chrome,
+.account-layout-right .account-chrome {
+  padding: 10px 8px;
+}
+
+.account-layout-left .account-chrome {
+  border-right: 1px solid var(--color-rule);
+}
+
+.account-layout-right .account-chrome {
+  border-left: 1px solid var(--color-rule);
+}
+
+.sidebar-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.sidebar-account-list {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.sidebar-account-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--color-muted);
+  font-size: 14px;
+  text-align: left;
+}
+
+.sidebar-account-row:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.sidebar-account-row[aria-current='true'] {
+  background: var(--color-selected);
+  color: var(--color-text);
+}
+
+.sidebar-account-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-account-add {
+  margin-top: 4px;
+}
+
+.sidebar-account-list.is-collapsed .sidebar-account-row {
+  min-height: 44px;
+  padding: 6px 8px;
 }
 
 [data-sidebar-collapsed='true'] .account-layout-left .account-chrome,
 [data-sidebar-collapsed='true'] .account-layout-right .account-chrome {
-  align-items: center;
   padding-right: 4px;
   padding-left: 4px;
+}
+
+.sidebar-account-list.is-collapsed .sidebar-account-add svg {
+  width: 32px;
+  height: 20px;
+}
+
+.sidebar-unread-dot {
+  position: absolute;
+  top: 5px;
+  left: 34px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-accent-strong);
+}
+
+.sidebar-footer {
+  display: flex;
+  gap: 2px;
+  padding-top: 8px;
+}
+
+[data-sidebar-collapsed='true'] .sidebar-footer {
+  flex-direction: column;
+}
+
+.sidebar-action[data-position='right'] svg {
+  transform: scaleX(-1);
+}
+
+.icon-action-button {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  padding: 0;
+  color: var(--color-muted);
+}
+
+[data-sidebar-collapsed='true'] .icon-action-button {
+  width: 100%;
+  justify-items: start;
+  padding-left: 15px;
+}
+
+.icon-action-button svg {
+  width: 18px;
+  height: 18px;
 }
 
 .status-strip {
@@ -382,55 +473,106 @@
   white-space: nowrap;
 }
 
-.managed-account-connection {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--color-muted);
-  font-size: 12px;
-}
-
-.managed-account-connection > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.api-action {
-  min-height: 24px;
-  color: var(--color-accent);
-}
-
 .retry-button {
   min-height: 24px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 8px;
+  background: transparent;
   color: var(--color-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
+.retry-button:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+/* Settings: Notion-style modal with a section list on the left. */
 .settings-panel {
   position: fixed;
-  width: min(560px, calc(100vw - 32px));
-  max-width: 560px;
-  max-height: min(760px, calc(100dvh - 32px));
+  width: min(820px, calc(100vw - 48px));
+  max-width: none;
+  height: min(600px, calc(100dvh - 48px));
+  max-height: none;
   overflow: hidden;
-  border: 1px solid var(--color-rule);
-  border-radius: 10px;
+  border: 0;
+  border-radius: 12px;
   padding: 0;
   background: var(--color-background);
   color: var(--color-text);
-  box-shadow: 0 18px 56px rgb(13 28 39 / 22%);
+  box-shadow:
+    0 0 0 1px var(--color-rule),
+    0 16px 48px rgb(0 0 0 / 24%);
+}
+
+.settings-panel[open] {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
 }
 
 .settings-panel::backdrop {
-  background: rgb(14 25 34 / 38%);
+  background: rgb(0 0 0 / 40%);
+}
+
+.settings-background-snapshot {
+  position: fixed;
+  z-index: 2;
+  display: block;
+  max-width: none;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.settings-navigation {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding: 16px 8px;
+  background: var(--color-surface);
+}
+
+.settings-navigation h1 {
+  margin: 0 0 6px;
+  padding: 0 10px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-navigation-item {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-navigation-item:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.settings-navigation-item[aria-selected='true'] {
+  background: var(--color-selected);
+  color: var(--color-text);
+  font-weight: 500;
 }
 
 .settings-content {
-  max-height: min(760px, calc(100dvh - 32px));
+  min-height: 0;
   overflow-y: auto;
-  padding: 24px;
+  padding: 28px 40px 40px;
 }
 
 .settings-heading {
@@ -438,177 +580,28 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
-}
-
-.settings-navigation {
-  display: flex;
-  gap: 4px;
   border-bottom: 1px solid var(--color-rule);
-  margin: 0 -24px 20px;
-  padding: 0 24px;
+  margin-bottom: 4px;
+  padding-bottom: 12px;
 }
 
-.settings-navigation-item {
-  min-height: 36px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  padding: 0 10px;
-  background: transparent;
-  color: var(--color-muted);
-  font: inherit;
-  cursor: pointer;
-}
-
-.settings-navigation-item[aria-selected='true'] {
-  border-bottom-color: var(--color-accent);
-  color: var(--color-text);
-}
-
-.settings-tab-panel {
-  min-width: 0;
-}
-
-.settings-section-heading,
-.managed-account-heading,
-.managed-account-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.settings-section-heading {
-  margin-bottom: 12px;
-}
-
-.settings-section-heading h2 {
+.settings-heading h2 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.settings-add-account,
-.managed-account-actions button {
-  min-height: 30px;
-  border: 0;
-  border-radius: 4px;
-  padding: 4px 8px;
-  background: transparent;
-  color: var(--color-accent);
-  font: inherit;
-  cursor: pointer;
-}
-
-.settings-add-account:hover,
-.managed-account-actions button:hover:not(:disabled) {
-  background: var(--color-hover);
-}
-
-.managed-account-list {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.managed-account {
-  display: grid;
-  gap: 12px;
-  border-bottom: 1px solid var(--color-rule);
-  padding: 14px 0;
-}
-
-.managed-account:first-child {
-  padding-top: 4px;
-}
-
-.managed-account-identity {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.managed-account-identity strong {
-  overflow: hidden;
-  color: var(--color-text);
-  font-size: 14px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.managed-account-identity span,
-.managed-account-name > span {
-  color: var(--color-muted);
-  font-size: 12px;
-}
-
-.managed-account-default {
-  flex: 0 0 auto;
-  border-radius: 4px;
-  padding: 3px 6px;
-  background: var(--color-hover);
-  color: var(--color-accent);
-  font-size: 11px;
-}
-
-.managed-account-name {
-  display: grid;
-  gap: 5px;
-}
-
-.managed-account-name input {
-  width: 100%;
-  min-height: 34px;
-  box-sizing: border-box;
-  border: 1px solid var(--color-rule);
-  border-radius: 5px;
-  padding: 6px 9px;
-  background: var(--color-background);
-  color: var(--color-text);
-  font: inherit;
-}
-
-.managed-account-actions {
-  justify-content: flex-end;
-}
-
-.managed-account-actions .managed-account-remove {
-  color: var(--color-danger);
-}
-
-.managed-account-actions button:disabled,
-.settings-add-account:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.settings-empty-accounts {
-  padding: 12px 0;
-  color: var(--color-muted) !important;
-}
-
-.settings-content h1 {
-  margin: 0;
-  color: var(--color-text);
-  font-size: 19px;
+  font-size: 16px;
   font-weight: 600;
 }
 
 .settings-close {
   display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
   place-items: center;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-muted);
   font: inherit;
-  font-size: 24px;
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
 }
@@ -618,158 +611,190 @@
   color: var(--color-text);
 }
 
-.settings-group {
-  margin: 0 0 16px;
-  border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  padding: 10px 14px;
-}
-
-.settings-group legend {
-  padding: 0 4px;
-  color: var(--color-muted);
-  font-size: 12px;
-}
-
-.settings-option {
+.settings-group-title {
   display: flex;
+  min-height: 44px;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
-  color: var(--color-text);
+  margin: 28px 0 4px;
+  border-bottom: 1px solid var(--color-rule);
+  padding-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-group-title small {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-tab-panel > section:first-of-type .settings-group-title {
+  margin-top: 12px;
+}
+
+.settings-button-danger {
+  color: var(--color-danger);
+}
+
+.settings-row {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.settings-row-label {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
   font-size: 14px;
 }
 
-.settings-option input,
-.settings-position-option input,
-.accent-color-option input {
-  accent-color: var(--color-accent-strong);
-}
-
-.accent-color-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-}
-
-.accent-color-option {
-  display: grid;
-  min-width: 54px;
-  justify-items: center;
-  gap: 4px;
+.settings-row-label small {
+  overflow: hidden;
   color: var(--color-muted);
-  font-size: 11px;
-  cursor: pointer;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.accent-color-option input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
+.settings-row-actions {
+  display: flex;
+  gap: 6px;
 }
 
-.accent-color-swatch {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 2px solid transparent;
-  border-radius: 50%;
-  background: var(--swatch-color);
-}
-
-.accent-color-swatch::after {
-  width: 8px;
-  height: 8px;
-  border: 2px solid var(--color-accent-contrast);
-  border-radius: 50%;
-  content: '';
-  opacity: 0;
-}
-
-.accent-color-option input:checked + .accent-color-swatch {
-  border-color: var(--color-accent-strong);
-}
-
-.accent-color-option input:checked + .accent-color-swatch::after {
-  opacity: 1;
-}
-
-.accent-color-option input:focus-visible + .accent-color-swatch {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 3px;
-}
-
-.accent-color-blue {
-  --swatch-color: #397da9;
-}
-.accent-color-purple {
-  --swatch-color: #865eb3;
-}
-.accent-color-green {
-  --swatch-color: #43875f;
-}
-.accent-color-orange {
-  --swatch-color: #bd6a32;
-}
-.accent-color-gray {
-  --swatch-color: #74818b;
-}
-
-input[type='radio'],
-input[type='checkbox'] {
-  accent-color: var(--color-accent-strong);
-}
-
-.settings-position {
-  margin-bottom: 16px;
+.settings-select,
+.settings-input {
+  min-height: 30px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--color-background);
   color: var(--color-text);
+  font: inherit;
   font-size: 13px;
 }
 
-.settings-position-trigger {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--color-rule);
-  border-radius: 5px;
-  padding: 5px 9px;
-  list-style: none;
+.settings-select {
+  width: 200px;
+  text-overflow: ellipsis;
+  appearance: none;
   cursor: pointer;
 }
 
-.settings-position-trigger::-webkit-details-marker {
-  display: none;
+.settings-select:hover:not(:disabled) {
+  background: var(--color-hover);
 }
 
-.settings-position-current {
+.settings-input {
+  width: 240px;
+}
+
+.settings-button,
+.settings-add-account {
+  min-height: 28px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-button:hover:not(:disabled),
+.settings-add-account:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.settings-panel button:disabled,
+.settings-panel select:disabled,
+.settings-panel input:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.settings-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--color-rule);
+  appearance: none;
+  cursor: pointer;
+}
+
+.settings-switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  content: '';
+}
+
+.settings-switch:checked {
+  background: var(--color-accent-strong);
+}
+
+.settings-switch:checked::after {
+  left: 16px;
+}
+
+.color-swatches {
+  display: flex;
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--account-color);
+  cursor: pointer;
+}
+
+.color-swatch[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 2px var(--color-background),
+    0 0 0 4px var(--account-color);
+}
+
+.settings-add-account {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+  border-style: dashed;
+  border-radius: 10px;
+  padding: 0 16px;
   color: var(--color-muted);
 }
 
-.settings-position-options {
-  display: grid;
-  gap: 4px;
-  border: 1px solid var(--color-rule);
-  border-radius: 5px;
-  margin: 4px 0 0;
-  padding: 6px;
+.settings-empty-accounts {
+  margin: 16px 0 0;
+  color: var(--color-muted);
+  font-size: 13px;
 }
 
-.settings-position-option {
-  display: flex;
-  min-height: 30px;
-  align-items: center;
-  gap: 8px;
-  border-radius: 4px;
-  padding: 3px 6px;
-  cursor: pointer;
-}
-
-.settings-position-option:hover {
-  background: var(--color-hover);
+.settings-error {
+  margin: 12px 0 0;
+  color: var(--color-danger);
+  font-size: 13px;
 }
 
 .visually-hidden {
@@ -779,11 +804,6 @@ input[type='checkbox'] {
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
-}
-
-.settings-content p {
-  color: var(--color-danger);
-  font-size: 13px;
 }
 
 .empty-state,
@@ -837,15 +857,50 @@ input[type='checkbox'] {
 
   .account-layout-left,
   .account-layout-right {
-    grid-template-columns: minmax(44px, var(--account-sidebar-width)) minmax(0, 1fr);
+    grid-template-columns: minmax(56px, var(--account-sidebar-width)) minmax(0, 1fr);
   }
 
   .account-layout-right {
-    grid-template-columns: minmax(0, 1fr) minmax(44px, var(--account-sidebar-width));
+    grid-template-columns: minmax(0, 1fr) minmax(56px, var(--account-sidebar-width));
   }
 
   .status-strip {
     padding-right: 8px;
     padding-left: 8px;
   }
+}
+
+.settings-group-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.settings-text-button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.settings-text-button:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.settings-text-button.settings-button-danger:hover:not(:disabled) {
+  background: var(--color-danger-hover);
+  color: var(--color-danger);
+}
+
+.settings-name-input {
+  width: min(280px, 100%);
+  font-size: 14px;
+  font-weight: 600;
 }

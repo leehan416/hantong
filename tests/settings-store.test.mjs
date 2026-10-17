@@ -15,12 +15,11 @@ const defaults = {
   theme: 'system',
   closeAction: 'hide',
   hideGmailLogo: false,
-  hideGemini: false,
+  hideHeaderButtons: false,
   hideSidePanel: false,
   hideStoragePromo: false,
   accountSelectorPosition: 'top',
-  sidebarCollapsed: false,
-  accentColor: 'blue'
+  sidebarCollapsed: false
 }
 
 function withDirectory(run) {
@@ -96,27 +95,30 @@ test('settings patches must name at least one known field with an allowed value'
 test('Gmail cleanup toggles are booleans, off by default, and persist individually', () => {
   withDirectory((directory) => {
     const store = createSettingsStore(directory)
-    store.update({ hideGemini: true, hideSidePanel: true })
+    store.update({ hideHeaderButtons: true, hideSidePanel: true })
     store.update({ hideSidePanel: false })
-    assert.deepEqual({ ...createSettingsStore(directory).get() }, { ...defaults, hideGemini: true })
+    assert.deepEqual(
+      { ...createSettingsStore(directory).get() },
+      { ...defaults, hideHeaderButtons: true }
+    )
   })
   assert.equal(isSettingsPatch({ hideGmailLogo: true }), true)
-  for (const patch of [{ hideGmailLogo: 'true' }, { hideGemini: 1 }, { hideSidePanel: null }]) {
+  for (const patch of [
+    { hideGmailLogo: 'true' },
+    { hideHeaderButtons: 1 },
+    { hideSidePanel: null }
+  ]) {
     assert.equal(isSettingsPatch(patch), false)
   }
   assert.equal(parseSettings({ version: 1, hideStoragePromo: 'yes' }).hideStoragePromo, false)
 })
 
-test('navigation and accent preferences accept fixed values and persist across restarts', () => {
+test('navigation preferences accept fixed values and persist across restarts', () => {
   withDirectory((directory) => {
     const store = createSettingsStore(directory)
     for (const accountSelectorPosition of ['top', 'bottom', 'left', 'right']) {
       assert.equal(isSettingsPatch({ accountSelectorPosition }), true)
       store.update({ accountSelectorPosition })
-    }
-    for (const accentColor of ['blue', 'purple', 'green', 'orange', 'gray']) {
-      assert.equal(isSettingsPatch({ accentColor }), true)
-      store.update({ accentColor })
     }
     assert.equal(isSettingsPatch({ sidebarCollapsed: false }), true)
     assert.equal(isSettingsPatch({ sidebarCollapsed: true }), true)
@@ -127,13 +129,13 @@ test('navigation and accent preferences accept fixed values and persist across r
       {
         ...defaults,
         accountSelectorPosition: 'right',
-        sidebarCollapsed: true,
-        accentColor: 'gray'
+        sidebarCollapsed: true
       }
     )
     for (const patch of [
       { accountSelectorPosition: 'center' },
-      { accentColor: 'red' },
+      // The accent preference was removed; account colors carry identity instead.
+      { accentColor: 'blue' },
       { sidebarCollapsed: 'true' }
     ]) {
       assert.equal(isSettingsPatch(patch), false)

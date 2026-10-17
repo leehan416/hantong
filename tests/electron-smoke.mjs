@@ -66,7 +66,7 @@ async function verify(window) {
     'addAccount',
     'activateAccount',
     'setAccountDisplayName',
-    'setDefaultAccount',
+    'moveAccount',
     'retryAccount',
     'removeAccount',
     'onAccountViewStatus',
@@ -79,8 +79,7 @@ async function verify(window) {
   assert.deepEqual(result.accounts, {
     version: 1,
     accounts: [],
-    activeAccountId: null,
-    defaultAccountId: null
+    activeAccountId: null
   })
   assert.equal(result.access, null)
   assert.equal(result.permission, 'denied')

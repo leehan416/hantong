@@ -1,20 +1,28 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
+import { ACCOUNT_COLOR_OPTIONS, accountLabel, MAX_ACCOUNTS } from '../../shared/accounts'
+import { getAccountViewBounds } from '../../shared/account-layout'
 import {
   ACCOUNT_SELECTOR_POSITION_OPTIONS,
-  ACCENT_COLOR_OPTIONS,
   GMAIL_CLEANUP_FIELDS,
   type AccountSelectorPosition,
   type AppSettings,
   type AppSettingsPatch
 } from '../../shared/settings'
-import type { AccountAccessState, AccountViewStatus, AppInfo, UnreadCounts } from '../../shared/ipc'
+import type {
+  AccountAccessState,
+  AccountViewSnapshot,
+  AccountViewStatus,
+  AppInfo,
+  UnreadCounts
+} from '../../shared/ipc'
 import {
   ACCOUNT_CHROME_HEIGHT,
   ACCOUNT_SIDEBAR_COLLAPSED_WIDTH,
   ACCOUNT_SIDEBAR_WIDTH
 } from '../../shared/ipc'
-import { AccountSelector } from './AccountSelector'
+import { AccountCardNavigation, SidebarAccountNavigation } from './AccountSelector'
+import { IconActionButton } from './IconActionButton'
 import {
   AccountAccessController,
   type AccountAccessUiState,
@@ -27,32 +35,19 @@ const messages = {
   ko: {
     add: '계정 추가',
     remove: '계정 삭제',
+    removeAction: '삭제',
+    accountLimit: '계정은 최대 10개까지 추가할 수 있습니다.',
     welcome: 'Gmail 계정을 추가해 시작하세요.',
     pending: '계정을 불러오는 중…',
-    loading: 'Gmail을 불러오는 중…',
-    ready: 'Gmail',
     error: 'Gmail을 불러오지 못했습니다.',
     blocked: '허용되지 않은 페이지 이동을 차단했습니다.',
     retry: '다시 시도',
     operationError: '요청을 완료하지 못했습니다. 다시 시도해 주세요.',
-    unreadLabel: (accountNumber: number, count: number) =>
-      `Gmail ${accountNumber}, 읽지 않은 메일 ${count}통`,
     removeError: '계정을 삭제하지 못했습니다. 다시 시도해 주세요.',
-    apiLabel: 'API 연결',
-    apiChecking: 'API 상태 확인 중…',
     apiCheckError: 'API 연결 상태를 확인하지 못했습니다.',
     apiConnecting: '브라우저에서 인증을 완료해 주세요.',
     apiCancelling: '연결 취소 중…',
-    apiDisconnecting: '연결 해제 중…',
-    apiStatusUnknown: 'API 연결 상태 알 수 없음',
-    apiStatusDisconnected: 'API 연결 안 됨',
-    apiStatusConnected: 'API 연결됨',
-    apiSwitchToAccount: '계정으로 전환 후 연결',
     apiReconnect: '다시 연결',
-    apiConnect: '연결',
-    apiDisconnect: '연결 해제',
-    apiCancel: '취소',
-    apiFailure: '연결을 완료하지 못했습니다. 다시 시도해 주세요.',
     position: '계정 선택 영역 위치',
     positions: { top: '상단', bottom: '하단', left: '좌측', right: '우측' },
     collapse: '사이드바 접기',
@@ -72,10 +67,10 @@ const messages = {
     settingsAccounts: '계정 관리',
     settingsAppearance: '외관',
     accountName: '표시 이름',
+    editName: '수정',
     accountNamePlaceholder: '이메일 주소 사용',
-    defaultAccount: '기본 계정',
-    currentDefault: '기본',
-    setDefault: '기본 계정으로 설정',
+    accountColor: '계정 색상',
+    accountColors: { blue: '파랑', purple: '보라', green: '초록', orange: '주황', gray: '회색' },
     noAccounts: '연결된 계정이 없습니다.',
     accountSaveError: '계정 설정을 저장하지 못했습니다. 다시 시도해 주세요.',
     accountActionError: '계정 작업을 완료하지 못했습니다. 다시 시도해 주세요.',
@@ -84,14 +79,12 @@ const messages = {
     languageOptions: { system: '시스템 설정', ko: '한국어', en: 'English' },
     theme: '테마',
     themeOptions: { system: '시스템 설정', light: '밝게', dark: '어둡게' },
-    accentColor: '포인트 색상',
-    accentColors: { blue: '파랑', purple: '보라', green: '초록', orange: '주황', gray: '회색' },
     closeAction: '창을 닫을 때',
     closeActionOptions: { hide: '숨기기 (알림 계속 받기)', quit: '앱 종료' },
     gmailCleanup: 'Gmail 화면에서 숨기기',
     gmailCleanupOptions: {
       hideGmailLogo: 'Gmail 로고',
-      hideGemini: 'Gemini 버튼',
+      hideHeaderButtons: '상단 부가 버튼 (지원·설정·Gemini·Google 앱)',
       hideSidePanel: '오른쪽 부가기능 패널',
       hideStoragePromo: '저장용량·업그레이드 안내'
     }
@@ -99,32 +92,19 @@ const messages = {
   en: {
     add: 'Add account',
     remove: 'Remove account',
+    removeAction: 'Remove',
+    accountLimit: 'You can add up to 10 accounts.',
     welcome: 'Add a Gmail account to get started.',
     pending: 'Loading accounts…',
-    loading: 'Loading Gmail…',
-    ready: 'Gmail',
     error: 'Unable to load Gmail.',
     blocked: 'A page navigation was blocked.',
     retry: 'Retry',
     operationError: 'Unable to complete the request. Please try again.',
-    unreadLabel: (accountNumber: number, count: number) =>
-      `Gmail ${accountNumber}, ${count} unread`,
     removeError: 'Unable to remove the account. Please try again.',
-    apiLabel: 'API connection',
-    apiChecking: 'Checking API status…',
     apiCheckError: 'Unable to check API connection status.',
     apiConnecting: 'Complete sign-in in your browser.',
     apiCancelling: 'Cancelling connection…',
-    apiDisconnecting: 'Disconnecting…',
-    apiStatusUnknown: 'API connection status unknown',
-    apiStatusDisconnected: 'API disconnected',
-    apiStatusConnected: 'API connected',
-    apiSwitchToAccount: 'Switch to connect this account',
     apiReconnect: 'Reconnect',
-    apiConnect: 'Connect',
-    apiDisconnect: 'Disconnect',
-    apiCancel: 'Cancel',
-    apiFailure: 'Unable to complete the connection. Please try again.',
     position: 'Account selector position',
     positions: { top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right' },
     collapse: 'Collapse sidebar',
@@ -144,10 +124,16 @@ const messages = {
     settingsAccounts: 'Accounts',
     settingsAppearance: 'Appearance',
     accountName: 'Display name',
+    editName: 'Edit',
     accountNamePlaceholder: 'Use email address',
-    defaultAccount: 'Default account',
-    currentDefault: 'Default',
-    setDefault: 'Set as default',
+    accountColor: 'Account color',
+    accountColors: {
+      blue: 'Blue',
+      purple: 'Purple',
+      green: 'Green',
+      orange: 'Orange',
+      gray: 'Gray'
+    },
     noAccounts: 'No connected accounts.',
     accountSaveError: 'Unable to save account settings. Please try again.',
     accountActionError: 'Unable to complete the account action. Please try again.',
@@ -156,24 +142,31 @@ const messages = {
     languageOptions: { system: 'System', ko: '한국어', en: 'English' },
     theme: 'Theme',
     themeOptions: { system: 'System', light: 'Light', dark: 'Dark' },
-    accentColor: 'Accent color',
-    accentColors: {
-      blue: 'Blue',
-      purple: 'Purple',
-      green: 'Green',
-      orange: 'Orange',
-      gray: 'Gray'
-    },
     closeAction: 'When closing the window',
     closeActionOptions: { hide: 'Hide (keep notifications)', quit: 'Quit the app' },
     gmailCleanup: 'Hide in Gmail',
     gmailCleanupOptions: {
       hideGmailLogo: 'Gmail logo',
-      hideGemini: 'Gemini button',
+      hideHeaderButtons: 'Top bar extras (Support, Settings, Gemini, Google apps)',
       hideSidePanel: 'Right-side add-on panel',
       hideStoragePromo: 'Storage and upgrade prompts'
     }
   }
+}
+
+function SettingsRow({
+  label,
+  children
+}: {
+  label: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <label className="settings-row">
+      <span className="settings-row-label">{label}</span>
+      {children}
+    </label>
+  )
 }
 
 function App(): React.JSX.Element {
@@ -193,6 +186,8 @@ function App(): React.JSX.Element {
   const [unreadCounts, setUnreadCounts] = useState<UnreadCounts>({})
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsBackground, setSettingsBackground] = useState<AccountViewSnapshot | null>(null)
+  const [settingsPanelFailed, setSettingsPanelFailed] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [settingsSection, setSettingsSection] = useState<'general' | 'accounts' | 'appearance'>(
     'general'
@@ -201,10 +196,14 @@ function App(): React.JSX.Element {
   const [accountSettingsBusy, setAccountSettingsBusy] = useState<string | null>(null)
   const [accountSettingsFailed, setAccountSettingsFailed] = useState(false)
   const [accountNameSaveFailed, setAccountNameSaveFailed] = useState(false)
+  const [accountLimitReached, setAccountLimitReached] = useState(false)
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null)
+  const nameEditCancelledRef = useRef(false)
   const settingsDialogRef = useRef<HTMLDialogElement | null>(null)
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
   const settingsReturnFocusRef = useRef<HTMLElement | null>(null)
   const settingsWasOpenRef = useRef(false)
+  const settingsOpeningRef = useRef(false)
   const [operationFailed, setOperationFailed] = useState(false)
   const [removalFailed, setRemovalFailed] = useState(false)
   const [statusStripLayoutVisible, setStatusStripLayoutVisible] = useState(true)
@@ -214,6 +213,11 @@ function App(): React.JSX.Element {
       ? settings.language
       : (info?.locale ?? (navigator.language.startsWith('ko') ? 'ko' : 'en'))
   const text = messages[locale]
+  const sectionTitles = {
+    general: text.settingsGeneral,
+    accounts: text.settingsAccounts,
+    appearance: text.settingsAppearance
+  }
   const position = settings?.accountSelectorPosition ?? 'top'
   const sidebarCollapsed = settings?.sidebarCollapsed ?? false
   const activeAccountId = accounts?.activeAccountId ?? null
@@ -266,12 +270,41 @@ function App(): React.JSX.Element {
     accessController.current?.selectAccount(activeAccountId)
   }, [activeAccountId])
 
-  useEffect(() => {
-    if (!settingsOpen) return
-    for (const account of accounts?.accounts ?? []) {
-      googleControllerPool.current?.forAccount(account.id)
+  const openSettings = useCallback(async (): Promise<void> => {
+    if (settingsDialogRef.current?.open || settingsOpeningRef.current) return
+    settingsOpeningRef.current = true
+    const activeElement = document.activeElement
+    settingsReturnFocusRef.current =
+      activeElement instanceof HTMLElement && activeElement !== document.body
+        ? activeElement
+        : settingsButtonRef.current
+    let panelSetupFailed = false
+    try {
+      setSettingsPanelFailed(false)
+      let snapshot = await window.api.setSettingsPanelOpen(true)
+      if (snapshot) {
+        const image = new Image()
+        image.src = snapshot.dataUrl
+        try {
+          await image.decode()
+        } catch {
+          snapshot = null
+        }
+      }
+      setSettingsBackground(snapshot)
+    } catch {
+      setSettingsBackground(null)
+      try {
+        await window.api.setSettingsPanelOpen(false)
+      } catch {
+        panelSetupFailed = true
+      }
+    } finally {
+      settingsOpeningRef.current = false
+      if (panelSetupFailed) setSettingsPanelFailed(true)
+      setSettingsOpen(true)
     }
-  }, [settingsOpen, accounts?.accounts])
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -323,7 +356,7 @@ function App(): React.JSX.Element {
         if (active) setSettings(next)
       })
       unsubscribeOpen = window.api.onOpenSettings(() => {
-        if (active) openSettings()
+        if (active) void openSettings()
       })
     } catch {
       // Without the push channel the panel still shows the values it saved itself.
@@ -339,17 +372,14 @@ function App(): React.JSX.Element {
       unsubscribe()
       unsubscribeOpen()
     }
-  }, [])
+  }, [openSettings])
 
   useEffect(() => {
-    // Main detaches the native Gmail view while the modal is open, or it would cover the dialog.
     const dialog = settingsDialogRef.current
     if (settingsOpen) {
       if (dialog && !dialog.open) dialog.showModal()
-      void window.api.setSettingsPanelOpen(true).catch(() => undefined)
     } else {
       if (dialog?.open) dialog.close()
-      void window.api.setSettingsPanelOpen(false).catch(() => undefined)
       if (settingsWasOpenRef.current) {
         const focusTarget = settingsReturnFocusRef.current ?? settingsButtonRef.current
         focusTarget?.focus()
@@ -359,13 +389,28 @@ function App(): React.JSX.Element {
     settingsWasOpenRef.current = settingsOpen
   }, [settingsOpen])
 
-  function openSettings(): void {
-    const activeElement = document.activeElement
-    settingsReturnFocusRef.current =
-      activeElement instanceof HTMLElement && activeElement !== document.body
-        ? activeElement
-        : settingsButtonRef.current
-    setSettingsOpen(true)
+  async function closeSettings(): Promise<void> {
+    let panelCloseFailed = false
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await window.api.setSettingsPanelOpen(false)
+        panelCloseFailed = false
+        break
+      } catch {
+        panelCloseFailed = true
+      }
+    }
+    if (panelCloseFailed) {
+      setSettingsPanelFailed(true)
+      return
+    }
+    setSettingsPanelFailed(false)
+    try {
+      setSettingsBackground(null)
+      setSettingsOpen(false)
+    } catch {
+      setSettingsFailed(true)
+    }
   }
 
   async function changeSettings(patch: AppSettingsPatch): Promise<void> {
@@ -397,8 +442,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings?.theme ?? 'system'
-    document.documentElement.dataset.accentColor = settings?.accentColor ?? 'blue'
-  }, [settings?.theme, settings?.accentColor])
+  }, [settings?.theme])
 
   useEffect(() => {
     document.documentElement.dataset.accountPosition = position
@@ -414,6 +458,11 @@ function App(): React.JSX.Element {
   }, [position, sidebarCollapsed])
 
   async function addAccount(): Promise<void> {
+    setAccountLimitReached(false)
+    if ((accounts?.accounts.length ?? 0) >= MAX_ACCOUNTS) {
+      setAccountLimitReached(true)
+      return
+    }
     setBusy(true)
     setOperationFailed(false)
     setRemovalFailed(false)
@@ -439,6 +488,15 @@ function App(): React.JSX.Element {
       setOperationFailed(true)
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function moveAccount(accountId: string, toIndex: number): Promise<void> {
+    setOperationFailed(false)
+    try {
+      setAccounts(await window.api.moveAccount(accountId, toIndex))
+    } catch {
+      setOperationFailed(true)
     }
   }
 
@@ -501,18 +559,25 @@ function App(): React.JSX.Element {
     await accessController.current?.refresh()
   }
 
-  let statusMessage = text.pending
-  if (accounts && accounts.accounts.length === 0) statusMessage = ''
-  else if (currentStatus === 'loading') statusMessage = text.loading
-  else if (currentStatus === 'ready') statusMessage = text.ready
-  else if (currentStatus === 'error') statusMessage = text.error
+  // The strip only appears for something the user can act on; loading progress stays silent.
+  let statusMessage = ''
+  if (currentStatus === 'error') statusMessage = text.error
   else if (currentStatus === 'blocked') statusMessage = text.blocked
   if (removalFailed) statusMessage = text.removeError
   if (operationFailed) statusMessage = text.operationError
-  const showStatusStrip = Boolean(
-    statusMessage &&
-    (accounts === null || currentStatus !== 'ready' || operationFailed || removalFailed)
-  )
+  const showStatusStrip = Boolean(statusMessage)
+
+  // The snapshot stands in for the detached Gmail view, so it follows layout changes made in
+  // settings instead of staying where the view was captured.
+  const snapshotBounds = settingsBackground
+    ? getAccountViewBounds({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        position,
+        sidebarCollapsed,
+        statusStripVisible: statusStripLayoutVisible
+      })
+    : null
 
   useEffect(() => {
     if (showStatusStrip === statusStripLayoutVisible) return
@@ -538,54 +603,44 @@ function App(): React.JSX.Element {
           {position === 'left' || position === 'right' ? (
             <>
               <div className="sidebar-main">
-                <AccountSelector
+                <SidebarAccountNavigation
                   accounts={accounts?.accounts ?? []}
                   activeAccountId={activeAccountId}
                   unreadCounts={unreadCounts}
                   locale={locale}
+                  collapsed={sidebarCollapsed}
                   disabled={accountActionsBusy}
                   addDisabled={accountActionsBusy || accounts === null}
                   onActivate={(id) => void activateAccount(id)}
                   onAdd={() => void addAccount()}
+                  onMove={(id, index) => void moveAccount(id, index)}
                 />
-                {!sidebarCollapsed && (
-                  <>
-                    <button
-                      className="sidebar-add"
-                      type="button"
-                      disabled={accountActionsBusy || accounts === null}
-                      onClick={() => void addAccount()}
-                    >
-                      <span aria-hidden="true">＋</span> {text.add}
-                    </button>
-                  </>
-                )}
               </div>
               <div className="sidebar-footer">
-                <button
-                  className="sidebar-toggle"
+                <IconActionButton
+                  action={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'}
+                  className="sidebar-action"
+                  data-position={position}
                   type="button"
                   aria-label={sidebarCollapsed ? text.expand : text.collapse}
                   title={sidebarCollapsed ? text.expand : text.collapse}
                   onClick={() => void changeSettings({ sidebarCollapsed: !sidebarCollapsed })}
-                >
-                  <span aria-hidden="true">{sidebarCollapsed ? '›' : '‹'}</span>
-                  {!sidebarCollapsed && <span>{text.collapse}</span>}
-                </button>
-                <button
-                  className="settings-button"
+                />
+                <IconActionButton
+                  action="settings"
+                  className="settings-trigger"
                   type="button"
                   ref={settingsButtonRef}
+                  aria-label={text.settings}
+                  title={text.settings}
                   aria-pressed={settingsOpen}
-                  onClick={openSettings}
-                >
-                  {text.settings}
-                </button>
+                  onClick={() => void openSettings()}
+                />
               </div>
             </>
           ) : (
             <>
-              <AccountSelector
+              <AccountCardNavigation
                 accounts={accounts?.accounts ?? []}
                 activeAccountId={activeAccountId}
                 unreadCounts={unreadCounts}
@@ -594,26 +649,18 @@ function App(): React.JSX.Element {
                 addDisabled={accountActionsBusy || accounts === null}
                 onActivate={(id) => void activateAccount(id)}
                 onAdd={() => void addAccount()}
+                onMove={(id, index) => void moveAccount(id, index)}
               />
-              <button
-                className="add-account"
-                type="button"
-                disabled={accountActionsBusy || accounts === null}
-                aria-label={text.add}
-                title={text.add}
-                onClick={() => void addAccount()}
-              >
-                <span aria-hidden="true">＋</span>
-              </button>
-              <button
-                className="settings-button"
+              <IconActionButton
+                action="settings"
+                className="settings-trigger"
                 type="button"
                 ref={settingsButtonRef}
+                aria-label={text.settings}
+                title={text.settings}
                 aria-pressed={settingsOpen}
-                onClick={openSettings}
-              >
-                {text.settings}
-              </button>
+                onClick={() => void openSettings()}
+              />
             </>
           )}
         </header>
@@ -637,45 +684,62 @@ function App(): React.JSX.Element {
           </div>
         )}
       </div>
+      {settingsBackground && snapshotBounds && (
+        <img
+          className="settings-background-snapshot"
+          src={settingsBackground.dataUrl}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          style={{
+            left: snapshotBounds.x,
+            top: snapshotBounds.y,
+            width: snapshotBounds.width,
+            height: snapshotBounds.height
+          }}
+        />
+      )}
       <dialog
         ref={settingsDialogRef}
         className="settings-panel"
         aria-labelledby="settings-title"
         onCancel={(event) => event.preventDefault()}
       >
+        <nav className="settings-navigation" aria-labelledby="settings-title" role="tablist">
+          <h1 id="settings-title">{text.settings}</h1>
+          {(['general', 'accounts', 'appearance'] as const).map((section) => (
+            <button
+              key={section}
+              className="settings-navigation-item"
+              type="button"
+              role="tab"
+              id={`settings-tab-${section}`}
+              aria-selected={settingsSection === section}
+              aria-controls={`settings-panel-${section}`}
+              onClick={() => setSettingsSection(section)}
+            >
+              {sectionTitles[section]}
+            </button>
+          ))}
+        </nav>
         <section className="settings-content">
           <header className="settings-heading">
-            <h1 id="settings-title">{text.settings}</h1>
+            <h2>{sectionTitles[settingsSection]}</h2>
             <button
               className="settings-close"
               type="button"
               aria-label={text.settingsClose}
               title={text.settingsClose}
-              onClick={() => setSettingsOpen(false)}
+              onClick={() => void closeSettings()}
             >
               <span aria-hidden="true">×</span>
             </button>
           </header>
-          <nav className="settings-navigation" aria-label={text.settings} role="tablist">
-            {(['general', 'accounts', 'appearance'] as const).map((section) => (
-              <button
-                key={section}
-                className="settings-navigation-item"
-                type="button"
-                role="tab"
-                id={`settings-tab-${section}`}
-                aria-selected={settingsSection === section}
-                aria-controls={`settings-panel-${section}`}
-                onClick={() => setSettingsSection(section)}
-              >
-                {section === 'general'
-                  ? text.settingsGeneral
-                  : section === 'accounts'
-                    ? text.settingsAccounts
-                    : text.settingsAppearance}
-              </button>
-            ))}
-          </nav>
+          {settingsPanelFailed && (
+            <p className="settings-error" role="alert">
+              {text.settingsError}
+            </p>
+          )}
           {settingsSection === 'general' ? (
             <div
               id="settings-panel-general"
@@ -683,69 +747,32 @@ function App(): React.JSX.Element {
               aria-labelledby="settings-tab-general"
               className="settings-tab-panel"
             >
-              <details className="settings-position">
-                <summary className="settings-position-trigger">
-                  <span>{text.position}</span>
-                  <span className="settings-position-current">
-                    {text.positions[position]} <span aria-hidden="true">⌄</span>
-                  </span>
-                </summary>
-                <fieldset className="settings-position-options">
-                  <legend className="visually-hidden">{text.position}</legend>
-                  {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
-                    <label key={option} className="settings-position-option">
-                      <input
-                        type="radio"
-                        name="account-selector-position"
-                        value={option}
-                        checked={position === option}
-                        onChange={() =>
-                          void changeSettings({
-                            accountSelectorPosition: option as AccountSelectorPosition
-                          })
-                        }
-                      />
-                      {text.positions[option]}
-                    </label>
-                  ))}
-                </fieldset>
-              </details>
               {(
                 [
                   ['language', text.language, text.languageOptions],
                   ['closeAction', text.closeAction, text.closeActionOptions]
                 ] as const
               ).map(([field, label, options]) => (
-                <fieldset key={field} className="settings-group">
-                  <legend>{label}</legend>
-                  {Object.entries(options).map(([value, optionLabel]) => (
-                    <label key={value} className="settings-option">
-                      <input
-                        type="radio"
-                        name={field}
-                        value={value}
-                        checked={settings?.[field] === value}
-                        onChange={() => void changeSettings({ [field]: value })}
-                      />
-                      {optionLabel}
-                    </label>
-                  ))}
-                </fieldset>
+                <SettingsRow key={field} label={label}>
+                  <select
+                    className="settings-select"
+                    value={settings?.[field] ?? ''}
+                    disabled={!settings}
+                    onChange={(event) => void changeSettings({ [field]: event.target.value })}
+                  >
+                    {Object.entries(options).map(([value, optionLabel]) => (
+                      <option key={value} value={value}>
+                        {optionLabel}
+                      </option>
+                    ))}
+                  </select>
+                </SettingsRow>
               ))}
-              <fieldset className="settings-group">
-                <legend>{text.gmailCleanup}</legend>
-                {GMAIL_CLEANUP_FIELDS.map((field) => (
-                  <label key={field} className="settings-option">
-                    <input
-                      type="checkbox"
-                      checked={settings?.[field] === true}
-                      onChange={(event) => void changeSettings({ [field]: event.target.checked })}
-                    />
-                    {text.gmailCleanupOptions[field]}
-                  </label>
-                ))}
-              </fieldset>
-              {settingsFailed && <p role="alert">{text.settingsError}</p>}
+              {settingsFailed && (
+                <p className="settings-error" role="alert">
+                  {text.settingsError}
+                </p>
+              )}
             </div>
           ) : settingsSection === 'accounts' ? (
             <div
@@ -754,225 +781,148 @@ function App(): React.JSX.Element {
               aria-labelledby="settings-tab-accounts"
               className="settings-tab-panel"
             >
-              <div className="settings-section-heading">
-                <h2>{text.settingsAccounts}</h2>
-                <button
-                  className="settings-add-account"
-                  type="button"
-                  disabled={accountActionsBusy || accounts === null}
-                  onClick={() => void addAccount()}
-                >
-                  <span aria-hidden="true">＋</span> {text.add}
-                </button>
-              </div>
-              {accountSettingsFailed && <p role="alert">{text.accountActionError}</p>}
-              {accountNameSaveFailed && <p role="alert">{text.accountSaveError}</p>}
+              {accountSettingsFailed && (
+                <p className="settings-error" role="alert">
+                  {text.accountActionError}
+                </p>
+              )}
+              {accountNameSaveFailed && (
+                <p className="settings-error" role="alert">
+                  {text.accountSaveError}
+                </p>
+              )}
               {accounts?.accounts.length ? (
-                <ul className="managed-account-list">
-                  {accounts.accounts.map((account, index) => {
-                    const accountName =
-                      account.displayName?.trim() || account.email || `Gmail ${index + 1}`
-                    const isDefault = accounts.defaultAccountId === account.id
-                    const connection = googleStates[account.id]
-                    const isActiveAccount = account.id === activeAccountId
-                    const canAuthorize =
-                      isActiveAccount &&
-                      (accessReady || access?.status === 'required' || access?.status === 'error')
-                    const connectionMessage = connection?.loading
-                      ? text.apiChecking
-                      : connection?.operation === 'cancelling'
-                        ? text.apiCancelling
-                        : connection?.operation === 'disconnecting'
-                          ? text.apiDisconnecting
-                          : connection?.operationFailed
-                            ? text.apiFailure
-                            : connection?.readFailed
-                              ? text.apiCheckError
-                              : connection?.status === 'connected'
-                                ? text.apiStatusConnected
-                                : connection?.status === 'connecting'
-                                  ? text.apiConnecting
-                                  : connection?.status === 'reconnect_required'
-                                    ? text.apiReconnect
-                                    : connection?.status === 'error'
-                                      ? text.apiFailure
-                                      : connection?.status === 'disconnected'
-                                        ? text.apiStatusDisconnected
-                                        : text.apiStatusUnknown
-                    return (
-                      <li className="managed-account" key={account.id}>
-                        <div className="managed-account-heading">
-                          <div className="managed-account-identity">
-                            <strong>{accountName}</strong>
-                            <span>{account.email || '—'}</span>
-                          </div>
-                          {isDefault && (
-                            <span className="managed-account-default">{text.currentDefault}</span>
-                          )}
-                        </div>
-                        <div
-                          className="managed-account-connection"
-                          role="group"
-                          aria-label={text.apiLabel}
-                          aria-busy={Boolean(
-                            connection && (connection.loading || connection.operation)
-                          )}
-                        >
-                          <span role="status" aria-live="polite">
-                            {connectionMessage}
-                          </span>
-                          {connection?.readFailed ? (
-                            <button
-                              className="api-action"
-                              type="button"
-                              disabled={busy || connection.loading || connection.operation !== null}
-                              onClick={() =>
-                                void googleControllerPool.current?.forAccount(account.id).refresh()
-                              }
-                            >
-                              {text.retry}
-                            </button>
-                          ) : connection?.status === 'connected' ? (
-                            <>
-                              {canAuthorize &&
-                                (access?.status === 'required' || access?.status === 'error') && (
-                                  <button
-                                    className="api-action"
-                                    type="button"
-                                    disabled={busy || connection.operation !== null}
-                                    onClick={() =>
-                                      void googleControllerPool.current
-                                        ?.forAccount(account.id)
-                                        .connect(true)
-                                    }
-                                  >
-                                    {text.apiReconnect}
-                                  </button>
-                                )}
-                              <button
-                                className="api-action"
-                                type="button"
-                                disabled={busy || connection.operation !== null}
-                                onClick={() =>
-                                  void googleControllerPool.current
-                                    ?.forAccount(account.id)
-                                    .disconnect()
-                                }
-                              >
-                                {connection.operation === 'disconnecting'
-                                  ? text.apiDisconnecting
-                                  : text.apiDisconnect}
-                              </button>
-                            </>
-                          ) : connection?.status === 'connecting' ? (
-                            <button
-                              className="api-action"
-                              type="button"
-                              disabled={busy || connection.operation === 'cancelling'}
-                              onClick={() =>
-                                void googleControllerPool.current?.forAccount(account.id).cancel()
-                              }
-                            >
-                              {connection.operation === 'cancelling'
-                                ? text.apiCancelling
-                                : text.apiCancel}
-                            </button>
-                          ) : connection?.status === 'disconnected' ||
-                            connection?.status === 'reconnect_required' ||
-                            connection?.status === 'error' ||
-                            connection?.operationFailed ? (
-                            <button
-                              className="api-action"
-                              type="button"
-                              disabled={busy || connection.operation !== null}
-                              onClick={() =>
-                                canAuthorize
-                                  ? void googleControllerPool.current
-                                      ?.forAccount(account.id)
-                                      .connect(true)
-                                  : void activateAccount(account.id)
-                              }
-                            >
-                              {canAuthorize
-                                ? connection.status === 'disconnected'
-                                  ? text.apiConnect
-                                  : text.apiReconnect
-                                : text.apiSwitchToAccount}
-                            </button>
-                          ) : null}
-                        </div>
-                        <label className="managed-account-name">
-                          <span>{text.accountName}</span>
+                accounts.accounts.map((account, index) => {
+                  const accountName = accountLabel(account, index)
+                  const settingsLocked = accountSettingsBusy !== null || accountActionsBusy
+                  return (
+                    <section key={account.id} aria-label={accountName}>
+                      <h3 className="settings-group-title">
+                        {editingAccountId === account.id ? (
                           <input
+                            className="settings-input settings-name-input"
                             type="text"
+                            autoFocus
                             value={accountNameDrafts[account.id] ?? account.displayName ?? ''}
-                            placeholder={text.accountNamePlaceholder}
+                            placeholder={account.email ?? text.accountNamePlaceholder}
                             maxLength={80}
-                            disabled={accountSettingsBusy !== null || accountActionsBusy}
+                            aria-label={`${text.accountName}: ${account.email ?? accountName}`}
                             onChange={(event) =>
                               setAccountNameDrafts((drafts) => ({
                                 ...drafts,
                                 [account.id]: event.target.value
                               }))
                             }
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') {
+                                // Escape would otherwise also reach the dialog; the blur below
+                                // must discard the draft instead of saving it.
+                                event.preventDefault()
+                                nameEditCancelledRef.current = true
+                              }
+                              if (event.key === 'Enter' || event.key === 'Escape') {
+                                event.currentTarget.blur()
+                              }
+                            }}
                             onBlur={() => {
                               const value = accountNameDrafts[account.id]
-                              if (value === undefined || value === (account.displayName ?? ''))
+                              const cancelled = nameEditCancelledRef.current
+                              nameEditCancelledRef.current = false
+                              setEditingAccountId(null)
+                              setAccountNameDrafts((drafts) => {
+                                const next = { ...drafts }
+                                delete next[account.id]
+                                return next
+                              })
+                              if (
+                                cancelled ||
+                                value === undefined ||
+                                value === (account.displayName ?? '')
+                              )
                                 return
-                              const displayName = value.trim() || null
                               setAccountSettingsBusy(account.id)
                               setAccountNameSaveFailed(false)
                               void window.api
-                                .setAccountDisplayName(account.id, displayName)
-                                .then(
-                                  (state) => {
-                                    setAccounts(state)
-                                    setAccountNameDrafts((drafts) => {
-                                      const next = { ...drafts }
-                                      delete next[account.id]
-                                      return next
-                                    })
-                                  },
-                                  () => setAccountNameSaveFailed(true)
-                                )
+                                .setAccountDisplayName(account.id, value.trim() || null)
+                                .then(setAccounts, () => setAccountNameSaveFailed(true))
                                 .finally(() => setAccountSettingsBusy(null))
                             }}
-                            aria-label={`${text.accountName}: ${account.email ?? accountName}`}
                           />
-                        </label>
-                        <div className="managed-account-actions">
-                          {!isDefault && (
+                        ) : (
+                          <>
+                            {accountName}
+                            {account.email && account.email !== accountName && (
+                              <small>{account.email}</small>
+                            )}
+                            <span className="settings-group-actions">
+                              <button
+                                className="settings-text-button"
+                                type="button"
+                                aria-label={`${text.editName}: ${accountName}`}
+                                disabled={settingsLocked}
+                                onClick={() => setEditingAccountId(account.id)}
+                              >
+                                {text.editName}
+                              </button>
+                              <button
+                                className="settings-text-button settings-button-danger"
+                                type="button"
+                                aria-label={`${text.remove}: ${accountName}`}
+                                disabled={settingsLocked}
+                                onClick={() => void removeAccount(account.id)}
+                              >
+                                {text.removeAction}
+                              </button>
+                            </span>
+                          </>
+                        )}
+                      </h3>
+                      <div className="settings-row" role="group" aria-label={text.accountColor}>
+                        <span className="settings-row-label">{text.accountColor}</span>
+                        <div className="color-swatches">
+                          {ACCOUNT_COLOR_OPTIONS.map((color) => (
                             <button
+                              key={color}
+                              className="color-swatch"
                               type="button"
-                              disabled={accountActionsBusy || accountSettingsBusy !== null}
+                              data-account-color={color}
+                              aria-label={text.accountColors[color]}
+                              aria-pressed={(account.color ?? 'blue') === color}
+                              title={text.accountColors[color]}
+                              disabled={settingsLocked}
                               onClick={() => {
+                                if ((account.color ?? 'blue') === color) return
                                 setAccountSettingsBusy(account.id)
                                 setAccountSettingsFailed(false)
                                 void window.api
-                                  .setDefaultAccount(account.id)
+                                  .updateAccountColor(account.id, color)
                                   .then(setAccounts, () => setAccountSettingsFailed(true))
                                   .finally(() => setAccountSettingsBusy(null))
                               }}
-                            >
-                              {text.setDefault}
-                            </button>
-                          )}
-                          <button
-                            className="managed-account-remove"
-                            type="button"
-                            disabled={accountActionsBusy || accountSettingsBusy !== null}
-                            onClick={() => void removeAccount(account.id)}
-                          >
-                            {text.remove}
-                          </button>
+                            />
+                          ))}
                         </div>
-                      </li>
-                    )
-                  })}
-                </ul>
+                      </div>
+                    </section>
+                  )
+                })
               ) : (
                 <p className="settings-empty-accounts">
                   {accounts ? text.noAccounts : text.pending}
+                </p>
+              )}
+              <button
+                className="settings-add-account"
+                type="button"
+                disabled={accountActionsBusy || accounts === null}
+                onClick={() => void addAccount()}
+              >
+                <span aria-hidden="true">+</span>
+                {text.add}
+              </button>
+              {accountLimitReached && (
+                <p className="settings-error" role="alert">
+                  {text.accountLimit}
                 </p>
               )}
             </div>
@@ -983,43 +933,58 @@ function App(): React.JSX.Element {
               aria-labelledby="settings-tab-appearance"
               className="settings-tab-panel"
             >
-              <fieldset className="settings-group">
-                <legend>{text.theme}</legend>
-                {Object.entries(text.themeOptions).map(([value, optionLabel]) => (
-                  <label key={value} className="settings-option">
-                    <input
-                      type="radio"
-                      name="theme"
-                      value={value}
-                      checked={settings?.theme === value}
-                      onChange={() => void changeSettings({ theme: value as AppSettings['theme'] })}
-                    />
-                    {optionLabel}
-                  </label>
-                ))}
-              </fieldset>
-              <fieldset className="settings-group">
-                <legend>{text.accentColor}</legend>
-                <div className="accent-color-options">
-                  {ACCENT_COLOR_OPTIONS.map((color) => (
-                    <label key={color} className="accent-color-option">
-                      <input
-                        type="radio"
-                        name="accent-color"
-                        value={color}
-                        checked={settings?.accentColor === color}
-                        onChange={() => void changeSettings({ accentColor: color })}
-                      />
-                      <span
-                        className={`accent-color-swatch accent-color-${color}`}
-                        aria-hidden="true"
-                      />
-                      <span>{text.accentColors[color]}</span>
-                    </label>
+              <SettingsRow label={text.theme}>
+                <select
+                  className="settings-select"
+                  value={settings?.theme ?? 'system'}
+                  disabled={!settings}
+                  onChange={(event) =>
+                    void changeSettings({ theme: event.target.value as AppSettings['theme'] })
+                  }
+                >
+                  {Object.entries(text.themeOptions).map(([value, optionLabel]) => (
+                    <option key={value} value={value}>
+                      {optionLabel}
+                    </option>
                   ))}
-                </div>
-              </fieldset>
-              {settingsFailed && <p role="alert">{text.settingsError}</p>}
+                </select>
+              </SettingsRow>
+              <SettingsRow label={text.position}>
+                <select
+                  className="settings-select"
+                  value={position}
+                  disabled={!settings}
+                  onChange={(event) =>
+                    void changeSettings({
+                      accountSelectorPosition: event.target.value as AccountSelectorPosition
+                    })
+                  }
+                >
+                  {ACCOUNT_SELECTOR_POSITION_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {text.positions[option]}
+                    </option>
+                  ))}
+                </select>
+              </SettingsRow>
+              <h3 className="settings-group-title">{text.gmailCleanup}</h3>
+              {GMAIL_CLEANUP_FIELDS.map((field) => (
+                <SettingsRow key={field} label={text.gmailCleanupOptions[field]}>
+                  <input
+                    className="settings-switch"
+                    type="checkbox"
+                    role="switch"
+                    checked={settings?.[field] === true}
+                    disabled={!settings}
+                    onChange={(event) => void changeSettings({ [field]: event.target.checked })}
+                  />
+                </SettingsRow>
+              ))}
+              {settingsFailed && (
+                <p className="settings-error" role="alert">
+                  {text.settingsError}
+                </p>
+              )}
             </div>
           )}
         </section>
@@ -1087,7 +1052,7 @@ function App(): React.JSX.Element {
           </section>
         </main>
       )}
-      {activeIndex < 0 && !accounts && <main className="loading-state">{statusMessage}</main>}
+      {activeIndex < 0 && !accounts && <main className="loading-state">{text.pending}</main>}
     </div>
   )
 }
