@@ -5,6 +5,7 @@ import {
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
+  ACCOUNT_STATE_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   ACCOUNT_ACCESS_STATE_CHANNEL,
   ACCOUNT_ACCESS_STATE_EVENT,
@@ -17,6 +18,7 @@ import {
   type AccountAccessState,
   type HantongApi
 } from '../shared/ipc'
+import type { AccountState } from '../shared/accounts'
 
 if (!process.contextIsolated) throw new Error('Context isolation is required')
 
@@ -40,6 +42,11 @@ const api: HantongApi = Object.freeze({
     const handler = (_event: IpcRendererEvent, status: AccountViewStatus): void => listener(status)
     ipcRenderer.on(ACCOUNT_VIEW_STATUS_EVENT, handler)
     return () => ipcRenderer.removeListener(ACCOUNT_VIEW_STATUS_EVENT, handler)
+  },
+  onAccountState: (listener) => {
+    const handler = (_event: IpcRendererEvent, state: AccountState): void => listener(state)
+    ipcRenderer.on(ACCOUNT_STATE_EVENT, handler)
+    return () => ipcRenderer.removeListener(ACCOUNT_STATE_EVENT, handler)
   },
   getAccountAccessState: (accountId) => ipcRenderer.invoke(ACCOUNT_ACCESS_STATE_CHANNEL, accountId),
   onAccountAccessState: (listener) => {

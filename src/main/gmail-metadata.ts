@@ -32,6 +32,12 @@ export interface GmailWatchResult {
   readonly expiresAt: number
 }
 
+export interface GmailMessageSummary {
+  readonly from: string
+  readonly subject: string
+  readonly unreadInInbox: boolean
+}
+
 export interface GmailHistoryPage {
   readonly historyId: string
   readonly addedMessageIds: readonly string[]
@@ -282,6 +288,8 @@ export async function fetchGmailHistoryPage(
   const url = new URL('/gmail/v1/users/me/history', GMAIL_API_ORIGIN)
   url.searchParams.set('startHistoryId', startHistoryId)
   url.searchParams.set('historyTypes', 'messageAdded')
+  // Only inbox arrivals notify; sent mail, drafts and filtered-away messages stay silent.
+  url.searchParams.set('labelId', 'INBOX')
   url.searchParams.set('fields', 'historyId,nextPageToken,history(messagesAdded(message(id)))')
   if (pageToken !== undefined) url.searchParams.set('pageToken', pageToken)
   const payload = await requestJson(url.toString(), accessToken, options, 'history_expired')
@@ -319,5 +327,42 @@ export async function fetchGmailHistoryPage(
     historyId,
     addedMessageIds: [...addedMessageIds],
     ...(payload.nextPageToken === undefined ? {} : { nextPageToken: payload.nextPageToken })
+  }
+}
+
+export async function fetchGmailMessageSummary(
+  accessToken: string,
+  messageId: string,
+  options: GmailMetadataOptions
+): Promise<GmailMessageSummary> {
+  if (typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(messageId)) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+  const url = new URL(`/gmail/v1/users/me/messages/${messageId}`, GMAIL_API_ORIGIN)
+  url.searchParams.set('format', 'metadata')
+  url.searchParams.append('metadataHeaders', 'From')
+  url.searchParams.append('metadataHeaders', 'Subject')
+  url.searchParams.set('fields', 'labelIds,payload/headers')
+  const payload = await requestJson(url.toString(), accessToken, options)
+  if (!isRecord(payload)) throw new GmailMetadataFailure('invalid_response')
+  const labelIds = payload.labelIds ?? []
+  if (!Array.isArray(labelIds) || !labelIds.every((label) => typeof label === 'string')) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+  const headers = isRecord(payload.payload) ? (payload.payload.headers ?? []) : []
+  if (!Array.isArray(headers)) throw new GmailMetadataFailure('invalid_response')
+  const header = (name: string): string => {
+    for (const entry of headers) {
+      if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.value !== 'string') {
+        throw new GmailMetadataFailure('invalid_response')
+      }
+      if (entry.name.toLowerCase() === name) return entry.value
+    }
+    return ''
+  }
+  return {
+    from: header('from'),
+    subject: header('subject'),
+    unreadInInbox: labelIds.includes('INBOX') && labelIds.includes('UNREAD')
   }
 }

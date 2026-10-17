@@ -171,9 +171,14 @@ function App(): React.JSX.Element {
     let active = true
     let subscriptionFailed = false
     let unsubscribe = (): void => {}
+    let unsubscribeAccounts = (): void => {}
     try {
       unsubscribe = window.api.onAccountViewStatus((status) => {
         if (active) setViewStatus(status)
+      })
+      // Main switches accounts on its own when a mail notification is clicked.
+      unsubscribeAccounts = window.api.onAccountState((state) => {
+        if (active) setAccounts(state)
       })
     } catch {
       subscriptionFailed = true
@@ -194,6 +199,7 @@ function App(): React.JSX.Element {
     return () => {
       active = false
       unsubscribe()
+      unsubscribeAccounts()
     }
   }, [])
 

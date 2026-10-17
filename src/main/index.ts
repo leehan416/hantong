@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, shell } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createAccountStore } from './account-store'
@@ -19,7 +19,14 @@ import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
 import { createGmailRelaySync } from './gmail-relay-sync'
-import { fetchGmailHistoryId, fetchGmailHistoryPage, registerGmailWatch } from './gmail-metadata'
+import { createGmailMailAlerts, type GmailMailAlert } from './gmail-mail-alerts'
+import {
+  fetchGmailHistoryId,
+  fetchGmailHistoryPage,
+  fetchGmailMessageSummary,
+  fetchGmailUnreadCount,
+  registerGmailWatch
+} from './gmail-metadata'
 import { startGoogleAuthorization } from './google-authorization'
 import type { AuthorizationErrorCode } from './google-authorization'
 import {
@@ -34,6 +41,7 @@ import {
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
+  ACCOUNT_STATE_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   APP_INFO_CHANNEL,
   GOOGLE_CONNECTION_CANCEL_CHANNEL,
@@ -224,6 +232,42 @@ function requireGoogleConnectionManager(): NonNullable<typeof googleConnectionMa
   return googleConnectionManager
 }
 
+// Electron drops click handlers of notifications that get garbage-collected, so keep them alive.
+const shownNotifications = new Set<Notification>()
+
+function showMailNotification(alert: GmailMailAlert): void {
+  if (!Notification.isSupported()) return
+  const notification = new Notification({ title: alert.title, body: alert.body })
+  const forget = (): void => {
+    shownNotifications.delete(notification)
+  }
+  notification.on('click', () => {
+    forget()
+    showAccount(alert.accountId)
+  })
+  notification.on('close', forget)
+  shownNotifications.add(notification)
+  notification.show()
+}
+
+function showAccount(accountId: string): void {
+  const store = accountStore
+  if (!store || appQuitting || accountRemoval?.isBusy()) return
+  if (!store.getState().accounts.some((account) => account.id === accountId)) return
+  const state = store.activate(accountId)
+  const window = mainWindow
+  // A new window picks up the active account itself when its renderer loads the account state.
+  if (!window || window.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  window.webContents.send(ACCOUNT_STATE_EVENT, state)
+  if (state.activeAccountId) activateAccountView(state.activeAccountId)
+}
+
 function activateAccountView(accountId: string): void {
   try {
     accountViewManager?.activate(accountId)
@@ -299,6 +343,29 @@ void app
           signal
         })
     })
+    const korean = (): boolean => app.getLocale().startsWith('ko')
+    const mailAlerts = createGmailMailAlerts({
+      accountExists,
+      accountLabel: (accountId) => {
+        const index = requireAccountStore()
+          .getState()
+          .accounts.findIndex((account) => account.id === accountId)
+        return `Gmail ${index + 1}`
+      },
+      korean,
+      readUnreadCount: async (accountId) =>
+        fetchGmailUnreadCount(await gmailAccessToken(accountId), 'INBOX', {
+          fetch,
+          signal: AbortSignal.timeout(30_000)
+        }),
+      readSummary: async (accountId, messageId) =>
+        fetchGmailMessageSummary(await gmailAccessToken(accountId), messageId, {
+          fetch,
+          signal: AbortSignal.timeout(30_000)
+        }),
+      notify: showMailNotification,
+      setBadge: (total) => app.setBadgeCount(total)
+    })
     const topic = gmailTopic
     gmailRelaySync = createGmailRelaySync({
       sync: (accountId) => historySync.sync(accountId),
@@ -315,8 +382,8 @@ void app
           })
         : undefined,
       now: () => Date.now(),
-      onChanges: () => {
-        // Unread badges and notifications consume these results in the next client unit.
+      onChanges: (accountId, result) => {
+        void mailAlerts.onChanges(accountId, result).catch(() => undefined)
       }
     })
     relayRuntime = createRelayRuntime({
@@ -388,6 +455,7 @@ void app
       onDisconnected: (accountId) => {
         relayRuntime?.disconnect(accountId)
         gmailRelaySync?.disconnect(accountId)
+        mailAlerts.remove(accountId)
       },
       reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
     })

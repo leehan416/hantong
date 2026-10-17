@@ -3,8 +3,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const { GmailMetadataFailure, fetchGmailHistoryId, fetchGmailHistoryPage, fetchGmailUnreadCount } =
-  loadTypeScript(new URL('../src/main/gmail-metadata.ts', import.meta.url))
+const {
+  GmailMetadataFailure,
+  fetchGmailHistoryId,
+  fetchGmailHistoryPage,
+  fetchGmailMessageSummary,
+  fetchGmailUnreadCount
+} = loadTypeScript(new URL('../src/main/gmail-metadata.ts', import.meta.url))
 
 function options(fetch, signal = new AbortController().signal, timeoutMs) {
   return { fetch, signal, timeoutMs }
@@ -130,6 +135,7 @@ test('history page requests messageAdded records and returns unique IDs with con
   assert.equal(parsed.searchParams.get('startHistoryId'), '12345678901234567890')
   assert.equal(parsed.searchParams.get('pageToken'), 'page token')
   assert.equal(parsed.searchParams.get('historyTypes'), 'messageAdded')
+  assert.equal(parsed.searchParams.get('labelId'), 'INBOX')
   assert.equal(
     parsed.searchParams.get('fields'),
     'historyId,nextPageToken,history(messagesAdded(message(id)))'
@@ -362,4 +368,63 @@ test('pre-aborted signal and invalid timeout reject before fetch', async () => {
     )
   }
   assert.equal(calls, 0)
+})
+
+test('message summary requests only From/Subject metadata and label ids', async () => {
+  let requestedUrl
+  const summary = await fetchGmailMessageSummary(
+    'token-value',
+    'msg_1-a',
+    options(async (url) => {
+      requestedUrl = url
+      return response(200, {
+        labelIds: ['UNREAD', 'INBOX'],
+        payload: {
+          headers: [
+            { name: 'Subject', value: 'Hello' },
+            { name: 'From', value: 'Ann <ann@example.com>' }
+          ]
+        }
+      })
+    })
+  )
+  const parsed = new URL(requestedUrl)
+  assert.equal(parsed.pathname, '/gmail/v1/users/me/messages/msg_1-a')
+  assert.equal(parsed.searchParams.get('format'), 'metadata')
+  assert.deepEqual(parsed.searchParams.getAll('metadataHeaders'), ['From', 'Subject'])
+  assert.equal(parsed.searchParams.get('fields'), 'labelIds,payload/headers')
+  assert.deepEqual(
+    { ...summary },
+    { from: 'Ann <ann@example.com>', subject: 'Hello', unreadInInbox: true }
+  )
+})
+
+test('message summary marks read or archived mail and rejects unsafe ids or headers', async () => {
+  const read = await fetchGmailMessageSummary(
+    'token-value',
+    'm1',
+    options(async () => response(200, { labelIds: ['INBOX'] }))
+  )
+  assert.deepEqual({ ...read }, { from: '', subject: '', unreadInInbox: false })
+  let fetched = false
+  await assert.rejects(
+    fetchGmailMessageSummary(
+      'token-value',
+      '../stop',
+      options(async () => {
+        fetched = true
+        return response(200, {})
+      })
+    ),
+    { code: 'invalid_response' }
+  )
+  assert.equal(fetched, false)
+  await assert.rejects(
+    fetchGmailMessageSummary(
+      'token-value',
+      'm1',
+      options(async () => response(200, { payload: { headers: [{ name: 'From', value: 1 }] } }))
+    ),
+    { code: 'invalid_response' }
+  )
 })
