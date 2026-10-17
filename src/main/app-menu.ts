@@ -1,8 +1,20 @@
 import type { ContextMenuParams, MenuItemConstructorOptions } from 'electron'
 
 const TEXT = {
-  ko: { settings: '설정…', view: '보기', copyLink: '링크 복사' },
-  en: { settings: 'Settings…', view: 'View', copyLink: 'Copy Link' }
+  ko: {
+    settings: '설정…',
+    view: '보기',
+    copyLink: '링크 복사',
+    open: 'Hantong 열기',
+    quit: '종료'
+  },
+  en: {
+    settings: 'Settings…',
+    view: 'View',
+    copyLink: 'Copy Link',
+    open: 'Open Hantong',
+    quit: 'Quit'
+  }
 } as const
 
 // Roles get OS-localized labels; only Hantong's own items need text here.
@@ -77,4 +89,16 @@ export function buildContextMenuTemplate(
     items.push({ label: TEXT[locale].copyLink, click: () => actions.copyLink(link) })
   }
   return items
+}
+
+export function buildTrayMenuTemplate(
+  locale: 'ko' | 'en',
+  actions: { readonly open: () => void; readonly quit: () => void }
+): MenuItemConstructorOptions[] {
+  const text = TEXT[locale]
+  return [
+    { label: text.open, click: actions.open },
+    { type: 'separator' },
+    { label: text.quit, click: actions.quit }
+  ]
 }

@@ -3,6 +3,8 @@ import {
   BrowserWindow,
   clipboard,
   Menu,
+  nativeImage,
+  Tray,
   dialog,
   ipcMain,
   nativeTheme,
@@ -30,7 +32,8 @@ import { createRelayClient } from './relay-client'
 import { createRelayRuntime } from './relay-runtime'
 import { createRelayCredentialStore } from './relay-credential-store'
 import { createSettingsStore } from './settings-store'
-import { buildAppMenuTemplate, buildContextMenuTemplate } from './app-menu'
+import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate } from './app-menu'
+import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
@@ -101,6 +104,7 @@ let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
 let settingsStore: ReturnType<typeof createSettingsStore> | null = null
 let windowStateStore: ReturnType<typeof createWindowStateStore> | null = null
+let tray: Tray | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
 let accountRemoval: ReturnType<typeof createAccountRemovalController> | null = null
 let googleConnectionRuntime: ReturnType<typeof createGoogleConnectionRuntime> | null = null
@@ -164,8 +168,14 @@ function createWindow(): void {
   })
   mainWindow = window
   if (bounds && saved?.maximized) window.maximize()
-  window.on('close', () => {
+  window.on('close', (event) => {
     windowStateStore?.write({ bounds: window.getNormalBounds(), maximized: window.isMaximized() })
+    // Hiding keeps Main, the relay stream and notifications alive; quitting goes through before-quit.
+    if (!appQuitting && (settingsStore?.get().closeAction ?? 'hide') === 'hide') {
+      event.preventDefault()
+      if (window.isFullScreen()) window.setFullScreen(false)
+      window.hide()
+    }
   })
   let windowAccessController: ReturnType<typeof createAccountAccessController> | null = null
   const windowViewManager = createAccountViewManager(
@@ -233,6 +243,7 @@ function createWindow(): void {
 
   window.once('ready-to-show', () => window.show())
   window.once('closed', () => {
+    if (!appQuitting && settingsStore?.get().closeAction === 'quit') app.quit()
     void googleConnectionRuntime?.cancelAll().catch(() => {
       console.error('Unable to cancel pending Google connections')
     })
@@ -293,9 +304,31 @@ function openSettings(): void {
   window.webContents.send(SETTINGS_OPEN_EVENT)
 }
 
+function showMainWindow(): void {
+  const window = mainWindow
+  if (!window || window.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+}
+
+// Rebuilt whenever the language changes, so every Hantong-owned label follows the setting.
 function installAppMenu(): void {
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate(buildAppMenuTemplate(uiLocale(), { openSettings }))
+  const locale = uiLocale()
+  Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate(locale, { openSettings })))
+  if (!tray) {
+    // A small copy of the app icon; a monochrome template icon can replace it later.
+    tray = new Tray(nativeImage.createFromPath(trayIconPath).resize({ width: 18, height: 18 }))
+    tray.setToolTip('Hantong')
+    tray.on('click', showMainWindow)
+  }
+  tray.setContextMenu(
+    Menu.buildFromTemplate(
+      buildTrayMenuTemplate(locale, { open: showMainWindow, quit: () => app.quit() })
+    )
   )
 }
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const { buildAppMenuTemplate, buildContextMenuTemplate } = loadTypeScript(
+const { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate } = loadTypeScript(
   new URL('../src/main/app-menu.ts', import.meta.url)
 )
 const allFlags = {
@@ -67,5 +67,21 @@ test('only allowed links can be copied', () => {
   assert.equal(
     buildContextMenuTemplate({ ...base, linkURL: 'javascript:alert(1)' }, 'en', actions()).length,
     0
+  )
+})
+
+test('tray menu reopens the window and quits explicitly, in the chosen language', () => {
+  const calls = []
+  const template = buildTrayMenuTemplate('ko', {
+    open: () => calls.push('open'),
+    quit: () => calls.push('quit')
+  })
+  assert.deepEqual(roles(template), ['Hantong 열기', 'separator', '종료'])
+  template[0].click()
+  template[2].click()
+  assert.deepEqual([...calls], ['open', 'quit'])
+  assert.equal(
+    buildTrayMenuTemplate('en', { open: () => undefined, quit: () => undefined })[2].label,
+    'Quit'
   )
 })
