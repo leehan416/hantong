@@ -9,7 +9,16 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 const { createSettingsStore, isSettingsPatch, parseSettings } = loadTypeScript(
   new URL('../src/main/settings-store.ts', import.meta.url)
 )
-const defaults = { version: 1, language: 'system', theme: 'system', closeAction: 'hide' }
+const defaults = {
+  version: 1,
+  language: 'system',
+  theme: 'system',
+  closeAction: 'hide',
+  hideGmailLogo: false,
+  hideGemini: false,
+  hideSidePanel: false,
+  hideStoragePromo: false
+}
 
 function withDirectory(run) {
   const directory = mkdtempSync(join(tmpdir(), 'hantong-settings-'))
@@ -44,7 +53,7 @@ test('updates merge, persist across restarts and reject unknown fields or values
     store.update({ language: 'en', closeAction: 'quit' })
     assert.deepEqual(
       { ...createSettingsStore(directory).get() },
-      { version: 1, language: 'en', theme: 'dark', closeAction: 'quit' }
+      { ...defaults, language: 'en', theme: 'dark', closeAction: 'quit' }
     )
     assert.throws(() => store.update({ theme: 'neon' }), { message: 'Invalid settings' })
     assert.equal(store.get().theme, 'dark')
@@ -67,4 +76,18 @@ test('settings patches must name at least one known field with an allowed value'
   ]) {
     assert.equal(isSettingsPatch(patch), false)
   }
+})
+
+test('Gmail cleanup toggles are booleans, off by default, and persist individually', () => {
+  withDirectory((directory) => {
+    const store = createSettingsStore(directory)
+    store.update({ hideGemini: true, hideSidePanel: true })
+    store.update({ hideSidePanel: false })
+    assert.deepEqual({ ...createSettingsStore(directory).get() }, { ...defaults, hideGemini: true })
+  })
+  assert.equal(isSettingsPatch({ hideGmailLogo: true }), true)
+  for (const patch of [{ hideGmailLogo: 'true' }, { hideGemini: 1 }, { hideSidePanel: null }]) {
+    assert.equal(isSettingsPatch(patch), false)
+  }
+  assert.equal(parseSettings({ version: 1, hideStoragePromo: 'yes' }).hideStoragePromo, false)
 })

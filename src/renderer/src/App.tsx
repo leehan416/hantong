@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AccountState } from '../../shared/accounts'
-import type { AppSettings, AppSettingsPatch } from '../../shared/settings'
+import {
+  GMAIL_CLEANUP_FIELDS,
+  type AppSettings,
+  type AppSettingsPatch
+} from '../../shared/settings'
 import type { AccountAccessState, AccountViewStatus, AppInfo, UnreadCounts } from '../../shared/ipc'
 import {
   AccountAccessController,
@@ -54,7 +58,14 @@ const messages = {
     theme: '테마',
     themeOptions: { system: '시스템 설정', light: '밝게', dark: '어둡게' },
     closeAction: '창을 닫을 때',
-    closeActionOptions: { hide: '숨기기 (알림 계속 받기)', quit: '앱 종료' }
+    closeActionOptions: { hide: '숨기기 (알림 계속 받기)', quit: '앱 종료' },
+    gmailCleanup: 'Gmail 화면에서 숨기기',
+    gmailCleanupOptions: {
+      hideGmailLogo: 'Gmail 로고',
+      hideGemini: 'Gemini 버튼',
+      hideSidePanel: '오른쪽 부가기능 패널',
+      hideStoragePromo: '저장용량·업그레이드 안내'
+    }
   },
   en: {
     add: 'Add account',
@@ -100,7 +111,14 @@ const messages = {
     theme: 'Theme',
     themeOptions: { system: 'System', light: 'Light', dark: 'Dark' },
     closeAction: 'When closing the window',
-    closeActionOptions: { hide: 'Hide (keep notifications)', quit: 'Quit the app' }
+    closeActionOptions: { hide: 'Hide (keep notifications)', quit: 'Quit the app' },
+    gmailCleanup: 'Hide in Gmail',
+    gmailCleanupOptions: {
+      hideGmailLogo: 'Gmail logo',
+      hideGemini: 'Gemini button',
+      hideSidePanel: 'Right-side add-on panel',
+      hideStoragePromo: 'Storage and upgrade prompts'
+    }
   }
 }
 
@@ -539,6 +557,19 @@ function App(): React.JSX.Element {
                 ))}
               </fieldset>
             ))}
+            <fieldset className="settings-group">
+              <legend>{text.gmailCleanup}</legend>
+              {GMAIL_CLEANUP_FIELDS.map((field) => (
+                <label key={field} className="settings-option">
+                  <input
+                    type="checkbox"
+                    checked={settings?.[field] === true}
+                    onChange={(event) => void changeSettings({ [field]: event.target.checked })}
+                  />
+                  {text.gmailCleanupOptions[field]}
+                </label>
+              ))}
+            </fieldset>
             {settingsFailed && <p role="alert">{text.settingsError}</p>}
             <button
               className="access-gate-action"

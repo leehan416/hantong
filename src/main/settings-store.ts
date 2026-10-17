@@ -10,18 +10,24 @@ import {
   type AppSettingsPatch
 } from '../shared/settings'
 
+const BOOLEAN = [true, false] as const
+
 const FIELDS = {
   language: LANGUAGE_OPTIONS,
   theme: THEME_OPTIONS,
-  closeAction: CLOSE_ACTION_OPTIONS
-} as const satisfies Record<keyof AppSettingsPatch, readonly string[]>
+  closeAction: CLOSE_ACTION_OPTIONS,
+  hideGmailLogo: BOOLEAN,
+  hideGemini: BOOLEAN,
+  hideSidePanel: BOOLEAN,
+  hideStoragePromo: BOOLEAN
+} as const satisfies Record<keyof AppSettingsPatch, readonly (string | boolean)[]>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isOption(options: readonly string[], value: unknown): boolean {
-  return typeof value === 'string' && options.includes(value)
+function isOption(options: readonly (string | boolean)[], value: unknown): boolean {
+  return options.some((option) => option === value)
 }
 
 // Strict: the renderer must send only known fields with known values, and at least one.
