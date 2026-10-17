@@ -308,7 +308,6 @@ test('mail view stays detached until Main grants access and sign-in remains visi
   await fixtureData.manager.dispose()
 })
 
-
 test('covering an attached mailbox captures its current bounds before detaching and restores it', async () => {
   const fixtureData = fixture()
   await fixtureData.manager.activate(firstId)
