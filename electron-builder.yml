@@ -14,8 +14,12 @@ asarUnpack:
   - resources/**
 mac:
   category: public.app-category.productivity
+  # Apple Silicon only: the only architecture the project can verify.
   target:
-    - dmg
+    - target: dmg
+      arch:
+        - arm64
+  minimumSystemVersion: '14.0'
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
 dmg:
