@@ -11,6 +11,8 @@ interface RelayConfigOptions {
   readonly environment: Record<string, string | undefined>
   readonly isPackaged: boolean
   readonly localEnvPath?: string
+  // Build-time values; used only by packaged builds when the launcher supplies no relay URL.
+  readonly bundled?: Record<string, string | undefined>
 }
 
 interface RelayConfigIO {
@@ -74,7 +76,13 @@ export function loadRuntimeRelayConfig(
       options.environment.HANTONG_GMAIL_TOPIC
     )
   }
-  if (options.isPackaged || !options.localEnvPath) return undefined
+  if (options.isPackaged) {
+    return withTopic(
+      validBaseUrl(options.bundled?.HANTONG_RELAY_URL, true),
+      options.bundled?.HANTONG_GMAIL_TOPIC
+    )
+  }
+  if (!options.localEnvPath) return undefined
   let source: string
   let readFailed = false
   try {
