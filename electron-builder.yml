@@ -30,6 +30,10 @@ mac:
       arch:
         - arm64
   minimumSystemVersion: '14.0'
+  # No Developer ID yet: sign ad-hoc so the bundle ID is bound; macOS drops notifications otherwise.
+  # Hardened runtime would reject Electron's differently signed frameworks under ad-hoc signing.
+  identity: '-'
+  hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
 dmg:
