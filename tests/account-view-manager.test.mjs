@@ -274,6 +274,40 @@ test('mail view stays detached until Main grants access and sign-in remains visi
   await fixtureData.manager.dispose()
 })
 
+test('sign-in view stays attached while Google navigates between login pages', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  const webContents = fixtureData.created[0].view.webContents
+
+  fixtureData.created[0].view.callbacks.onMainFrameNavigation(
+    'https://accounts.google.com/ServiceLogin'
+  )
+  webContents.url = 'https://accounts.google.com/ServiceLogin'
+  webContents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: false,
+    url: webContents.url
+  })
+  webContents.emit('did-frame-finish-load', {}, true)
+  webContents.emit('did-stop-loading')
+  assert.equal(fixtureData.attached.length, 1)
+
+  fixtureData.created[0].view.callbacks.onMainFrameNavigation(
+    'https://accounts.google.com/v3/signin/challenge/pwd'
+  )
+  webContents.loadingMainFrame = true
+  webContents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: false,
+    url: 'https://accounts.google.com/v3/signin/challenge/pwd'
+  })
+
+  assert.equal(fixtureData.detached.length, 0)
+  assert.equal(fixtureData.attached.length, 1)
+  await fixtureData.manager.dispose()
+})
+
 test('a closed owner suppresses stale load completion callbacks', async () => {
   const fixtureData = fixture({ deferLoads: true })
   await fixtureData.manager.activate(firstId)

@@ -29,6 +29,7 @@ interface ViewEntry {
   navigationRevision: number
   accessRevision: number
   mainFrameNavigationPending: boolean
+  pendingMainFrameKind: GmailDocumentState['kind'] | null
   mainFrameDocumentLoaded: boolean
   mailAccessGranted: boolean
   committedUrl: string
@@ -123,13 +124,15 @@ export function createAccountViewManager(
   }
 
   function reconcileVisibility(id: string, entry: ViewEntry): void {
+    const signInDocument =
+      documentKind(entry.committedUrl) === 'sign_in' &&
+      (!entry.mainFrameNavigationPending || entry.pendingMainFrameKind === 'sign_in')
     const shouldAttach =
       !covered &&
       activeAccountId === id &&
       !entry.disposePromise &&
-      !entry.loading &&
-      !entry.mainFrameNavigationPending &&
-      (entry.mailAccessGranted || documentKind(entry.committedUrl) === 'sign_in')
+      (signInDocument ||
+        (!entry.loading && !entry.mainFrameNavigationPending && entry.mailAccessGranted))
     if (shouldAttach && !entry.attached) {
       window.contentView.addChildView(entry.handle.view)
       entry.attached = true
@@ -149,6 +152,7 @@ export function createAccountViewManager(
       entry.loading = false
       entry.loaded = false
       entry.mainFrameNavigationPending = false
+      entry.pendingMainFrameKind = null
       entry.mainFrameDocumentLoaded = false
       entry.accessRevision += 1
       entry.mailAccessGranted = false
@@ -171,6 +175,7 @@ export function createAccountViewManager(
     )
       return
     entry.mainFrameNavigationPending = false
+    entry.pendingMainFrameKind = null
     entry.mainFrameDocumentLoaded = false
     entry.loaded = true
     entry.loading = false
@@ -196,6 +201,7 @@ export function createAccountViewManager(
     entry.loaded = false
     entry.loading = true
     entry.mainFrameNavigationPending = false
+    entry.pendingMainFrameKind = null
     publish(id, 'loading')
     entry.mainFrameDocumentLoaded = false
     armLoadTimeout(id, entry, loadNumber)
@@ -291,7 +297,7 @@ export function createAccountViewManager(
         publish(id, 'error')
         return
       }
-      const createdEntry = {
+      const createdEntry: ViewEntry = {
         handle,
         loaded: false,
         loading: false,
@@ -303,6 +309,7 @@ export function createAccountViewManager(
         navigationRevision: 0,
         accessRevision: 0,
         mainFrameNavigationPending: false,
+        pendingMainFrameKind: null,
         mainFrameDocumentLoaded: false,
         mailAccessGranted: false,
         committedUrl: handle.view.webContents.getURL()
@@ -347,6 +354,7 @@ export function createAccountViewManager(
         createdEntry.handle.revokeMailAccess()
         createdEntry.loadNumber += 1
         createdEntry.mainFrameNavigationPending = true
+        createdEntry.pendingMainFrameKind = documentKind(details.url)
         createdEntry.mainFrameDocumentLoaded = false
         createdEntry.loaded = false
         createdEntry.loading = true
@@ -371,6 +379,7 @@ export function createAccountViewManager(
         createdEntry.loaded = false
         createdEntry.loading = false
         createdEntry.mainFrameNavigationPending = false
+        createdEntry.pendingMainFrameKind = null
         createdEntry.mainFrameDocumentLoaded = false
         createdEntry.navigationRevision += 1
         createdEntry.accessRevision += 1
@@ -397,6 +406,7 @@ export function createAccountViewManager(
           createdEntry.loaded = false
           createdEntry.loading = false
           createdEntry.mainFrameNavigationPending = false
+          createdEntry.pendingMainFrameKind = null
           createdEntry.mainFrameDocumentLoaded = false
           createdEntry.accessRevision += 1
           createdEntry.mailAccessGranted = false
@@ -443,6 +453,7 @@ export function createAccountViewManager(
     entry.loaded = false
     entry.loading = false
     entry.mainFrameNavigationPending = false
+    entry.pendingMainFrameKind = null
     entry.mainFrameDocumentLoaded = false
     if (activeAccountId === id) activeAccountId = null
     if (entry.attached && !window.isDestroyed())
