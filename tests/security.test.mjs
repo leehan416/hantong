@@ -136,6 +136,48 @@ test('account IPC validates operation arguments and requires a stored account fo
     policy.isAllowedAccountRequest({ ...base, operation: 'remove', accountExists: true }),
     true
   )
+  assert.equal(
+    policy.isAllowedAccountRequest({ ...base, operation: 'move', args: [base.args[0], 0] }),
+    true
+  )
+  for (const displayName of ['Personal', null]) {
+    assert.equal(
+      policy.isAllowedAccountRequest({
+        ...base,
+        operation: 'setDisplayName',
+        args: [base.args[0], displayName]
+      }),
+      true
+    )
+  }
+  assert.equal(
+    policy.isAllowedAccountRequest({
+      ...base,
+      operation: 'setColor',
+      args: [base.args[0], 'green']
+    }),
+    true
+  )
+  for (const patch of [
+    { operation: 'setDefault', args: [base.args[0]] },
+    { operation: 'setColor', args: [base.args[0], 'red'] },
+    { operation: 'setColor', args: [base.args[0]] },
+    { operation: 'setColor', args: [base.args[0], 'green', 'extra'] },
+    { operation: 'setColor', args: ['../other-session', 'green'] },
+    { operation: 'setColor', args: [base.args[0], 'green'], accountExists: false },
+    { operation: 'move', args: [base.args[0], '1'] },
+    { operation: 'move', args: [base.args[0], 0.5] },
+    { operation: 'move', args: [base.args[0]] },
+    { operation: 'move', args: [base.args[0], 0], accountExists: false },
+    { operation: 'setDisplayName', args: [base.args[0], '  '] },
+    { operation: 'setDisplayName', args: [base.args[0], 'x'.repeat(81)] },
+    { operation: 'setDisplayName', args: [base.args[0], 'unknown@example.com', 'extra'] },
+    { operation: 'setDisplayName', args: ['../other-session', 'Personal'] },
+    { operation: 'setDisplayName', args: [base.args[0], null], accountExists: false },
+    { operation: 'recordWebIdentityEmail', args: [base.args[0], 'user@example.com'] }
+  ]) {
+    assert.equal(policy.isAllowedAccountRequest({ ...base, ...patch }), false)
+  }
   for (const patch of [
     { operation: 'remove', args: ['../other-session'], accountExists: true },
     { operation: 'remove', accountExists: false },
@@ -191,6 +233,10 @@ test('settings IPC allows get with no args and update with one valid patch from 
     true
   )
   assert.equal(isAllowedSettingsRequest({ ...base, operation: 'panel', args: [true] }), true)
+  assert.equal(
+    isAllowedSettingsRequest({ ...base, operation: 'status-strip', args: [false] }),
+    true
+  )
   for (const request of [
     { ...base, operation: 'get', args: [{}] },
     { ...base, operation: 'update', args: [] },
@@ -199,6 +245,8 @@ test('settings IPC allows get with no args and update with one valid patch from 
     { ...base, operation: 'reset', args: [] },
     { ...base, operation: 'panel', args: ['true'] },
     { ...base, operation: 'panel', args: [] },
+    { ...base, operation: 'status-strip', args: ['false'] },
+    { ...base, operation: 'status-strip', args: [false, true] },
     { ...base, senderMatches: false, operation: 'get', args: [] },
     { ...base, senderUrl: 'https://mail.google.com/', operation: 'get', args: [] }
   ]) {

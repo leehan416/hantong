@@ -46,6 +46,9 @@ function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
         webContents.isDestroyed = () => false
         webContents.isLoadingMainFrame = () => webContents.loadingMainFrame
         webContents.getURL = () => webContents.url
+        webContents.capturePage = async () => ({
+          toDataURL: () => 'data:image/png;base64,bWFpbA=='
+        })
         webContents.executeJavaScriptInIsolatedWorld = async () => 'private@example.com'
         const view = {
           session,
@@ -53,6 +56,9 @@ function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
           setBounds(bounds) {
             this.bounds = bounds
             this.boundsCount = (this.boundsCount ?? 0) + 1
+          },
+          getBounds() {
+            return this.bounds
           },
           webContents
         }
@@ -205,9 +211,37 @@ test('inactive load completion is cached and the view stays below the fixed chro
   await new Promise((resolve) => setImmediate(resolve))
   await fixtureData.manager.activate(firstId)
   assert.equal(fixtureData.attached.length, 1)
-  assert.equal(fixtureData.created[0].view.bounds.y, 88)
+  assert.equal(fixtureData.created[0].view.bounds.y, 72)
+  fixtureData.manager.setLayout('left', false)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 248,
+    y: 32,
+    width: 652,
+    height: 668
+  })
+  fixtureData.manager.setLayout('right', true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 32,
+    width: 844,
+    height: 668
+  })
+  fixtureData.manager.setStatusStripVisible(false)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 0,
+    width: 844,
+    height: 700
+  })
+  fixtureData.manager.setStatusStripVisible(true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 32,
+    width: 844,
+    height: 668
+  })
   fixtureData.resize()
-  assert.equal(fixtureData.created[0].view.boundsCount, 2)
+  assert.equal(fixtureData.created[0].view.boundsCount, 6)
   assert.equal(fixtureData.created[0].loads, 1)
   assert.deepEqual(structuredClone(fixtureData.statuses.at(-1)), {
     accountId: firstId,
@@ -271,6 +305,41 @@ test('mail view stays detached until Main grants access and sign-in remains visi
   assert.equal(fixtureData.detached.length, 2)
   assert.equal(fixtureData.manager.setMailAccess(firstId, false), true)
   assert.equal(fixtureData.detached.length, 2)
+  await fixtureData.manager.dispose()
+})
+
+
+test('covering an attached mailbox captures its current bounds before detaching and restores it', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, 0), true)
+  fixtureData.manager.setLayout('right', true)
+  fixtureData.manager.setStatusStripVisible(false)
+  const snapshot = await fixtureData.manager.setCovered(true)
+  assert.deepEqual(structuredClone(snapshot), {
+    accountId: firstId,
+    bounds: { x: 0, y: 0, width: 844, height: 700 },
+    dataUrl: 'data:image/png;base64,bWFpbA=='
+  })
+  assert.equal(fixtureData.detached.length, 1)
+  fixtureData.manager.setCovered(false)
+  assert.equal(fixtureData.attached.length, 2)
+  await fixtureData.manager.dispose()
+})
+
+test('snapshot failure still covers the mailbox and a later close restores its live view', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, 0), true)
+  fixtureData.created[0].view.webContents.capturePage = async () => {
+    throw new Error('capture unavailable')
+  }
+  assert.equal(await fixtureData.manager.setCovered(true), null)
+  assert.equal(fixtureData.detached.length, 1)
+  await fixtureData.manager.setCovered(false)
+  assert.equal(fixtureData.attached.length, 2)
   await fixtureData.manager.dispose()
 })
 
@@ -457,12 +526,12 @@ test('covering the window detaches the granted mail view and uncovering restores
   const state = fixtureData.manager.getDocumentState(firstId)
   assert.equal(fixtureData.manager.setMailAccess(firstId, true, state.revision), true)
   assert.equal(fixtureData.attached.length, 1)
-  fixtureData.manager.setCovered(true)
+  await fixtureData.manager.setCovered(true)
   assert.equal(fixtureData.detached.length, 1)
   // Switching accounts while covered must not bring a view back on top of the panel.
   await fixtureData.manager.activate(firstId)
   assert.equal(fixtureData.attached.length, 1)
-  fixtureData.manager.setCovered(false)
+  await fixtureData.manager.setCovered(false)
   assert.equal(fixtureData.attached.length, 2)
   await fixtureData.manager.dispose()
 })

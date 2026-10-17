@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import {
   CLOSE_ACTION_OPTIONS,
+  ACCOUNT_SELECTOR_POSITION_OPTIONS,
   DEFAULT_SETTINGS,
   LANGUAGE_OPTIONS,
   THEME_OPTIONS,
@@ -16,8 +17,10 @@ const FIELDS = {
   language: LANGUAGE_OPTIONS,
   theme: THEME_OPTIONS,
   closeAction: CLOSE_ACTION_OPTIONS,
+  accountSelectorPosition: ACCOUNT_SELECTOR_POSITION_OPTIONS,
+  sidebarCollapsed: BOOLEAN,
   hideGmailLogo: BOOLEAN,
-  hideGemini: BOOLEAN,
+  hideHeaderButtons: BOOLEAN,
   hideSidePanel: BOOLEAN,
   hideStoragePromo: BOOLEAN
 } as const satisfies Record<keyof AppSettingsPatch, readonly (string | boolean)[]>
@@ -49,6 +52,10 @@ export function parseSettings(value: unknown): AppSettings {
   const settings: AppSettings = { ...DEFAULT_SETTINGS }
   for (const key of Object.keys(FIELDS) as (keyof typeof FIELDS)[]) {
     if (isOption(FIELDS[key], value[key])) Object.assign(settings, { [key]: value[key] })
+  }
+  // `hideGemini` was folded into `hideHeaderButtons`; keep Gemini hidden for users who hid it.
+  if (value.hideHeaderButtons === undefined && value.hideGemini === true) {
+    settings.hideHeaderButtons = true
   }
   return settings
 }

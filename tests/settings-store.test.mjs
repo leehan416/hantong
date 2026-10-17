@@ -15,9 +15,11 @@ const defaults = {
   theme: 'system',
   closeAction: 'hide',
   hideGmailLogo: false,
-  hideGemini: false,
+  hideHeaderButtons: false,
   hideSidePanel: false,
-  hideStoragePromo: false
+  hideStoragePromo: false,
+  accountSelectorPosition: 'top',
+  sidebarCollapsed: false
 }
 
 function withDirectory(run) {
@@ -42,6 +44,18 @@ test('stored settings keep valid fields and fall back per field for invalid ones
   assert.deepEqual(
     { ...parseSettings({ version: 1, language: 'ko', theme: 'neon', closeAction: 'quit' }) },
     { ...defaults, language: 'ko', closeAction: 'quit' }
+  )
+  assert.deepEqual(
+    {
+      ...parseSettings({
+        version: 1,
+        language: 'ko',
+        accountSelectorPosition: 'center',
+        sidebarCollapsed: 'yes',
+        accentColor: 'red'
+      })
+    },
+    { ...defaults, language: 'ko' }
   )
   assert.deepEqual({ ...parseSettings({ version: 2, language: 'ko' }) }, defaults)
 })
@@ -81,13 +95,60 @@ test('settings patches must name at least one known field with an allowed value'
 test('Gmail cleanup toggles are booleans, off by default, and persist individually', () => {
   withDirectory((directory) => {
     const store = createSettingsStore(directory)
-    store.update({ hideGemini: true, hideSidePanel: true })
+    store.update({ hideHeaderButtons: true, hideSidePanel: true })
     store.update({ hideSidePanel: false })
-    assert.deepEqual({ ...createSettingsStore(directory).get() }, { ...defaults, hideGemini: true })
+    assert.deepEqual(
+      { ...createSettingsStore(directory).get() },
+      { ...defaults, hideHeaderButtons: true }
+    )
   })
   assert.equal(isSettingsPatch({ hideGmailLogo: true }), true)
-  for (const patch of [{ hideGmailLogo: 'true' }, { hideGemini: 1 }, { hideSidePanel: null }]) {
+  for (const patch of [
+    { hideGmailLogo: 'true' },
+    { hideHeaderButtons: 1 },
+    { hideSidePanel: null }
+  ]) {
     assert.equal(isSettingsPatch(patch), false)
   }
   assert.equal(parseSettings({ version: 1, hideStoragePromo: 'yes' }).hideStoragePromo, false)
+})
+
+test('navigation preferences accept fixed values and persist across restarts', () => {
+  withDirectory((directory) => {
+    const store = createSettingsStore(directory)
+    for (const accountSelectorPosition of ['top', 'bottom', 'left', 'right']) {
+      assert.equal(isSettingsPatch({ accountSelectorPosition }), true)
+      store.update({ accountSelectorPosition })
+    }
+    assert.equal(isSettingsPatch({ sidebarCollapsed: false }), true)
+    assert.equal(isSettingsPatch({ sidebarCollapsed: true }), true)
+    store.update({ sidebarCollapsed: false })
+    store.update({ sidebarCollapsed: true })
+    assert.deepEqual(
+      { ...createSettingsStore(directory).get() },
+      {
+        ...defaults,
+        accountSelectorPosition: 'right',
+        sidebarCollapsed: true
+      }
+    )
+    for (const patch of [
+      { accountSelectorPosition: 'center' },
+      // The accent preference was removed; account colors carry identity instead.
+      { accentColor: 'blue' },
+      { sidebarCollapsed: 'true' }
+    ]) {
+      assert.equal(isSettingsPatch(patch), false)
+      assert.throws(() => store.update(patch), { message: 'Invalid settings' })
+    }
+  })
+})
+
+test('a saved hideGemini choice carries over to the top-bar extras toggle', () => {
+  assert.equal(parseSettings({ version: 1, hideGemini: true }).hideHeaderButtons, true)
+  assert.equal(parseSettings({ version: 1, hideGemini: false }).hideHeaderButtons, false)
+  assert.equal(
+    parseSettings({ version: 1, hideGemini: true, hideHeaderButtons: false }).hideHeaderButtons,
+    false
+  )
 })

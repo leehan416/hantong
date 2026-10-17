@@ -3,9 +3,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const { AccountAccessController, GoogleConnectionController } = loadTypeScript(
-  new URL('../src/renderer/src/google-connection-controller.ts', import.meta.url)
-)
+const {
+  AccountAccessController,
+  GoogleConnectionController,
+  GoogleConnectionControllerPool,
+  hasPendingGoogleConnection
+} = loadTypeScript(new URL('../src/renderer/src/google-connection-controller.ts', import.meta.url))
 
 function deferred() {
   let resolve
@@ -24,6 +27,48 @@ function status(accountId, value) {
 function tick() {
   return new Promise((resolve) => setImmediate(resolve))
 }
+
+test('any account connection operation blocks conflicting account changes', () => {
+  assert.equal(
+    hasPendingGoogleConnection([
+      {
+        accountId: 'inactive',
+        status: 'connected',
+        loading: false,
+        readFailed: false,
+        operation: 'disconnecting',
+        operationFailed: false
+      }
+    ]),
+    true
+  )
+  assert.equal(
+    hasPendingGoogleConnection([
+      {
+        accountId: 'inactive',
+        status: 'connecting',
+        loading: false,
+        readFailed: false,
+        operation: null,
+        operationFailed: false
+      }
+    ]),
+    true
+  )
+  assert.equal(
+    hasPendingGoogleConnection([
+      {
+        accountId: 'inactive',
+        status: 'connected',
+        loading: false,
+        readFailed: false,
+        operation: null,
+        operationFailed: false
+      }
+    ]),
+    false
+  )
+})
 
 test('late status response for the old account cannot replace the selected account', async () => {
   const oldRead = deferred()
@@ -47,6 +92,43 @@ test('late status response for the old account cannot replace the selected accou
 
   assert.equal(states.at(-1).accountId, 'second')
   assert.equal(states.at(-1).status, 'connected')
+})
+
+test('connection controller pool keeps each account status and pending operation independently', async () => {
+  const firstConnect = deferred()
+  const states = []
+  const latestByAccount = new Map()
+  const pool = new GoogleConnectionControllerPool(
+    {
+      getGoogleConnectionStatus: async (accountId) => status(accountId, 'disconnected'),
+      connectGoogleAccount: (accountId) =>
+        accountId === 'first'
+          ? firstConnect.promise
+          : Promise.resolve(status(accountId, 'connected')),
+      cancelGoogleConnection: async (accountId) => status(accountId, 'disconnected'),
+      disconnectGoogleAccount: async (accountId) => status(accountId, 'disconnected')
+    },
+    (state) => {
+      states.push(state)
+      latestByAccount.set(state.accountId, state)
+    }
+  )
+
+  const first = pool.forAccount('first')
+  const second = pool.forAccount('second')
+  await tick()
+  const connecting = first.connect()
+  await second.connect()
+
+  assert.equal(states.at(-1).accountId, 'second')
+  assert.equal(states.at(-1).status, 'connected')
+  assert.equal(latestByAccount.get('first').operation, 'connecting')
+  firstConnect.resolve(status('first', 'connected'))
+  await connecting
+
+  assert.equal(states.at(-1).accountId, 'first')
+  assert.equal(states.at(-1).status, 'connected')
+  pool.dispose()
 })
 
 test('cancel invalidates a pending connect response and prevents duplicate connects', async () => {
