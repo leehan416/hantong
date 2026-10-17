@@ -43,6 +43,7 @@ import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
 import { createGmailRelaySync } from './gmail-relay-sync'
 import { createGmailMailAlerts, type GmailMailAlert } from './gmail-mail-alerts'
+import { updateTrayUnreadCount } from './tray-unread-count'
 import {
   fetchGmailHistoryId,
   fetchGmailHistoryPage,
@@ -524,6 +525,7 @@ void app
       notify: showMailNotification,
       setBadge: (total) => {
         app.setBadgeCount(total)
+        updateTrayUnreadCount(total, process.platform, (title) => tray?.setTitle(title))
         const window = mainWindow
         if (window && !window.isDestroyed()) {
           window.webContents.send(
