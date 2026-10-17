@@ -74,7 +74,12 @@ async function verify(window) {
   assert.equal(result.info.name, 'Hantong')
   assert.equal(typeof result.info.version, 'string')
   assert.ok(['ko', 'en'].includes(result.info.locale))
-  assert.deepEqual(result.accounts, { version: 1, accounts: [], activeAccountId: null })
+  assert.deepEqual(result.accounts, {
+    version: 1,
+    accounts: [],
+    activeAccountId: null,
+    defaultAccountId: null
+  })
   assert.equal(result.access, null)
   assert.equal(result.permission, 'denied')
 

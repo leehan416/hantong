@@ -6,7 +6,10 @@ import {
   activateGmailAccount,
   addGmailAccount,
   parseAccountState,
-  removeGmailAccount
+  recordVerifiedGmailEmail,
+  removeGmailAccount,
+  setDefaultGmailAccount,
+  setGmailAccountDisplayName
 } from './account-state'
 
 interface AccountStore {
@@ -14,6 +17,9 @@ interface AccountStore {
   add: () => AccountState
   activate: (id: string) => AccountState
   remove: (id: string) => AccountState
+  setDisplayName: (id: string, displayName: string | null) => AccountState
+  recordVerifiedEmail: (id: string, email: string) => AccountState
+  setDefault: (id: string) => AccountState
 }
 
 export function createAccountStore(
@@ -21,6 +27,7 @@ export function createAccountStore(
   createId: () => string = randomUUID
 ): AccountStore {
   const file = join(directory, 'accounts.json')
+  let needsMigration = false
 
   function read(): AccountState {
     let content: string
@@ -33,12 +40,17 @@ export function createAccountStore(
         'code' in error &&
         error.code === 'ENOENT'
       ) {
-        return { version: 1, accounts: [], activeAccountId: null }
+        return { version: 1, accounts: [], activeAccountId: null, defaultAccountId: null }
       }
       throw new Error('Unable to load account data', { cause: error })
     }
     try {
       const value: unknown = JSON.parse(content)
+      needsMigration =
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        !('defaultAccountId' in value)
       return parseAccountState(value)
     } catch {
       // Never reset a malformed or future-version file and silently lose accounts.
@@ -48,7 +60,7 @@ export function createAccountStore(
 
   let state = read()
 
-  function save(next: AccountState): AccountState {
+  function persist(next: AccountState): void {
     const temporary = join(directory, `.accounts-${randomUUID()}.tmp`)
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
@@ -64,6 +76,12 @@ export function createAccountStore(
       }
       throw failure
     }
+  }
+
+  if (needsMigration) persist(state)
+
+  function save(next: AccountState): AccountState {
+    persist(next)
     state = next
     return parseAccountState(state)
   }
@@ -72,6 +90,9 @@ export function createAccountStore(
     getState: () => parseAccountState(state),
     add: () => save(addGmailAccount(state, createId())),
     activate: (id) => save(activateGmailAccount(state, id)),
-    remove: (id) => save(removeGmailAccount(state, id))
+    remove: (id) => save(removeGmailAccount(state, id)),
+    setDisplayName: (id, displayName) => save(setGmailAccountDisplayName(state, id, displayName)),
+    recordVerifiedEmail: (id, email) => save(recordVerifiedGmailEmail(state, id, email)),
+    setDefault: (id) => save(setDefaultGmailAccount(state, id))
   }
 }
