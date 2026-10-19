@@ -1,43 +1,50 @@
-appId: com.electron.app
-productName: hantong
+appId: app.hantong.desktop
+productName: Hantong
 directories:
   buildResources: build
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - 'out/**/*'
+  - 'resources/**/*'
+  - 'package.json'
+  - '!**/{.claude,.codex,.agents,.git,.vscode}/**'
+  - '!**/{AGENTS.md,CLAUDE.md,DESIGN.md}'
+  - '!**/.env'
+  - '!**/.env.*'
+publish:
+  provider: github
+  owner: leehan416
+  repo: hantong
+  releaseType: draft
 asarUnpack:
   - resources/**
-win:
-  executableName: hantong
-nsis:
-  artifactName: ${name}-${version}-setup.${ext}
-  shortcutName: ${productName}
-  uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
+# License and notice files ship in Contents/Resources; electron-builder omits Electron's own on macOS.
+extraResources:
+  - from: LICENSE.md
+    to: LICENSE.md
+  - from: THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+  - from: node_modules/electron/dist/LICENSE
+    to: LICENSE.electron.txt
+  - from: node_modules/electron/dist/LICENSES.chromium.html
+    to: LICENSES.chromium.html
 mac:
-  entitlementsInherit: build/entitlements.mac.plist
-  extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
-  notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
-linux:
+  category: public.app-category.productivity
+  # Apple Silicon only: the only architecture the project can verify.
   target:
-    - AppImage
-    - snap
-    - deb
-  maintainer: electronjs.org
-  category: Utility
-appImage:
-  artifactName: ${name}-${version}.${ext}
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  minimumSystemVersion: '14.0'
+  # No Developer ID: a stable self-signed identity keeps the Keychain "Safe Storage" grant across
+  # builds (ad-hoc cdhash changes every build and re-prompts). It must be in the builder's keychain.
+  # Hardened runtime stays off: library validation needs a Team ID, which self-signed lacks.
+  identity: 'Hantong Self Sign'
+  hardenedRuntime: false
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  artifactName: ${name}-${version}-${arch}.${ext}
+  generateUpdatesFilesForAllChannels: true
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
