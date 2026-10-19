@@ -10,6 +10,11 @@ files:
   - '!**/{AGENTS.md,CLAUDE.md,DESIGN.md}'
   - '!**/.env'
   - '!**/.env.*'
+publish:
+  provider: github
+  owner: leehan416
+  repo: hantong
+  releaseType: draft
 asarUnpack:
   - resources/**
 # License and notice files ship in Contents/Resources; electron-builder omits Electron's own on macOS.
@@ -29,6 +34,9 @@ mac:
     - target: dmg
       arch:
         - arm64
+    - target: zip
+      arch:
+        - arm64
   minimumSystemVersion: '14.0'
   # No Developer ID: a stable self-signed identity keeps the Keychain "Safe Storage" grant across
   # builds (ad-hoc cdhash changes every build and re-prompts). It must be in the builder's keychain.
@@ -37,6 +45,6 @@ mac:
   hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-${arch}.${ext}
+  generateUpdatesFilesForAllChannels: true
 npmRebuild: false

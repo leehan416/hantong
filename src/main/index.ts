@@ -37,6 +37,7 @@ import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate }
 import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import { buildGmailCleanupCss } from './gmail-cleanup'
+import { createAppUpdateRuntime } from './app-update-runtime'
 import { isAccountColor, type AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
@@ -127,6 +128,29 @@ let accountAccessController: ReturnType<typeof createAccountAccessController> | 
 let appQuitting = false
 let quitCleanupPending = false
 let quitCleanupComplete = false
+let updateRuntime: ReturnType<typeof createAppUpdateRuntime> | null = null
+let fallbackSync: ReturnType<typeof setInterval> | undefined
+let cleanupPromise: Promise<void> | undefined
+
+function prepareApplicationShutdown(): Promise<void> {
+  if (cleanupPromise) return cleanupPromise
+  if (fallbackSync) clearInterval(fallbackSync)
+  gmailRelaySync?.dispose()
+  const cleanup = Promise.all([
+    googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
+    relayRuntime?.dispose() ?? Promise.resolve()
+  ]).then(() => undefined)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  cleanupPromise = Promise.race([
+    cleanup,
+    new Promise<void>((resolve) => (timeout = setTimeout(resolve, 2000)))
+  ]).finally(() => clearTimeout(timeout))
+  cleanupPromise = cleanupPromise.catch((error: unknown) => {
+    cleanupPromise = undefined
+    throw error
+  })
+  return cleanupPromise
+}
 
 function reportOAuthDiagnostic(
   stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
@@ -360,7 +384,22 @@ function showMainWindow(): void {
 // Rebuilt whenever the language changes, so every Hantong-owned label follows the setting.
 function installAppMenu(): void {
   const locale = uiLocale()
-  Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate(locale, { openSettings })))
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate(
+      buildAppMenuTemplate(locale, {
+        openSettings,
+        ...(updateRuntime
+          ? {
+              update: {
+                state: updateRuntime.controller.state.kind,
+                check: () => void updateRuntime?.controller.check(true),
+                restart: () => void updateRuntime?.controller.restart()
+              }
+            }
+          : {})
+      })
+    )
+  )
   if (!tray) {
     // A small copy of the app icon; a monochrome template icon can replace it later.
     tray = new Tray(nativeImage.createFromPath(trayIconPath).resize({ width: 18, height: 18 }))
@@ -603,7 +642,7 @@ void app
     powerMonitor.on('suspend', () => gmailRelaySync?.suspend())
     powerMonitor.on('resume', () => gmailRelaySync?.resume(allAccountIds()))
     // ponytail: fixed 15-minute fallback poll; derive from relay health if quota or latency matters.
-    const fallbackSync = setInterval(() => gmailRelaySync?.syncAll(allAccountIds()), 15 * 60_000)
+    fallbackSync = setInterval(() => gmailRelaySync?.syncAll(allAccountIds()), 15 * 60_000)
     // Catch up on mail that arrived while the app was closed; never-connected accounts just fail.
     gmailRelaySync.syncAll(allAccountIds())
     relayRuntime = createRelayRuntime({
@@ -700,6 +739,26 @@ void app
       },
       reportFailure: (stage, code) => reportOAuthDiagnostic(stage, code)
     })
+    updateRuntime = createAppUpdateRuntime({
+      enabled: app.isPackaged && process.platform === 'darwin',
+      version: app.getVersion(),
+      locale: uiLocale,
+      parentWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined),
+      onStateChanged: (state) => {
+        // Sync is already torn down once install cleanup ran; a staged update applies on any quit.
+        if (quitCleanupComplete && state.kind !== 'installing') app.quit()
+        else installAppMenu()
+      },
+      // Native staging already succeeded here, so cleanup is best-effort exactly as on before-quit.
+      prepareToInstall: async () => {
+        await prepareApplicationShutdown().catch(() =>
+          console.error('Unable to cancel pending Google connections')
+        )
+        appQuitting = true
+        quitCleanupComplete = true
+      }
+    })
+    installAppMenu()
     accountRemoval = createAccountRemovalController(
       requireAccountStore(),
       clearAccountSession,
@@ -1020,22 +1079,20 @@ void app
       if (quitCleanupComplete) return
       event.preventDefault()
       if (quitCleanupPending) return
-      appQuitting = true
       quitCleanupPending = true
-      clearInterval(fallbackSync)
-      gmailRelaySync?.dispose()
-      const cleanup = Promise.all([
-        requireGoogleConnectionRuntime().cancelAll(),
-        relayRuntime?.dispose() ?? Promise.resolve()
-      ])
-      void Promise.race([cleanup, new Promise((resolve) => setTimeout(resolve, 2000))])
+      updateRuntime?.dispose()
+      void prepareApplicationShutdown()
         .then(() => {
+          appQuitting = true
           quitCleanupComplete = true
+          updateRuntime?.dispose()
           app.quit()
         })
         .catch(() => {
           console.error('Unable to cancel pending Google connections')
+          appQuitting = true
           quitCleanupComplete = true
+          updateRuntime?.dispose()
           app.quit()
         })
     })

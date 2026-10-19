@@ -1,4 +1,5 @@
 import type { ContextMenuParams, MenuItemConstructorOptions } from 'electron'
+import type { AppUpdateState } from './app-updates'
 
 const TEXT = {
   ko: {
@@ -6,14 +7,22 @@ const TEXT = {
     view: '보기',
     copyLink: '링크 복사',
     open: 'Hantong 열기',
-    quit: '종료'
+    quit: '종료',
+    checkUpdates: '업데이트 확인…',
+    restartUpdate: '재시작하여 업데이트…',
+    checkingUpdates: '업데이트 확인 중…',
+    downloadingUpdate: '업데이트 다운로드 중…'
   },
   en: {
     settings: 'Settings…',
     view: 'View',
     copyLink: 'Copy Link',
     open: 'Open Hantong',
-    quit: 'Quit'
+    quit: 'Quit',
+    checkUpdates: 'Check for Updates…',
+    restartUpdate: 'Restart to Update…',
+    checkingUpdates: 'Checking for Updates…',
+    downloadingUpdate: 'Downloading Update…'
   }
 } as const
 
@@ -21,7 +30,14 @@ const TEXT = {
 // No reload or developer-tools items: reloading would bypass the Gmail access gate.
 export function buildAppMenuTemplate(
   locale: 'ko' | 'en',
-  actions: { readonly openSettings: () => void }
+  actions: {
+    readonly openSettings: () => void
+    readonly update?: {
+      readonly state: AppUpdateState['kind']
+      readonly check: () => void
+      readonly restart: () => void
+    }
+  }
 ): MenuItemConstructorOptions[] {
   const text = TEXT[locale]
   return [
@@ -31,6 +47,26 @@ export function buildAppMenuTemplate(
         { role: 'about' },
         { type: 'separator' },
         { label: text.settings, accelerator: 'CommandOrControl+,', click: actions.openSettings },
+        ...(actions.update
+          ? [
+              { type: 'separator' as const },
+              {
+                label:
+                  actions.update.state === 'checking'
+                    ? text.checkingUpdates
+                    : actions.update.state === 'downloading'
+                      ? text.downloadingUpdate
+                      : text.checkUpdates,
+                enabled: !['checking', 'downloading', 'ready', 'installing'].includes(
+                  actions.update.state
+                ),
+                click: actions.update.check
+              },
+              ...(actions.update.state === 'ready'
+                ? [{ label: text.restartUpdate, enabled: true, click: actions.update.restart }]
+                : [])
+            ]
+          : []),
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
