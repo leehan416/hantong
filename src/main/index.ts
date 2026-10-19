@@ -187,7 +187,15 @@ function createWindow(): void {
       event.preventDefault()
       if (window.isFullScreen()) window.setFullScreen(false)
       window.hide()
+      // Hidden means menu-bar only; the tray keeps the unread count the Dock badge showed.
+      app.dock?.hide()
     }
+  })
+  // Every reopen path (tray, notification, second instance, activate) goes through show.
+  window.on('show', () => {
+    app.dock?.show().catch(() => {
+      console.error('Unable to show the Dock icon')
+    })
   })
   let windowAccessController: ReturnType<typeof createAccountAccessController> | null = null
   const windowViewManager = createAccountViewManager(
@@ -423,7 +431,7 @@ const shownNotifications = new Set<Notification>()
 
 function showMailNotification(alert: GmailMailAlert): void {
   if (!Notification.isSupported()) return
-  const notification = new Notification(buildMailNotificationOptions(alert, trayIconPath))
+  const notification = new Notification(buildMailNotificationOptions(alert))
   const forget = (): void => {
     shownNotifications.delete(notification)
   }

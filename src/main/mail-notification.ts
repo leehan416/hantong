@@ -1,8 +1,10 @@
 import type { GmailMailAlert } from './gmail-mail-alerts'
 
-export function buildMailNotificationOptions(
-  alert: GmailMailAlert,
-  iconPath: string
-): { title: string; body: string; icon: string } {
-  return { title: alert.title, body: alert.body, icon: iconPath }
+// No `icon`: macOS draws it as a right-side content image, not the app icon. The left icon comes
+// from the app bundle (Electron's in dev, Hantong's in a packaged build).
+export function buildMailNotificationOptions(alert: GmailMailAlert): {
+  title: string
+  body: string
+} {
+  return { title: alert.title, body: alert.body }
 }
