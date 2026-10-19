@@ -155,6 +155,19 @@ test('an event-only failure does not turn a resolved manual check into latest', 
   assert.equal(f.calls.dialogs[0].kind, 'failed')
 })
 
+test('a rejected automatic download promise is handled as one visible failure', async () => {
+  const f = fixture({
+    check: async () => ({ downloadPromise: Promise.reject(new Error('download unavailable')) })
+  })
+  const pending = f.controller.check(true)
+  f.listeners.get('update-available')({ version: '0.2.0' })
+  await pending
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(f.controller.state.kind, 'failed')
+  assert.equal(f.calls.dialogs.length, 1)
+  assert.equal(f.calls.dialogs[0].kind, 'failed')
+})
+
 test('download completion offers restart and installs only after accepted choice and cleanup', async () => {
   let resolveCleanup
   const f = fixture({

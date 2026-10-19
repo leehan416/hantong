@@ -6,7 +6,7 @@ export type AppUpdateState =
   | { readonly kind: 'installing' }
   | { readonly kind: 'failed'; readonly message: string }
 
-type UpdateNotice =
+export type UpdateNotice =
   | { readonly kind: 'latest' }
   | { readonly kind: 'progress' }
   | { readonly kind: 'ready'; readonly version: string }
@@ -19,10 +19,10 @@ interface UpdateEventMap {
   error: (error: Error) => void
 }
 
-interface AppUpdateDependencies {
+export interface AppUpdateDependencies {
   readonly enabled: boolean
   readonly updater: {
-    checkForUpdates: () => Promise<unknown>
+    checkForUpdates: () => Promise<{ readonly downloadPromise?: Promise<unknown> | null } | null>
     quitAndInstall: () => void
     on: <K extends keyof UpdateEventMap>(event: K, listener: UpdateEventMap[K]) => void
     off: <K extends keyof UpdateEventMap>(event: K, listener: UpdateEventMap[K]) => void
@@ -64,6 +64,8 @@ export function createAppUpdateController(dependencies: AppUpdateDependencies): 
   let checkOutcome: 'latest' | 'available' | 'error' | undefined
   let installingVersion: string | undefined
   let downloadingVersion: string | undefined
+  let checkId = 0
+  let installingFailure: Error | undefined
   const currentState = (): AppUpdateState => state
   const setState = (next: AppUpdateState): void => {
     if (disposed) return
@@ -120,6 +122,7 @@ export function createAppUpdateController(dependencies: AppUpdateDependencies): 
     if (disposed || state.kind === 'ready') return
     const message = errorMessage(error, 'Update failed')
     if (state.kind === 'installing' && installingVersion) {
+      installingFailure = error
       setState({ kind: 'ready', version: installingVersion })
       installingVersion = undefined
       manualCheck = false
@@ -181,8 +184,15 @@ export function createAppUpdateController(dependencies: AppUpdateDependencies): 
     checkOutcome = undefined
     setState({ kind: 'checking' })
     checkPromise = (async () => {
+      const activeCheckId = ++checkId
       try {
-        await dependencies.updater.checkForUpdates()
+        const result = await dependencies.updater.checkForUpdates()
+        // electron-updater resolves its check before automatic downloading finishes.
+        if (result?.downloadPromise) checkOutcome = 'available'
+        void result?.downloadPromise?.catch((error: unknown) => {
+          if (activeCheckId === checkId)
+            onError(error instanceof Error ? error : new Error('Update download failed'))
+        })
         if (disposed) return
         if (state.kind === 'checking') {
           setState({ kind: 'idle' })
@@ -209,6 +219,7 @@ export function createAppUpdateController(dependencies: AppUpdateDependencies): 
   async function restart(): Promise<void> {
     if (disposed || state.kind !== 'ready' || installPromise) return installPromise
     const version = state.version
+    installingFailure = undefined
     installingVersion = version
     setState({ kind: 'installing' })
     installPromise = (async () => {
@@ -220,6 +231,10 @@ export function createAppUpdateController(dependencies: AppUpdateDependencies): 
         if (!disposed) {
           setState({ kind: 'ready', version })
           installingVersion = undefined
+          if (error === installingFailure) {
+            installingFailure = undefined
+            return
+          }
           const message = errorMessage(error, 'Update restart failed')
           await present({ kind: 'failed', message })
         }
