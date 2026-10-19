@@ -10,6 +10,11 @@ files:
   - '!**/{AGENTS.md,CLAUDE.md,DESIGN.md}'
   - '!**/.env'
   - '!**/.env.*'
+publish:
+  provider: github
+  owner: leehan416
+  repo: hantong
+  releaseType: draft
 asarUnpack:
   - resources/**
 # License and notice files ship in Contents/Resources; electron-builder omits Electron's own on macOS.
@@ -29,13 +34,15 @@ mac:
     - target: dmg
       arch:
         - arm64
+    - target: zip
+      arch:
+        - arm64
   minimumSystemVersion: '14.0'
-  # No Developer ID yet: sign ad-hoc so the bundle ID is bound; macOS drops notifications otherwise.
-  # Hardened runtime would reject Electron's differently signed frameworks under ad-hoc signing.
-  identity: '-'
+  # Keep the established local self-signing identity so successive builds remain update-compatible.
+  identity: Hantong Self Sign
   hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-${arch}.${ext}
+  generateUpdatesFilesForAllChannels: true
 npmRebuild: false
