@@ -1,6 +1,6 @@
 {
   "name": "hantong",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "Desktop Gmail client for macOS",
   "main": "./out/main/index.js",
   "author": "Whal3 <leehan416@gmail.com>",

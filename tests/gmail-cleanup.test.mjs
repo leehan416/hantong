@@ -8,7 +8,7 @@ const { buildGmailCleanupCss } = loadTypeScript(
 )
 const off = {
   hideGmailLogo: false,
-  hideGemini: false,
+  hideHeaderButtons: false,
   hideSidePanel: false,
   hideStoragePromo: false
 }
@@ -18,8 +18,18 @@ test('with every option off Gmail gets no stylesheet at all', () => {
 })
 
 test('each option hides only its own element', () => {
-  const css = buildGmailCleanupCss({ ...off, hideGemini: true })
-  assert.match(css, /button\[aria-label\*="Gemini"\]/)
+  const css = buildGmailCleanupCss({ ...off, hideHeaderButtons: true })
+  for (const label of [
+    'Gemini',
+    '지원',
+    'Support',
+    '설정',
+    'Settings',
+    'Google 앱',
+    'Google apps'
+  ]) {
+    assert.ok(css.includes(label), label)
+  }
   assert.doesNotMatch(css, /logo_gmail|complementary|\.aiG/)
   assert.match(css, /\{ display: none !important; \}$/)
 })
@@ -27,7 +37,7 @@ test('each option hides only its own element', () => {
 test('enabled options combine into one rule and never touch scripts or mail content', () => {
   const css = buildGmailCleanupCss({
     hideGmailLogo: true,
-    hideGemini: true,
+    hideHeaderButtons: true,
     hideSidePanel: true,
     hideStoragePromo: true
   })

@@ -1,10 +1,12 @@
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { AccountState } from '../shared/accounts'
-import { ACCOUNT_CHROME_HEIGHT, type AccountViewStatus } from '../shared/ipc'
+import type { AccountSelectorPosition } from '../shared/settings'
+import type { AccountViewSnapshot, AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
 import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './google-web-identity'
 import { classifyGmailNavigation } from './gmail-navigation'
+import { getAccountViewBounds } from '../shared/account-layout'
 
 interface AccountStore {
   getState: () => AccountState
@@ -72,7 +74,9 @@ export function createAccountViewManager(
   getDocumentState: (id: string) => GmailDocumentState
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   getActiveAccountId: () => string | null
-  setCovered: (covered: boolean) => void
+  setCovered: (covered: boolean) => Promise<AccountViewSnapshot | null>
+  setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
+  setStatusStripVisible: (visible: boolean) => void
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -102,6 +106,9 @@ export function createAccountViewManager(
   let activeAccountId: string | null = null
   // A full-window local panel (settings) is showing, so the native Gmail view must not sit on top.
   let covered = false
+  let layoutPosition: AccountSelectorPosition = 'top'
+  let sidebarCollapsed = false
+  let statusStripVisible = true
   let disposed = false
 
   function alive(): boolean {
@@ -114,13 +121,14 @@ export function createAccountViewManager(
 
   function setBounds(view: WebContentsView): void {
     if (!alive()) return
-    const { width, height } = window.getContentBounds()
-    view.setBounds({
-      x: 0,
-      y: ACCOUNT_CHROME_HEIGHT,
-      width,
-      height: Math.max(0, height - ACCOUNT_CHROME_HEIGHT)
-    })
+    view.setBounds(
+      getAccountViewBounds({
+        ...window.getContentBounds(),
+        position: layoutPosition,
+        sidebarCollapsed,
+        statusStripVisible
+      })
+    )
   }
 
   function reconcileVisibility(id: string, entry: ViewEntry): void {
@@ -472,10 +480,49 @@ export function createAccountViewManager(
   return {
     activate,
     retry,
-    setCovered(next) {
-      if (covered === next) return
+    async setCovered(next) {
+      if (covered === next) return null
+      let snapshot: AccountViewSnapshot | null = null
+      if (next && activeAccountId) {
+        const id = activeAccountId
+        const entry = views.get(id)
+        const contents = entry?.handle.view.webContents
+        if (entry?.attached && contents && !contents.isDestroyed()) {
+          try {
+            const image = await contents.capturePage()
+            if (
+              alive() &&
+              activeAccountId === id &&
+              views.get(id) === entry &&
+              entry.attached &&
+              !contents.isDestroyed()
+            ) {
+              snapshot = {
+                accountId: id,
+                bounds: entry.handle.view.getBounds(),
+                dataUrl: image.toDataURL()
+              }
+            }
+          } catch {
+            // A failed snapshot must not keep a native view above the modal.
+          }
+        }
+      }
       covered = next
       for (const [id, entry] of views) reconcileVisibility(id, entry)
+      return snapshot
+    },
+    setLayout(position, collapsed) {
+      layoutPosition = position
+      sidebarCollapsed = collapsed
+      const entry = activeAccountId ? views.get(activeAccountId) : undefined
+      if (entry?.attached) setBounds(entry.handle.view)
+    },
+    setStatusStripVisible(visible) {
+      if (statusStripVisible === visible) return
+      statusStripVisible = visible
+      const entry = activeAccountId ? views.get(activeAccountId) : undefined
+      if (entry?.attached) setBounds(entry.handle.view)
     },
     disposeAccount,
     async readWebIdentity(id, signal) {

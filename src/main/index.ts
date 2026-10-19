@@ -38,12 +38,15 @@ import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import { buildGmailCleanupCss } from './gmail-cleanup'
 import { createAppUpdateRuntime } from './app-update-runtime'
+import { isAccountColor, type AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
 import { createGmailRelaySync } from './gmail-relay-sync'
 import { createGmailMailAlerts, type GmailMailAlert } from './gmail-mail-alerts'
+import { buildMailNotificationOptions } from './mail-notification'
+import { updateTrayUnreadCount } from './tray-unread-count'
 import {
   fetchGmailHistoryId,
   fetchGmailHistoryPage,
@@ -62,10 +65,14 @@ import { is, optimizer } from '@electron-toolkit/utils'
 import {
   ACCOUNT_ACTIVATE_CHANNEL,
   ACCOUNT_ADD_CHANNEL,
+  ACCOUNT_MOVE_CHANNEL,
+  ACCOUNT_DISPLAY_NAME_CHANNEL,
+  ACCOUNT_COLOR_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATE_EVENT,
+  ACCOUNT_STATUS_STRIP_CHANNEL,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
   SETTINGS_GET_CHANNEL,
@@ -204,7 +211,15 @@ function createWindow(): void {
       event.preventDefault()
       if (window.isFullScreen()) window.setFullScreen(false)
       window.hide()
+      // Hidden means menu-bar only; the tray keeps the unread count the Dock badge showed.
+      app.dock?.hide()
     }
+  })
+  // Every reopen path (tray, notification, second instance, activate) goes through show.
+  window.on('show', () => {
+    app.dock?.show().catch(() => {
+      console.error('Unable to show the Dock icon')
+    })
   })
   let windowAccessController: ReturnType<typeof createAccountAccessController> | null = null
   const windowViewManager = createAccountViewManager(
@@ -226,6 +241,11 @@ function createWindow(): void {
     (reason) => reportOAuthDiagnostic('identity', reason)
   )
   accountViewManager = windowViewManager
+  const savedSettings = settingsStore?.get()
+  windowViewManager.setLayout(
+    savedSettings?.accountSelectorPosition ?? 'top',
+    savedSettings?.sidebarCollapsed ?? false
+  )
   windowAccessController = createAccountAccessController({
     views: windowViewManager,
     runtime: requireGoogleConnectionRuntime(),
@@ -248,6 +268,22 @@ function createWindow(): void {
         .accounts.some((account) => account.id === id),
     publish: (state) => {
       if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
+    },
+    onWebIdentity: (accountId, emailAddress) => {
+      try {
+        const store = requireAccountStore()
+        if (
+          store.getState().accounts.find((account) => account.id === accountId)?.email ===
+          emailAddress
+        ) {
+          return
+        }
+        const state = store.recordWebIdentityEmail(accountId, emailAddress)
+        publishAccountState(window, state)
+      } catch {
+        // Identity persistence must not block mailbox access; never log the account email.
+        console.error('Unable to save Gmail web identity')
+      }
     }
   })
   accountAccessController = windowAccessController
@@ -434,7 +470,7 @@ const shownNotifications = new Set<Notification>()
 
 function showMailNotification(alert: GmailMailAlert): void {
   if (!Notification.isSupported()) return
-  const notification = new Notification({ title: alert.title, body: alert.body })
+  const notification = new Notification(buildMailNotificationOptions(alert))
   const forget = (): void => {
     shownNotifications.delete(notification)
   }
@@ -463,6 +499,12 @@ function showAccount(accountId: string): void {
   window.focus()
   window.webContents.send(ACCOUNT_STATE_EVENT, state)
   if (state.activeAccountId) activateAccountView(state.activeAccountId)
+}
+
+function publishAccountState(owner: BrowserWindow, state: AccountState): void {
+  if (mainWindow === owner && !owner.isDestroyed()) {
+    owner.webContents.send(ACCOUNT_STATE_EVENT, state)
+  }
 }
 
 function activateAccountView(accountId: string): void {
@@ -549,12 +591,6 @@ void app
     const korean = (): boolean => uiLocale() === 'ko'
     const mailAlerts = createGmailMailAlerts({
       accountExists,
-      accountLabel: (accountId) => {
-        const index = requireAccountStore()
-          .getState()
-          .accounts.findIndex((account) => account.id === accountId)
-        return `Gmail ${index + 1}`
-      },
       korean,
       readUnreadCount: async (accountId) =>
         fetchGmailUnreadCount(await gmailAccessToken(accountId), 'INBOX', {
@@ -569,6 +605,7 @@ void app
       notify: showMailNotification,
       setBadge: (total) => {
         app.setBadgeCount(total)
+        updateTrayUnreadCount(total, process.platform, (title) => tray?.setTitle(title))
         const window = mainWindow
         if (window && !window.isDestroyed()) {
           window.webContents.send(
@@ -758,12 +795,13 @@ void app
 
     function accountRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'add' | 'activate' | 'retry' | 'remove',
+      operation:
+        'get' | 'add' | 'activate' | 'retry' | 'remove' | 'setDisplayName' | 'setColor' | 'move',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
       const ownerAlive = owner !== null && !owner.isDestroyed()
-      const id = args.length === 1 && typeof args[0] === 'string' ? args[0] : ''
+      const id = typeof args[0] === 'string' ? args[0] : ''
       const state = requireAccountStore().getState()
       return isAllowedAccountRequest({
         ownerAlive,
@@ -775,7 +813,11 @@ void app
         operation,
         args,
         accountExists:
-          operation === 'activate' || operation === 'remove'
+          operation === 'activate' ||
+          operation === 'remove' ||
+          operation === 'setDisplayName' ||
+          operation === 'setColor' ||
+          operation === 'move'
             ? state.accounts.some((account) => account.id === id)
             : operation === 'retry' && state.activeAccountId !== null
       })
@@ -864,7 +906,7 @@ void app
 
     function settingsRequestAllowed(
       event: Electron.IpcMainInvokeEvent,
-      operation: 'get' | 'update' | 'panel',
+      operation: 'get' | 'update' | 'panel' | 'status-strip',
       args: unknown[]
     ): boolean {
       const owner = mainWindow
@@ -892,6 +934,7 @@ void app
       }
       const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
       nativeTheme.themeSource = settings.theme
+      accountViewManager?.setLayout(settings.accountSelectorPosition, settings.sidebarCollapsed)
       for (const contents of webContents.getAllWebContents()) applyGmailCleanup(contents)
       installAppMenu()
       const owner = mainWindow
@@ -900,7 +943,11 @@ void app
     })
     ipcMain.handle(SETTINGS_PANEL_CHANNEL, (event, ...args: unknown[]) => {
       if (!settingsRequestAllowed(event, 'panel', args)) throw new Error('Request rejected')
-      accountViewManager?.setCovered(args[0] === true)
+      return accountViewManager?.setCovered(args[0] === true) ?? null
+    })
+    ipcMain.handle(ACCOUNT_STATUS_STRIP_CHANNEL, (event, ...args: unknown[]) => {
+      if (!settingsRequestAllowed(event, 'status-strip', args)) throw new Error('Request rejected')
+      accountViewManager?.setStatusStripVisible(args[0] === true)
     })
     ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
       if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
@@ -929,6 +976,52 @@ void app
       if (state.activeAccountId) activateAccountView(state.activeAccountId)
       return state
     })
+    ipcMain.handle(ACCOUNT_DISPLAY_NAME_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'setDisplayName', args)) {
+        throw new Error('Request rejected')
+      }
+      const accountId = args[0]
+      const displayName = args[1]
+      if (
+        typeof accountId !== 'string' ||
+        (displayName !== null && typeof displayName !== 'string')
+      ) {
+        throw new Error('Request rejected')
+      }
+      const owner = mainWindow
+      if (!owner) throw new Error('Request rejected')
+      const state = requireAccountStore().setDisplayName(accountId, displayName)
+      publishAccountState(owner, state)
+      return state
+    })
+    ipcMain.handle(ACCOUNT_COLOR_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'setColor', args)) throw new Error('Request rejected')
+      const accountId = args[0]
+      const color = args[1]
+      if (typeof accountId !== 'string' || typeof color !== 'string')
+        throw new Error('Request rejected')
+      const owner = mainWindow
+      if (!owner) throw new Error('Request rejected')
+      if (!isAccountColor(color)) throw new Error('Request rejected')
+      const state = requireAccountStore().setColor(accountId, color)
+      publishAccountState(owner, state)
+      return state
+    })
+    ipcMain.handle(ACCOUNT_MOVE_CHANNEL, (event, ...args: unknown[]) => {
+      requireAccountRemoval().assertIdle()
+      if (!accountRequestAllowed(event, 'move', args)) throw new Error('Request rejected')
+      const [accountId, toIndex] = args
+      if (typeof accountId !== 'string' || typeof toIndex !== 'number') {
+        throw new Error('Request rejected')
+      }
+      const owner = mainWindow
+      if (!owner) throw new Error('Request rejected')
+      const state = requireAccountStore().move(accountId, toIndex)
+      publishAccountState(owner, state)
+      return state
+    })
     ipcMain.handle(ACCOUNT_RETRY_CHANNEL, (event, ...args: unknown[]) => {
       requireAccountRemoval().assertIdle()
       if (!accountRequestAllowed(event, 'retry', args)) throw new Error('Request rejected')
@@ -946,16 +1039,13 @@ void app
       const ownerIsAlive = (): boolean => mainWindow === owner && !owner.isDestroyed()
       const result = await requireAccountRemoval().remove(accountId, {
         ownerIsAlive,
-        async confirm(accountNumber): Promise<boolean> {
+        async confirm(): Promise<boolean> {
           if (!ownerIsAlive()) return false
           const isKorean = uiLocale() === 'ko'
-          const accountLabel = `Gmail ${accountNumber}`
           const response = await dialog.showMessageBox(owner, {
             type: 'warning',
             title: isKorean ? '계정 삭제' : 'Remove account',
-            message: isKorean
-              ? `${accountLabel} 계정을 한통에서 삭제할까요?`
-              : `Remove ${accountLabel} from Hantong?`,
+            message: isKorean ? '계정을 삭제할까요?' : 'Remove this account?',
             detail: isKorean
               ? '이 기기의 로그인 정보와 세션을 삭제합니다. Google 계정과 메일은 삭제되지 않습니다.'
               : 'This removes its local sign-in and session from this device. Your Google account and email are not deleted.',

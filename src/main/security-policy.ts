@@ -1,4 +1,5 @@
-import { isAccountId } from './account-state'
+import { isAccountId, isValidGmailAccountDisplayName } from './account-state'
+import { isAccountColor } from '../shared/accounts'
 import { isSettingsPatch } from './settings-store'
 
 interface AppInfoRequest {
@@ -83,6 +84,30 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
   if (request.operation === 'retry') {
     return request.args.length === 0 && request.accountExists
   }
+  if (request.operation === 'setDisplayName') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      isValidGmailAccountDisplayName(request.args[1]) &&
+      request.accountExists
+    )
+  }
+  if (request.operation === 'move') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      Number.isInteger(request.args[1]) &&
+      request.accountExists
+    )
+  }
+  if (request.operation === 'setColor') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      isAccountColor(request.args[1]) &&
+      request.accountExists
+    )
+  }
   return (
     (request.operation === 'activate' || request.operation === 'remove') &&
     request.args.length === 1 &&
@@ -116,6 +141,9 @@ export function isAllowedSettingsRequest(request: SettingsRequest): boolean {
   }
   if (request.operation === 'get') return request.args.length === 0
   if (request.operation === 'panel') {
+    return request.args.length === 1 && typeof request.args[0] === 'boolean'
+  }
+  if (request.operation === 'status-strip') {
     return request.args.length === 1 && typeof request.args[0] === 'boolean'
   }
   return (

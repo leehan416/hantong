@@ -15,7 +15,6 @@ function setup(overrides = {}) {
   const badges = []
   const module = createGmailMailAlerts({
     accountExists: () => true,
-    accountLabel: (id) => (id === first ? 'Gmail 1' : 'Gmail 2'),
     korean: () => true,
     readUnreadCount: async (id) => (id === first ? 3 : 4),
     readSummary: async (_id, messageId) => unread('Ann <ann@example.com>', `subject ${messageId}`),
@@ -48,10 +47,10 @@ test('the Dock badge sums inbox unread counts across accounts', async () => {
   assert.deepEqual(badges, [3, 7, 3])
 })
 
-test('new inbox mail notifies with account, sender and subject', async () => {
+test('new inbox mail notifies with sender as title and subject as body', async () => {
   const { module, alerts } = setup()
   await module.onChanges(first, { kind: 'changes', historyId: '2', addedMessageIds: ['m1'] })
-  assert.deepEqual(alerts, [{ accountId: first, title: 'Gmail 1 · Ann', body: 'subject m1' }])
+  assert.deepEqual(alerts, [{ accountId: first, title: 'Ann', body: 'subject m1' }])
 })
 
 test('mail already read or archived and failed lookups stay silent', async () => {
@@ -69,7 +68,7 @@ test('mail already read or archived and failed lookups stay silent', async () =>
   assert.deepEqual(alerts, [])
 })
 
-test('more than three arrivals collapse the rest into one summary alert', async () => {
+test('more than three arrivals collapse the rest into a generic summary alert', async () => {
   const looked = []
   const { module, alerts } = setup({
     readSummary: async (_id, messageId) => (looked.push(messageId), unread('Ann <a@x>', '')),
@@ -83,7 +82,21 @@ test('more than three arrivals collapse the rest into one summary alert', async 
   assert.deepEqual(looked, ['m1', 'm2', 'm3'])
   assert.equal(alerts.length, 4)
   assert.equal(alerts[0].body, '(no subject)')
-  assert.deepEqual(alerts[3], { accountId: first, title: 'Gmail 1', body: '2 more new messages' })
+  assert.deepEqual(alerts[3], { accountId: first, title: 'New mail', body: '2 more new messages' })
+})
+
+test('collapsed alert title is localized', async () => {
+  const { module, alerts } = setup({ korean: () => true })
+  await module.onChanges(first, {
+    kind: 'changes',
+    historyId: '2',
+    addedMessageIds: ['m1', 'm2', 'm3', 'm4']
+  })
+  assert.deepEqual(alerts[3], {
+    accountId: first,
+    title: '새 메일',
+    body: '새 메일 1통이 더 있습니다'
+  })
 })
 
 test('results that finish after the account is removed are dropped', async () => {

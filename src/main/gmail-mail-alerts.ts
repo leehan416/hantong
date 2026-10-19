@@ -9,7 +9,6 @@ export interface GmailMailAlert {
 
 export interface GmailMailAlertsDependencies {
   readonly accountExists: (accountId: string) => boolean
-  readonly accountLabel: (accountId: string) => string
   readonly korean: () => boolean
   readonly readUnreadCount: (accountId: string) => Promise<number>
   readonly readSummary: (accountId: string, messageId: string) => Promise<GmailMessageSummary>
@@ -61,7 +60,6 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
     generation: number
   ): Promise<void> => {
     const korean = dependencies.korean()
-    const label = dependencies.accountLabel(accountId)
     const detailed = messageIds.slice(0, MAX_DETAILED_ALERTS)
     const summaries = await Promise.allSettled(
       detailed.map((id) => dependencies.readSummary(accountId, id))
@@ -73,7 +71,7 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
       const sender = senderName(summary.value.from)
       dependencies.notify({
         accountId,
-        title: sender ? `${label} · ${sender}` : label,
+        title: sender || (korean ? '새 메일' : 'New mail'),
         body: summary.value.subject.trim() || (korean ? '(제목 없음)' : '(no subject)')
       })
     }
@@ -81,7 +79,7 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
     if (rest > 0) {
       dependencies.notify({
         accountId,
-        title: label,
+        title: korean ? '새 메일' : 'New mail',
         body: korean ? `새 메일 ${rest}통이 더 있습니다` : `${rest} more new messages`
       })
     }

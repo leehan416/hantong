@@ -17,6 +17,10 @@ export interface GoogleConnectionUiState {
   operationFailed: boolean
 }
 
+export function hasPendingGoogleConnection(states: readonly GoogleConnectionUiState[]): boolean {
+  return states.some((state) => state.operation !== null || state.status === 'connecting')
+}
+
 const emptyState: GoogleConnectionUiState = {
   accountId: null,
   status: null,
@@ -184,6 +188,39 @@ export class GoogleConnectionController {
 
   private publish(): void {
     if (!this.disposed) this.onChange(this.state)
+  }
+}
+
+export class GoogleConnectionControllerPool {
+  private readonly controllers = new Map<string, GoogleConnectionController>()
+
+  constructor(
+    private readonly api: GoogleConnectionApi,
+    private readonly onChange: (state: GoogleConnectionUiState) => void
+  ) {}
+
+  forAccount(accountId: string): GoogleConnectionController {
+    const existing = this.controllers.get(accountId)
+    if (existing) return existing
+
+    const controller = new GoogleConnectionController(this.api, this.onChange)
+    this.controllers.set(accountId, controller)
+    controller.selectAccount(accountId)
+    return controller
+  }
+
+  applyExternalStatus(status: GoogleConnectionStatus): void {
+    this.controllers.get(status.accountId)?.applyExternalStatus(status)
+  }
+
+  remove(accountId: string): void {
+    this.controllers.get(accountId)?.dispose()
+    this.controllers.delete(accountId)
+  }
+
+  dispose(): void {
+    for (const controller of this.controllers.values()) controller.dispose()
+    this.controllers.clear()
   }
 }
 
