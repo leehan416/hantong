@@ -37,13 +37,14 @@ import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate }
 import trayIconPath from '../../resources/icon.png?asset'
 import { createWindowStateStore, fitWindowBounds } from './window-state'
 import { buildGmailCleanupCss } from './gmail-cleanup'
-import { accountLabel, isAccountColor, type AccountState } from '../shared/accounts'
+import { isAccountColor, type AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
 import { createGmailSyncStore } from './gmail-sync-store'
 import { createGmailHistorySync } from './gmail-history-sync'
 import { createGmailWatchManager } from './gmail-watch-manager'
 import { createGmailRelaySync } from './gmail-relay-sync'
 import { createGmailMailAlerts, type GmailMailAlert } from './gmail-mail-alerts'
+import { buildMailNotificationOptions } from './mail-notification'
 import { updateTrayUnreadCount } from './tray-unread-count'
 import {
   fetchGmailHistoryId,
@@ -422,7 +423,7 @@ const shownNotifications = new Set<Notification>()
 
 function showMailNotification(alert: GmailMailAlert): void {
   if (!Notification.isSupported()) return
-  const notification = new Notification({ title: alert.title, body: alert.body })
+  const notification = new Notification(buildMailNotificationOptions(alert, trayIconPath))
   const forget = (): void => {
     shownNotifications.delete(notification)
   }
@@ -543,12 +544,6 @@ void app
     const korean = (): boolean => uiLocale() === 'ko'
     const mailAlerts = createGmailMailAlerts({
       accountExists,
-      // Same label as the account tabs, so renaming or reordering keeps alerts recognisable.
-      accountLabel: (accountId) => {
-        const { accounts } = requireAccountStore().getState()
-        const index = accounts.findIndex((account) => account.id === accountId)
-        return index < 0 ? 'Gmail' : accountLabel(accounts[index], index)
-      },
       korean,
       readUnreadCount: async (accountId) =>
         fetchGmailUnreadCount(await gmailAccessToken(accountId), 'INBOX', {
