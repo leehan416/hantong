@@ -96,7 +96,9 @@ test('failed identity checks and cancellation skip relay hooks while cancelAll p
   })
   const pending = deferredAuthorization.runtime.connect(accountId)
   await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(deferredAuthorization.runtime.hasPendingConnections(), true)
   await deferredAuthorization.runtime.cancel(accountId)
+  assert.equal(deferredAuthorization.runtime.hasPendingConnections(), false)
   await pending
   assert.deepEqual(hooks, [])
 

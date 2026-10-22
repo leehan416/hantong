@@ -8,6 +8,7 @@ const {
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
   isAllowedGoogleConnectionRequest,
+  isAllowedNotificationRequest,
   isAllowedSettingsRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
@@ -16,6 +17,7 @@ const policy = {
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
   isAllowedGoogleConnectionRequest,
+  isAllowedNotificationRequest,
   isTrustedRendererUrl
 }
 
@@ -216,6 +218,31 @@ test('Google connection IPC accepts only known operations for the live owner mai
   for (const operation of ['get', 'connect', 'cancel', 'disconnect']) {
     assert.equal(policy.isAllowedGoogleConnectionRequest({ ...valid, operation }), true)
   }
+})
+
+test('notification IPC validates empty snapshot queries and existing account action UUIDs', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    operation: 'recover',
+    args: ['11111111-1111-4111-8111-111111111111'],
+    accountExists: true
+  }
+  assert.equal(policy.isAllowedNotificationRequest(base), true)
+  assert.equal(policy.isAllowedNotificationRequest({ ...base, operation: 'get', args: [] }), true)
+  for (const patch of [
+    { operation: 'unknown' },
+    { args: [] },
+    { args: ['not-an-id'] },
+    { accountExists: false },
+    { senderMatches: false },
+    { senderUrl: 'https://mail.google.com/' },
+    { operation: 'get', args: ['11111111-1111-4111-8111-111111111111'] }
+  ])
+    assert.equal(policy.isAllowedNotificationRequest({ ...base, ...patch }), false)
 })
 
 test('settings IPC allows get with no args and update with one valid patch from the owner frame', () => {
