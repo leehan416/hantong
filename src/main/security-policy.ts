@@ -28,6 +28,12 @@ interface GoogleConnectionRequest extends Omit<AppInfoRequest, 'args'> {
   accountExists: boolean
 }
 
+interface NotificationRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: unknown
+  args: unknown[]
+  accountExists: boolean
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)
@@ -127,6 +133,23 @@ export function isAllowedGoogleConnectionRequest(request: GoogleConnectionReques
     ['get', 'connect', 'cancel', 'disconnect'].includes(request.operation) &&
     request.args.length === 1 &&
     isAccountId(request.args[0])
+  )
+}
+
+export function isAllowedNotificationRequest(request: NotificationRequest): boolean {
+  const common =
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  if (!common) return false
+  if (request.operation === 'get') return request.args.length === 0
+  return (
+    typeof request.operation === 'string' &&
+    ['recover', 'cancel', 'retry'].includes(request.operation) &&
+    request.args.length === 1 &&
+    isAccountId(request.args[0]) &&
+    request.accountExists
   )
 }
 

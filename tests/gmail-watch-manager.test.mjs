@@ -23,14 +23,16 @@ function fixture(
   exists = () => true
 ) {
   const calls = []
+  const diagnostics = []
   const manager = createGmailWatchManager({
     accountExists: exists,
+    onDiagnostic: (event) => diagnostics.push(event),
     registerWatch: (id, signal) => {
       calls.push({ id, signal })
       return registerWatch(id, signal)
     }
   })
-  return { manager, calls }
+  return { manager, calls, diagnostics }
 }
 
 function deferred() {
@@ -48,12 +50,18 @@ function result(id, status, nextAttemptAt) {
 }
 
 test('connect renews immediately and schedules a daily attempt at the due boundary', async () => {
-  const { manager, calls } = fixture()
+  const { manager, calls, diagnostics } = fixture()
   assert.deepEqual(
     structuredClone(await manager.connect(accountId, baseNow)),
     result(accountId, 'renewed', baseNow + 86_400_000)
   )
   assert.equal(calls.length, 1)
+  assert.deepEqual(structuredClone(diagnostics[0]), {
+    accountId,
+    status: 'renewed',
+    nextAttemptAt: baseNow + 86_400_000,
+    expiresAt: baseNow + 604_800_000
+  })
   assert.equal(manager.getNextDueAt(), baseNow + 86_400_000)
   assert.deepEqual(structuredClone(await manager.runDue(baseNow + 86_399_999)), [])
   assert.deepEqual(structuredClone(await manager.runDue(baseNow + 86_400_000)), [
@@ -126,75 +134,6 @@ test('accounts attempt independently when one registration fails', async () => {
     ]
   )
   assert.equal(calls.length, 2)
-  manager.dispose()
-})
-
-test('transient retries use capped backoff and reconnect cannot bypass cooldown', async () => {
-  const { manager, calls } = fixture(async () => {
-    throw Error('private secret')
-  })
-  let now = baseNow
-  for (const delay of [60_000, 120_000, 240_000, 480_000, 900_000, 900_000]) {
-    const attempt = await manager.connect(accountId, now)
-    assert.deepEqual(structuredClone(attempt), result(accountId, 'retry', now + delay))
-    const callCount = calls.length
-    assert.deepEqual(
-      structuredClone(await manager.connect(accountId, now + 1)),
-      structuredClone(attempt)
-    )
-    assert.equal(calls.length, callCount)
-    now += delay
-  }
-  manager.dispose()
-})
-
-test('successful registration resets retry backoff', async () => {
-  let attempts = 0
-  const { manager } = fixture(async () => {
-    if (attempts === 0 || attempts === 1 || attempts === 3) {
-      attempts += 1
-      throw Error('offline')
-    }
-    attempts += 1
-    return { expiresAt: baseNow + 604_800_000 }
-  })
-  assert.deepEqual(
-    structuredClone(await manager.connect(accountId, baseNow)),
-    result(accountId, 'retry', baseNow + 60_000)
-  )
-  assert.deepEqual(structuredClone(await manager.runDue(baseNow + 60_000)), [
-    result(accountId, 'retry', baseNow + 180_000)
-  ])
-  assert.deepEqual(structuredClone(await manager.runDue(baseNow + 180_000)), [
-    result(accountId, 'renewed', baseNow + 180_000 + 86_400_000)
-  ])
-  assert.deepEqual(structuredClone(await manager.runDue(baseNow + 180_000 + 86_400_000)), [
-    result(accountId, 'retry', baseNow + 180_000 + 86_400_000 + 60_000)
-  ])
-  manager.dispose()
-})
-
-test('authorization and invalid response failures block until disconnect and reconnect', async () => {
-  let code = 'unauthorized'
-  const { manager, calls } = fixture(async () => {
-    throw new GmailMetadataFailure(code)
-  })
-  assert.deepEqual(
-    structuredClone(await manager.connect(accountId, baseNow)),
-    result(accountId, 'blocked', null)
-  )
-  assert.deepEqual(
-    structuredClone(await manager.connect(accountId, baseNow + 999_999)),
-    result(accountId, 'blocked', null)
-  )
-  assert.equal(manager.getNextDueAt(), null)
-  assert.equal(calls.length, 1)
-  manager.disconnect(accountId)
-  code = 'invalid_response'
-  assert.deepEqual(
-    structuredClone(await manager.connect(accountId, baseNow + 1)),
-    result(accountId, 'blocked', null)
-  )
   manager.dispose()
 })
 

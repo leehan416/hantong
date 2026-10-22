@@ -5,56 +5,15 @@ import type { AccountViewSnapshot, AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
 import { createGmailView } from './gmail-view'
 import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './google-web-identity'
-import { classifyGmailNavigation } from './gmail-navigation'
 import { getAccountViewBounds } from '../shared/account-layout'
+import type { GmailDocumentState, ViewEntry, ViewHandle } from './account-view-types'
+import { createAccountViewLifecycle } from './account-view-lifecycle'
 
 interface AccountStore {
   getState: () => AccountState
 }
 
-interface ViewHandle {
-  view: WebContentsView
-  load: () => Promise<void>
-  revokeMailAccess: () => void
-  dispose: () => Promise<void>
-}
-
-interface ViewEntry {
-  handle: ViewHandle
-  loaded: boolean
-  loading: boolean
-  attached: boolean
-  blocked: boolean
-  loadNumber: number
-  timeout: ReturnType<typeof setTimeout> | null
-  disposePromise: Promise<void> | null
-  navigationRevision: number
-  accessRevision: number
-  mainFrameNavigationPending: boolean
-  pendingMainFrameKind: GmailDocumentState['kind'] | null
-  mainFrameDocumentLoaded: boolean
-  mailAccessGranted: boolean
-  committedUrl: string
-}
-
-export interface GmailDocumentState {
-  revision: number
-  kind: 'sign_in' | 'mail' | 'unknown'
-  ready: boolean
-}
-
-function documentKind(value: string): GmailDocumentState['kind'] {
-  try {
-    const url = new URL(value)
-    if (url.protocol !== 'https:' || url.port || url.username || url.password) return 'unknown'
-    if (url.hostname === 'accounts.google.com' && classifyGmailNavigation(value) === 'internal')
-      return 'sign_in'
-    if (url.hostname === 'mail.google.com') return 'mail'
-  } catch {
-    return 'unknown'
-  }
-  return 'unknown'
-}
+export type { GmailDocumentState } from './account-view-types'
 
 export function createAccountViewManager(
   window: BrowserWindow,
@@ -133,7 +92,7 @@ export function createAccountViewManager(
 
   function reconcileVisibility(id: string, entry: ViewEntry): void {
     const signInDocument =
-      documentKind(entry.committedUrl) === 'sign_in' &&
+      lifecycle.documentKind(entry.committedUrl) === 'sign_in' &&
       (!entry.mainFrameNavigationPending || entry.pendingMainFrameKind === 'sign_in')
     const shouldAttach =
       !covered &&
@@ -151,93 +110,19 @@ export function createAccountViewManager(
     }
   }
 
-  function armLoadTimeout(id: string, entry: ViewEntry, loadNumber: number): void {
-    if (entry.timeout) clearTimeout(entry.timeout)
-    entry.timeout = setTimeout(() => {
-      entry.timeout = null
-      if (entry.loadNumber !== loadNumber) return
-      entry.loadNumber += 1
-      entry.loading = false
-      entry.loaded = false
-      entry.mainFrameNavigationPending = false
-      entry.pendingMainFrameKind = null
-      entry.mainFrameDocumentLoaded = false
-      entry.accessRevision += 1
-      entry.mailAccessGranted = false
-      entry.handle.revokeMailAccess()
-      reconcileVisibility(id, entry)
-      publish(id, 'error')
-    }, loadTimeoutMs)
-  }
-
-  function finishSuccessfulMainFrameNavigation(id: string, entry: ViewEntry): void {
-    const contents = entry.handle.view.webContents
-    if (
-      !alive() ||
-      entry.disposePromise ||
-      views.get(id) !== entry ||
-      !entry.mainFrameNavigationPending ||
-      !entry.mainFrameDocumentLoaded ||
-      contents.isDestroyed() ||
-      contents.isLoadingMainFrame()
-    )
-      return
-    entry.mainFrameNavigationPending = false
-    entry.pendingMainFrameKind = null
-    entry.mainFrameDocumentLoaded = false
-    entry.loaded = true
-    entry.loading = false
-    entry.committedUrl = contents.getURL()
-    if (entry.timeout) clearTimeout(entry.timeout)
-    entry.timeout = null
-    entry.loadNumber += 1
-    reconcileVisibility(id, entry)
-    if (isAllowedGmailIdentityUrl(contents.getURL())) entry.blocked = false
-    if (activeAccountId === id) publish(id, entry.blocked ? 'blocked' : 'ready')
-  }
+  const lifecycle = createAccountViewLifecycle({
+    loadTimeoutMs,
+    isAlive: alive,
+    isCurrent: (id, entry) => views.get(id) === entry,
+    isActive: (id) => activeAccountId === id,
+    publish,
+    reconcileVisibility
+  })
 
   window.on('resize', () => {
     const entry = activeAccountId ? views.get(activeAccountId) : undefined
     if (entry?.attached) setBounds(entry.handle.view)
   })
-
-  function load(id: string, entry: ViewEntry): void {
-    if (entry.timeout) clearTimeout(entry.timeout)
-    const loadNumber = ++entry.loadNumber
-    const navigationRevision = entry.navigationRevision
-    entry.blocked = false
-    entry.loaded = false
-    entry.loading = true
-    entry.mainFrameNavigationPending = false
-    entry.pendingMainFrameKind = null
-    publish(id, 'loading')
-    entry.mainFrameDocumentLoaded = false
-    armLoadTimeout(id, entry, loadNumber)
-    void entry.handle.load().then(
-      () => {
-        if (entry.loadNumber !== loadNumber || entry.navigationRevision !== navigationRevision)
-          return
-        if (entry.timeout) clearTimeout(entry.timeout)
-        entry.timeout = null
-        if (!alive()) return
-        entry.loaded = true
-        entry.loading = false
-        entry.committedUrl = entry.handle.view.webContents.getURL()
-        reconcileVisibility(id, entry)
-        if (activeAccountId === id) publish(id, entry.blocked ? 'blocked' : 'ready')
-      },
-      () => {
-        if (entry.loadNumber !== loadNumber || entry.navigationRevision !== navigationRevision)
-          return
-        if (entry.timeout) clearTimeout(entry.timeout)
-        entry.timeout = null
-        if (alive()) {
-          entry.loading = false
-          publish(id, entry.blocked ? 'blocked' : 'error')
-        }
-      }
-    )
-  }
 
   function activate(id: string): void {
     if (!alive()) return
@@ -268,7 +153,7 @@ export function createAccountViewManager(
           onMainFrameNavigation: (url) => {
             const current = views.get(id)
             if (!current) return
-            const nextKind = documentKind(url)
+            const nextKind = lifecycle.documentKind(url)
             try {
               const previousUrl = new URL(current.committedUrl)
               const nextUrl = new URL(url)
@@ -289,7 +174,7 @@ export function createAccountViewManager(
               current.mailAccessGranted = false
               current.handle.revokeMailAccess()
             }
-            const committedKind = documentKind(current.committedUrl)
+            const committedKind = lifecycle.documentKind(current.committedUrl)
             if (
               (nextKind !== 'sign_in' || committedKind !== 'sign_in') &&
               !current.mailAccessGranted &&
@@ -324,114 +209,13 @@ export function createAccountViewManager(
       }
       entry = createdEntry
       views.set(id, createdEntry)
-      handle.view.webContents.on('did-start-navigation', (details) => {
-        if (
-          !details.isMainFrame ||
-          !alive() ||
-          createdEntry.disposePromise ||
-          views.get(id) !== createdEntry
-        )
-          return
-        createdEntry.navigationRevision += 1
-        if (details.isSameDocument) {
-          let accountSlotChanged = false
-          try {
-            const current = new URL(createdEntry.committedUrl)
-            const next = new URL(details.url)
-            const currentSlot = current.pathname.match(/^\/mail\/u\/(\d+)(?:\/|$)/)?.[1]
-            const nextSlot = next.pathname.match(/^\/mail\/u\/(\d+)(?:\/|$)/)?.[1]
-            if (currentSlot && nextSlot && currentSlot !== nextSlot) {
-              accountSlotChanged = true
-              createdEntry.accessRevision += 1
-              createdEntry.mailAccessGranted = false
-              createdEntry.handle.revokeMailAccess()
-              reconcileVisibility(id, createdEntry)
-            }
-            createdEntry.committedUrl = details.url
-          } catch {
-            createdEntry.accessRevision += 1
-            createdEntry.mailAccessGranted = false
-            createdEntry.handle.revokeMailAccess()
-            reconcileVisibility(id, createdEntry)
-          }
-          if (accountSlotChanged && activeAccountId === id) publish(id, 'ready')
-          return
-        }
-        createdEntry.accessRevision += 1
-        createdEntry.mailAccessGranted = false
-        createdEntry.handle.revokeMailAccess()
-        createdEntry.loadNumber += 1
-        createdEntry.mainFrameNavigationPending = true
-        createdEntry.pendingMainFrameKind = documentKind(details.url)
-        createdEntry.mainFrameDocumentLoaded = false
-        createdEntry.loaded = false
-        createdEntry.loading = true
-        reconcileVisibility(id, createdEntry)
-        armLoadTimeout(id, createdEntry, createdEntry.loadNumber)
-        publish(id, 'loading')
-      })
-      handle.view.webContents.on('did-frame-finish-load', (_event, isMainFrame) => {
-        const contents = handle.view.webContents
-        if (!isMainFrame || !createdEntry.mainFrameNavigationPending || contents.isDestroyed())
-          return
-        createdEntry.mainFrameDocumentLoaded = true
-        finishSuccessfulMainFrameNavigation(id, createdEntry)
-      })
-      handle.view.webContents.on('did-stop-loading', () => {
-        finishSuccessfulMainFrameNavigation(id, createdEntry)
-      })
-      handle.view.webContents.on('render-process-gone', () => {
-        if (createdEntry.timeout) clearTimeout(createdEntry.timeout)
-        createdEntry.timeout = null
-        createdEntry.loadNumber += 1
-        createdEntry.loaded = false
-        createdEntry.loading = false
-        createdEntry.mainFrameNavigationPending = false
-        createdEntry.pendingMainFrameKind = null
-        createdEntry.mainFrameDocumentLoaded = false
-        createdEntry.navigationRevision += 1
-        createdEntry.accessRevision += 1
-        createdEntry.mailAccessGranted = false
-        createdEntry.handle.revokeMailAccess()
-        reconcileVisibility(id, createdEntry)
-        if (alive()) publish(id, 'error')
-      })
-      handle.view.webContents.on(
-        'did-fail-load',
-        (_event, errorCode, _description, validatedUrl, isMainFrame) => {
-          const contents = handle.view.webContents
-          if (
-            !isMainFrame ||
-            errorCode === -3 ||
-            !alive() ||
-            createdEntry.disposePromise ||
-            views.get(id) !== createdEntry ||
-            contents.isDestroyed() ||
-            contents.isLoadingMainFrame() ||
-            contents.getURL() !== validatedUrl
-          )
-            return
-          createdEntry.loaded = false
-          createdEntry.loading = false
-          createdEntry.mainFrameNavigationPending = false
-          createdEntry.pendingMainFrameKind = null
-          createdEntry.mainFrameDocumentLoaded = false
-          createdEntry.accessRevision += 1
-          createdEntry.mailAccessGranted = false
-          createdEntry.handle.revokeMailAccess()
-          reconcileVisibility(id, createdEntry)
-          if (createdEntry.timeout) clearTimeout(createdEntry.timeout)
-          createdEntry.timeout = null
-          createdEntry.loadNumber += 1
-          publish(id, createdEntry.blocked ? 'blocked' : 'error')
-        }
-      )
+      lifecycle.register(id, createdEntry)
     }
     reconcileVisibility(id, entry)
     if (entry.loaded) {
       publish(id, entry.blocked ? 'blocked' : 'ready')
     } else if (!entry.loading) {
-      load(id, entry)
+      lifecycle.load(id, entry)
     } else {
       publish(id, 'loading')
     }
@@ -446,7 +230,7 @@ export function createAccountViewManager(
       return
     }
     const entry = views.get(id)
-    if (entry) load(id, entry)
+    if (entry) lifecycle.retry(id, entry)
     else activate(id)
   }
 
@@ -454,15 +238,7 @@ export function createAccountViewManager(
     const entry = views.get(id)
     if (!entry) return Promise.resolve()
     if (entry.disposePromise) return entry.disposePromise
-    if (entry.timeout) clearTimeout(entry.timeout)
-    entry.timeout = null
-    entry.navigationRevision += 1
-    entry.loadNumber += 1
-    entry.loaded = false
-    entry.loading = false
-    entry.mainFrameNavigationPending = false
-    entry.pendingMainFrameKind = null
-    entry.mainFrameDocumentLoaded = false
+    lifecycle.invalidate(entry)
     if (activeAccountId === id) activeAccountId = null
     if (entry.attached && !window.isDestroyed())
       window.contentView.removeChildView(entry.handle.view)
@@ -538,7 +314,7 @@ export function createAccountViewManager(
       if (!entry) return { revision: 0, kind: 'unknown', ready: false }
       return {
         revision: entry.accessRevision,
-        kind: documentKind(entry.committedUrl),
+        kind: lifecycle.documentKind(entry.committedUrl),
         ready: entry.loaded && !entry.loading && !entry.blocked && !entry.disposePromise
       }
     },
@@ -557,7 +333,7 @@ export function createAccountViewManager(
           !entry.loaded ||
           entry.loading ||
           entry.blocked ||
-          documentKind(entry.committedUrl) !== 'mail' ||
+          lifecycle.documentKind(entry.committedUrl) !== 'mail' ||
           !isAllowedGmailIdentityUrl(entry.committedUrl))
       )
         return false

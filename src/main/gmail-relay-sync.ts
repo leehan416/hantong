@@ -9,6 +9,15 @@ export interface GmailRelaySyncDependencies {
   readonly watch?: GmailWatchManager
   readonly now: () => number
   readonly onChanges: (accountId: string, result: GmailHistorySyncResult) => void
+  readonly onDiagnostic?: (
+    event:
+      | {
+          readonly type: 'sync.success'
+          readonly accountId: string
+          readonly kind: 'baseline' | 'changes'
+        }
+      | { readonly type: 'sync.null' | 'sync.failure'; readonly accountId: string }
+  ) => void
   readonly setTimeout?: typeof setTimeout
   readonly clearTimeout?: typeof clearTimeout
 }
@@ -18,6 +27,7 @@ export function createGmailRelaySync(dependencies: GmailRelaySyncDependencies): 
   syncAll(accountIds: readonly string[]): void
   suspend(): void
   resume(accountIds: readonly string[]): void
+  retryWatch(accountId: string): void
   disconnect(accountId: string): void
   dispose(): void
 } {
@@ -28,6 +38,15 @@ export function createGmailRelaySync(dependencies: GmailRelaySyncDependencies): 
   const rerun = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  const report = (
+    event: Parameters<NonNullable<GmailRelaySyncDependencies['onDiagnostic']>>[0]
+  ): void => {
+    try {
+      dependencies.onDiagnostic?.(event)
+    } catch {
+      // Diagnostics do not participate in synchronization control flow.
+    }
+  }
 
   // A hint that lands while a pass is in flight may postdate its history read, so run once more.
   const sync = (accountId: string): void => {
@@ -39,13 +58,30 @@ export function createGmailRelaySync(dependencies: GmailRelaySyncDependencies): 
     const pass = {}
     running.set(accountId, pass)
     void Promise.resolve()
-      .then(() => dependencies.sync(accountId))
-      .then((result) => {
-        if (result && !disposed && running.get(accountId) === pass) {
-          dependencies.onChanges(accountId, result)
+      .then(async () => {
+        let result: GmailHistorySyncResult | null
+        try {
+          result = await dependencies.sync(accountId)
+        } catch {
+          if (!disposed && running.get(accountId) === pass)
+            report({ type: 'sync.failure', accountId })
+          return
+        }
+        const current = !disposed && running.get(accountId) === pass
+        if (current)
+          report(
+            result
+              ? { type: 'sync.success', accountId, kind: result.kind }
+              : { type: 'sync.null', accountId }
+          )
+        if (result && current) {
+          try {
+            dependencies.onChanges(accountId, result)
+          } catch {
+            // The downstream consumer is not part of Gmail history sync.
+          }
         }
       })
-      .catch(() => undefined)
       .finally(() => {
         if (running.get(accountId) !== pass) return
         running.delete(accountId)
@@ -103,6 +139,9 @@ export function createGmailRelaySync(dependencies: GmailRelaySyncDependencies): 
       // Renewals that fell due during sleep run now; history catches up on everything missed.
       runWatch(() => dependencies.watch?.resume(dependencies.now()))
       for (const accountId of accountIds) sync(accountId)
+    },
+    retryWatch(accountId): void {
+      runWatch(() => dependencies.watch?.retry(accountId, dependencies.now()))
     },
     disconnect(accountId): void {
       running.delete(accountId)

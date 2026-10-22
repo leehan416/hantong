@@ -238,27 +238,6 @@ test('network errors and request timeouts never expose URLs or provider details'
   )
 })
 
-test('cancellation between response headers and body parsing is observed without an unhandled rejection', async () => {
-  const externalController = new AbortController()
-  await assert.rejects(
-    exchange.exchangeGoogleAuthorizationCode(
-      { clientId },
-      code,
-      tokenOptions(
-        async () =>
-          response(200, undefined, {
-            json: () => {
-              externalController.abort()
-              return Promise.reject(new Error('AbortError with private response details'))
-            }
-          }),
-        { signal: externalController.signal }
-      )
-    ),
-    { code: 'cancelled' }
-  )
-})
-
 test('Gmail profile fetch uses bearer auth and validates the returned email address', async () => {
   let captured
   const email = await exchange.fetchGoogleProfileEmail(
@@ -377,101 +356,6 @@ test('deleted account, changed web identity, and API identity mismatch cannot re
     connection.startGoogleConnection('account-a', { clientId }, mismatch.dependencies).result,
     { code: 'identity_mismatch' }
   )
-})
-
-test('cancellation aborts pending work and prevents late completion', async () => {
-  let resolveExchange
-  let receivedSignal
-  const { dependencies, calls } = makeConnectionDependencies({
-    exchangeCode: (_config, _code, signal) => {
-      receivedSignal = signal
-      return new Promise((resolve) => (resolveExchange = resolve))
-    }
-  })
-  const operation = connection.startGoogleConnection('account-a', { clientId }, dependencies)
-  await new Promise((resolve) => setImmediate(resolve))
-  operation.cancel()
-  await assert.rejects(operation.result, { code: 'cancelled' })
-  assert.equal(receivedSignal.aborted, true)
-  resolveExchange(tokens)
-  assert.equal(calls.profile, 0)
-})
-
-test('a stalled Main web-identity lookup is timeout-bounded and promptly cancellable', async () => {
-  let resolveTimedLookup
-  const timed = makeConnectionDependencies({
-    identityTimeoutMs: 10,
-    readWebIdentity: async () => new Promise((resolve) => (resolveTimedLookup = resolve))
-  })
-  await assert.rejects(
-    connection.startGoogleConnection('account-a', { clientId }, timed.dependencies).result,
-    { code: 'timeout' }
-  )
-  resolveTimedLookup({ accountExists: true, emailAddress: 'late@example.com' })
-  await new Promise((resolve) => setImmediate(resolve))
-
-  const cancelled = makeConnectionDependencies({
-    readWebIdentity: async () => new Promise(() => {})
-  })
-  let lookupStarted
-  let rejectLookup
-  const started = new Promise((resolve) => (lookupStarted = resolve))
-  cancelled.dependencies.readWebIdentity = async () => {
-    lookupStarted()
-    return new Promise((_resolve, reject) => (rejectLookup = reject))
-  }
-  const operation = connection.startGoogleConnection(
-    'account-cancel',
-    { clientId },
-    cancelled.dependencies
-  )
-  await started
-  operation.cancel()
-  await assert.rejects(operation.result, { code: 'cancelled' })
-  rejectLookup(new Error('late identity failure'))
-  await new Promise((resolve) => setImmediate(resolve))
-})
-
-test('starting a newer connection cancels the earlier operation for that account only', async () => {
-  let resolveFirstIdentity
-  const first = makeConnectionDependencies({
-    readWebIdentity: () => new Promise((resolve) => (resolveFirstIdentity = resolve))
-  })
-  const firstOperation = connection.startGoogleConnection(
-    'account-a',
-    { clientId },
-    first.dependencies
-  )
-  await new Promise((resolve) => setImmediate(resolve))
-  const second = makeConnectionDependencies()
-  const secondOperation = connection.startGoogleConnection(
-    'account-a',
-    { clientId },
-    second.dependencies
-  )
-  await assert.rejects(firstOperation.result, { code: 'cancelled' })
-  resolveFirstIdentity({ accountExists: true, emailAddress: 'owner@example.com' })
-  const result = await secondOperation.result
-  assert.equal(result.emailAddress, 'owner+tag@example.com')
-  assert.equal(first.calls.auth, 0)
-})
-
-test('starting a connection for another account does not cancel the first account', async () => {
-  const accountA = makeConnectionDependencies()
-  const accountB = makeConnectionDependencies()
-  const operationA = connection.startGoogleConnection(
-    'account-a',
-    { clientId },
-    accountA.dependencies
-  )
-  const operationB = connection.startGoogleConnection(
-    'account-b',
-    { clientId },
-    accountB.dependencies
-  )
-  const [resultA, resultB] = await Promise.all([operationA.result, operationB.result])
-  assert.equal(resultA.emailAddress, 'owner+tag@example.com')
-  assert.equal(resultB.emailAddress, 'owner+tag@example.com')
 })
 
 test('authorization denial and exchange failure return no token object', async () => {

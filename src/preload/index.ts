@@ -25,9 +25,15 @@ import {
   GOOGLE_CONNECTION_CONNECT_CHANNEL,
   GOOGLE_CONNECTION_DISCONNECT_CHANNEL,
   GOOGLE_CONNECTION_STATUS_CHANNEL,
+  NOTIFICATION_CONNECTIONS_CHANNEL,
+  NOTIFICATION_CONNECTIONS_EVENT,
+  NOTIFICATION_RECOVER_CHANNEL,
+  NOTIFICATION_RECOVERY_CANCEL_CHANNEL,
+  NOTIFICATION_RETRY_CHANNEL,
   type AccountViewStatus,
   type UnreadCounts,
   type AccountAccessState,
+  type NotificationConnectionStates,
   type HantongApi
 } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
@@ -91,7 +97,18 @@ const api: HantongApi = Object.freeze({
     const handler = (_event: IpcRendererEvent, state: AccountAccessState): void => listener(state)
     ipcRenderer.on(ACCOUNT_ACCESS_STATE_EVENT, handler)
     return () => ipcRenderer.removeListener(ACCOUNT_ACCESS_STATE_EVENT, handler)
-  }
+  },
+  getNotificationConnections: () => ipcRenderer.invoke(NOTIFICATION_CONNECTIONS_CHANNEL),
+  onNotificationConnections: (listener) => {
+    const handler = (_event: IpcRendererEvent, states: NotificationConnectionStates): void =>
+      listener(states)
+    ipcRenderer.on(NOTIFICATION_CONNECTIONS_EVENT, handler)
+    return () => ipcRenderer.removeListener(NOTIFICATION_CONNECTIONS_EVENT, handler)
+  },
+  recoverNotifications: (accountId) => ipcRenderer.invoke(NOTIFICATION_RECOVER_CHANNEL, accountId),
+  cancelNotificationRecovery: (accountId) =>
+    ipcRenderer.invoke(NOTIFICATION_RECOVERY_CANCEL_CHANNEL, accountId),
+  retryNotifications: (accountId) => ipcRenderer.invoke(NOTIFICATION_RETRY_CHANNEL, accountId)
 })
 
 if (process.isMainFrame) contextBridge.exposeInMainWorld('api', api)

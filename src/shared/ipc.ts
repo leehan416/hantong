@@ -24,6 +24,11 @@ export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-statu
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
 export const GOOGLE_CONNECTION_DISCONNECT_CHANNEL = 'hantong:google-connection-disconnect'
+export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
+export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
+export const NOTIFICATION_RECOVER_CHANNEL = 'hantong:notification-recover'
+export const NOTIFICATION_RECOVERY_CANCEL_CHANNEL = 'hantong:notification-recovery-cancel'
+export const NOTIFICATION_RETRY_CHANNEL = 'hantong:notification-retry'
 export const ACCOUNT_ACCESS_STATE_CHANNEL = 'hantong:account-access-state'
 export const ACCOUNT_ACCESS_STATE_EVENT = 'hantong:account-access-state-change'
 export const ACCOUNT_CHROME_HEIGHT = 72
@@ -69,6 +74,21 @@ export type AccountAccessState = {
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
 }
 
+export type NotificationConnectionState = {
+  accountId: string
+  status:
+    | 'connecting'
+    | 'connected'
+    | 'retrying'
+    | 'reconnect_required'
+    | 'storage_error'
+    | 'unavailable'
+    | 'disabled'
+  recovering: boolean
+}
+
+export type NotificationConnectionStates = Record<string, NotificationConnectionState>
+
 export interface HantongApi {
   getAppInfo: () => Promise<AppInfo>
   getAccounts: () => Promise<AccountState>
@@ -95,4 +115,11 @@ export interface HantongApi {
   disconnectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>
   getAccountAccessState: (accountId: string) => Promise<AccountAccessState>
   onAccountAccessState: (listener: (state: AccountAccessState) => void) => () => void
+  getNotificationConnections: () => Promise<NotificationConnectionStates>
+  onNotificationConnections: (
+    listener: (states: NotificationConnectionStates) => void
+  ) => () => void
+  recoverNotifications: (accountId: string) => Promise<void>
+  cancelNotificationRecovery: (accountId: string) => Promise<void>
+  retryNotifications: (accountId: string) => Promise<void>
 }

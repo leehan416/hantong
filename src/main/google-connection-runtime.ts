@@ -34,7 +34,10 @@ interface RuntimeDependencies {
     config: GoogleOAuthConfig,
     nonce?: string
   ) => GoogleAuthorizationOperation
-  readonly prepareRelayChallenge?: (signal: AbortSignal) => Promise<string | undefined>
+  readonly prepareRelayChallenge?: (
+    accountId: string,
+    signal: AbortSignal
+  ) => Promise<string | undefined>
   readonly exchangeCode: Parameters<typeof startGoogleConnection>[2]['exchangeCode']
   readonly fetchProfile: Parameters<typeof startGoogleConnection>[2]['fetchProfile']
   readonly manager: ConnectionManager
@@ -44,6 +47,7 @@ interface RuntimeDependencies {
   ) => void
   readonly onConnected?: (accountId: string, result: GoogleConnectionResult) => void
   readonly onDisconnected?: (accountId: string) => void
+  readonly onPendingChanged?: () => void
 }
 
 interface ActiveOperation {
@@ -52,6 +56,7 @@ interface ActiveOperation {
 }
 
 export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies): {
+  hasPendingConnections(): boolean
   getStatus(accountId: string): Promise<GoogleConnectionStatusDto>
   connect(accountId: string): Promise<GoogleConnectionStatusDto>
   cancel(accountId: string): Promise<GoogleConnectionStatusDto>
@@ -83,6 +88,13 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
       // Diagnostics must never affect connection behavior.
     }
   }
+  const reportPendingChanged = (): void => {
+    try {
+      dependencies.onPendingChanged?.()
+    } catch {
+      // Alert scheduling cannot affect connection behavior.
+    }
+  }
   const connectionFailureCode = (error: unknown): RuntimeDiagnosticCode | 'cancelled' => {
     if (!(error instanceof GoogleConnectionFailure)) return 'connection_failed'
     switch (error.code) {
@@ -107,6 +119,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
     const operation = active.get(accountId)
     if (!operation) return Promise.resolve(true)
     active.delete(accountId)
+    reportPendingChanged()
     operation.cancel()
     if (operation.phase === 'accepting') {
       return dependencies.manager.disconnect(accountId).then(
@@ -118,6 +131,9 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
   }
 
   return {
+    hasPendingConnections(): boolean {
+      return active.size > 0
+    },
     async getStatus(accountId): Promise<GoogleConnectionStatusDto> {
       if (!dependencies.accountExists(accountId)) return status(accountId, 'error')
       if (active.has(accountId)) return status(accountId, 'connecting')
@@ -155,7 +171,11 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         connection = startGoogleConnection(accountId, config, {
           readWebIdentity: dependencies.readWebIdentity,
           startAuthorization: dependencies.startAuthorization,
-          prepareRelayChallenge: dependencies.prepareRelayChallenge,
+          prepareRelayChallenge: dependencies.prepareRelayChallenge
+            ? (signal) =>
+                dependencies.prepareRelayChallenge?.(accountId, signal) ??
+                Promise.resolve(undefined)
+            : undefined,
           exchangeCode: dependencies.exchangeCode,
           fetchProfile: dependencies.fetchProfile
         })
@@ -168,6 +188,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         cancel: connection.cancel
       }
       active.set(accountId, operation)
+      reportPendingChanged()
       try {
         const result = await connection.result
         if (
@@ -191,9 +212,13 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         } catch {
           // Relay lifecycle observers cannot roll back an accepted Google grant.
         }
+        reportPendingChanged()
         return status(accountId, 'connected')
       } catch (error) {
-        if (active.get(accountId) === operation) active.delete(accountId)
+        if (active.get(accountId) === operation) {
+          active.delete(accountId)
+          reportPendingChanged()
+        }
         if (operation.phase === 'accepting') {
           reportFailure('persistence', 'accept_failed')
           return status(accountId, 'error')

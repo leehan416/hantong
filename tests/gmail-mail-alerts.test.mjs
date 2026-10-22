@@ -115,3 +115,19 @@ test('results that finish after the account is removed are dropped', async () =>
   assert.deepEqual(alerts, [])
   assert.deepEqual(badges, [])
 })
+
+test('unread diagnostics separate fetch failure from stale and applied results', async () => {
+  const outcomes = []
+  let exists = true
+  const { module } = setup({
+    accountExists: () => exists,
+    readUnreadCount: async () => 3,
+    onDiagnostic: (event) => outcomes.push(event.type)
+  })
+  await module.onChanges(first, { kind: 'baseline', historyId: '1', addedMessageIds: [] })
+  const pending = module.onChanges(first, { kind: 'baseline', historyId: '2', addedMessageIds: [] })
+  // Account removal changes the generation before the pending unread result can be applied.
+  module.remove(first)
+  await pending
+  assert.deepEqual(outcomes, ['unread.success', 'unread.applied', 'unread.success', 'unread.stale'])
+})

@@ -38,6 +38,13 @@ interface RelayClientOptions {
   readonly streamIdleMs?: number
 }
 
+export type RelayTransportEvent =
+  | { readonly type: 'ready' }
+  | { readonly type: 'receive' }
+  | { readonly type: 'heartbeat' }
+  | { readonly type: 'closed' }
+  | { readonly type: 'failure'; readonly code: RelayFailureCode }
+
 interface Challenge {
   readonly nonce: string
 }
@@ -149,7 +156,8 @@ export function createRelayClient(options: RelayClientOptions): {
   consumeEvents(
     token: string,
     onEvent: (event: RelaySignal) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    observe?: (event: RelayTransportEvent) => void
   ): Promise<void>
 } {
   const timeoutMs = options.timeoutMs ?? 15_000
@@ -322,7 +330,7 @@ export function createRelayClient(options: RelayClientOptions): {
         done()
       }
     },
-    async consumeEvents(token, onEvent, signal): Promise<void> {
+    async consumeEvents(token, onEvent, signal, observe): Promise<void> {
       const { response, controller, stopTimeout, done } = await request(
         '/events',
         {
@@ -333,9 +341,22 @@ export function createRelayClient(options: RelayClientOptions): {
       )
       const idleMs = options.streamIdleMs ?? 45_000
       let idle: ReturnType<typeof setTimeout> | undefined
+      let idleTimedOut = false
+      let cancelReader: (() => void) | undefined
       const resetIdle = (): void => {
         if (idle) clearTimeout(idle)
-        idle = setTimeout(() => controller.abort(), idleMs)
+        idle = setTimeout(() => {
+          idleTimedOut = true
+          controller.abort()
+          cancelReader?.()
+        }, idleMs)
+      }
+      const notify = (event: RelayTransportEvent): void => {
+        try {
+          observe?.(event)
+        } catch {
+          // Diagnostic callbacks cannot interrupt transport handling.
+        }
       }
       try {
         stopTimeout()
@@ -359,6 +380,9 @@ export function createRelayClient(options: RelayClientOptions): {
         }
         if (!response.body) throw new RelayFailure('invalid_response')
         const reader = response.body.getReader()
+        cancelReader = () => {
+          void reader.cancel().catch(() => undefined)
+        }
         const decoder = new TextDecoder('utf-8', { fatal: true })
         let buffer = ''
         let event = ''
@@ -367,7 +391,10 @@ export function createRelayClient(options: RelayClientOptions): {
         const dispatch = (): void => {
           if (data.length) {
             const parsed = parseSignal(event, data.join('\n'))
-            if (parsed) onEvent(parsed)
+            if (parsed) {
+              if (parsed.type === 'ready') notify({ type: 'ready' })
+              onEvent(parsed)
+            }
           }
           event = ''
           data = []
@@ -381,12 +408,16 @@ export function createRelayClient(options: RelayClientOptions): {
               chunk = await raceAbort(reader.read(), controller.signal)
             } catch {
               if (controller.signal.aborted) {
-                throw new RelayFailure(signal?.aborted ? 'cancelled' : 'timeout')
+                throw new RelayFailure(
+                  signal?.aborted ? 'cancelled' : idleTimedOut ? 'timeout' : 'network_error'
+                )
               }
               throw new RelayFailure('network_error')
             }
+            if (idleTimedOut) throw new RelayFailure('timeout')
             if (chunk.done) break
             resetIdle()
+            notify({ type: 'receive' })
             buffer += decoder.decode(chunk.value, { stream: true })
             if (buffer.length + dataSize > MAX_EVENT_BUFFER) {
               throw new RelayFailure('invalid_response')
@@ -397,7 +428,9 @@ export function createRelayClient(options: RelayClientOptions): {
               buffer = buffer.slice(index + 1)
               if (line.endsWith('\r')) line = line.slice(0, -1)
               if (!line) dispatch()
-              else if (!line.startsWith(':')) {
+              else if (line.startsWith(':')) {
+                if (line.slice(1).trim() === 'heartbeat') notify({ type: 'heartbeat' })
+              } else {
                 const colon = line.indexOf(':')
                 const field = colon < 0 ? line : line.slice(0, colon)
                 const value = colon < 0 ? '' : line.slice(colon + 1).replace(/^ /, '')
@@ -415,12 +448,20 @@ export function createRelayClient(options: RelayClientOptions): {
           buffer += decoder.decode()
           if (buffer.length) throw new RelayFailure('invalid_response')
           dispatch()
+          if (!idleTimedOut) notify({ type: 'closed' })
         } catch (error) {
           void reader.cancel().catch(() => undefined)
-          if (controller.signal.aborted)
-            throw new RelayFailure(signal?.aborted ? 'cancelled' : 'timeout')
-          if (error instanceof RelayFailure) throw error
-          throw new RelayFailure('invalid_response')
+          const failure = idleTimedOut
+            ? new RelayFailure('timeout')
+            : controller.signal.aborted
+              ? new RelayFailure(
+                  signal?.aborted ? 'cancelled' : idleTimedOut ? 'timeout' : 'network_error'
+                )
+              : error instanceof RelayFailure
+                ? error
+                : new RelayFailure('invalid_response')
+          notify({ type: 'failure', code: failure.code })
+          throw failure
         } finally {
           reader.releaseLock()
         }

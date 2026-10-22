@@ -14,6 +14,11 @@ export interface GmailMailAlertsDependencies {
   readonly readSummary: (accountId: string, messageId: string) => Promise<GmailMessageSummary>
   readonly notify: (alert: GmailMailAlert) => void
   readonly setBadge: (total: number) => void
+  readonly onDiagnostic?: (event: {
+    readonly type: 'unread.success' | 'unread.failure' | 'unread.applied' | 'unread.stale'
+    readonly accountId: string
+    readonly count?: number
+  }) => void
 }
 
 // Beyond this many arrivals in one pass, the rest collapse into one summary alert.
@@ -33,6 +38,15 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
   const counts = new Map<string, number>()
   // Bumped on remove so results that finish afterwards are dropped.
   const generations = new Map<string, number>()
+  const report = (
+    event: Parameters<NonNullable<GmailMailAlertsDependencies['onDiagnostic']>>[0]
+  ): void => {
+    try {
+      dependencies.onDiagnostic?.(event)
+    } catch {
+      // Diagnostics cannot change unread or notification behavior.
+    }
+  }
 
   const publishBadge = (): void => {
     let total = 0
@@ -47,11 +61,17 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
     try {
       count = await dependencies.readUnreadCount(accountId)
     } catch {
+      report({ type: 'unread.failure', accountId })
       return
     }
-    if (!current(accountId, generation)) return
+    report({ type: 'unread.success', accountId })
+    if (!current(accountId, generation)) {
+      report({ type: 'unread.stale', accountId })
+      return
+    }
     counts.set(accountId, count)
     publishBadge()
+    report({ type: 'unread.applied', accountId, count })
   }
 
   const alertArrivals = async (

@@ -67,7 +67,7 @@ test('relay runtime starts one stream and disconnect aborts ownership', async ()
   assert.equal(connected.aborted, true)
 })
 
-test('relay EOF retries with bounded backoff and stops after unauthorized response', async () => {
+test('relay EOF retries with bounded backoff and stops after unauthorized response without logging out', async () => {
   const timers = []
   let now = 1000
   let attempts = 0
@@ -84,6 +84,7 @@ test('relay EOF retries with bounded backoff and stops after unauthorized respon
     },
     accountExists: () => true,
     now: () => now,
+    random: () => 0.5,
     onSignal: () => undefined,
     setTimeout: (callback, delay) => {
       const item = { callback, delay }
@@ -112,168 +113,105 @@ test('relay EOF retries with bounded backoff and stops after unauthorized respon
     timers.some((item) => item.delay === 8000),
     false
   )
-  assert.deepEqual(deleted, ['opaque-session'])
+  assert.deepEqual(deleted, [])
   now = 2000
   await runtime.dispose()
 })
 
-test('a stale expiry timer cannot invalidate a newer relay session', async () => {
-  const timers = []
-  const streamSignals = []
+test('relay retry jitter stays between eighty and one hundred twenty percent', async () => {
+  for (const [random, expected] of [
+    [0, 800],
+    [1, 1200]
+  ]) {
+    const timers = []
+    const runtime = runtimeModule.createRelayRuntime({
+      client: {
+        createSession: async () => ({ accessToken: 'session', expiresAt: 60_000 }),
+        deleteSession: async () => undefined,
+        consumeEvents: async () => {
+          throw new relayClientModule.RelayFailure('network_error')
+        }
+      },
+      accountExists: () => true,
+      now: () => 1000,
+      random: () => random,
+      onSignal: () => undefined,
+      setTimeout: (callback, delay) => {
+        const timer = { callback, delay }
+        timers.push(timer)
+        return timer
+      },
+      clearTimeout: () => undefined
+    })
+    runtime.accept(account, { idToken: 'proof', nonce: 'nonce_1' })
+    await turn()
+    await turn()
+    assert.ok(timers.some((timer) => timer.delay === expected))
+    runtime.disconnect(account)
+  }
+})
+
+test('explicit relay reconnect retires a stale owned stream and reopens saved credentials', async () => {
+  let streams = 0
+  const stored = {
+    read: async () => 'refresh',
+    write: async () => undefined,
+    delete: async () => undefined
+  }
   const runtime = runtimeModule.createRelayRuntime({
     client: {
-      createSession: async () => ({
-        accessToken: streamSignals.length ? 'session-two' : 'session-one',
-        expiresAt: streamSignals.length ? 30_000 : 20_000
-      }),
+      createSession: async () => ({ accessToken: 'created', expiresAt: 60_000 }),
+      refreshSession: async () => ({ accessToken: `refresh-${++streams}`, expiresAt: 60_000 }),
       deleteSession: async () => undefined,
-      consumeEvents: async (_token, _onEvent, signal) => {
-        streamSignals.push(signal)
-        return new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
-      }
+      consumeEvents: async (_token, _onEvent, signal) =>
+        new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
     },
+    credentials: stored,
     accountExists: () => true,
     now: () => 1000,
-    onSignal: () => undefined,
-    setTimeout: (callback, delay) => {
-      const timer = { callback, delay }
-      timers.push(timer)
-      return timer
-    },
-    clearTimeout: () => undefined
+    onSignal: () => undefined
   })
-  runtime.accept(account, { idToken: 'proof-one', nonce: 'nonce_1' })
-  await turn()
-  await turn()
-  const firstExpiry = timers.find((timer) => timer.delay === 19_000)
-  runtime.accept(account, { idToken: 'proof-two', nonce: 'nonce_2' })
-  await turn()
-  await turn()
-  assert.equal(streamSignals.length, 2)
-  firstExpiry.callback()
-  assert.equal(streamSignals[1].aborted, false)
-  runtime.disconnect(account)
-})
-
-function refreshHarness(overrides = {}) {
-  const timers = []
-  const calls = { refresh: [], deleted: [], streams: [], saved: [], removed: [] }
-  const stored = new Map(overrides.stored ?? [])
-  const runtime = runtimeModule.createRelayRuntime({
-    client: {
-      createSession: async () => ({
-        accessToken: 'session-one',
-        expiresAt: 100_000,
-        refreshToken: 'refresh-one'
-      }),
-      refreshSession:
-        overrides.refreshSession ??
-        (async (token) => {
-          calls.refresh.push(token)
-          return { accessToken: 'session-two', expiresAt: 200_000, refreshToken: 'refresh-two' }
-        }),
-      deleteSession: async (token) => calls.deleted.push(token),
-      consumeEvents: async (token, _onEvent, signal) => {
-        calls.streams.push(token)
-        return new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
-      }
-    },
-    credentials: {
-      read: async (id) => stored.get(id) ?? null,
-      write: async (id, token) => (calls.saved.push(token), stored.set(id, token)),
-      delete: async (id) => (calls.removed.push(id), stored.delete(id))
-    },
-    accountExists: () => true,
-    now: () => 1000,
-    onSignal: () => undefined,
-    setTimeout: (callback, delay) => {
-      const timer = { callback, delay }
-      timers.push(timer)
-      return timer
-    },
-    clearTimeout: () => undefined
-  })
-  return { runtime, timers, calls, stored }
-}
-
-test('a refreshable session is saved and renewed before expiry without logging out', async () => {
-  const { runtime, timers, calls } = refreshHarness()
-  runtime.accept(account, { idToken: 'proof', nonce: 'nonce_1' })
-  await turn()
-  await turn()
-  assert.deepEqual(calls.saved, ['refresh-one'])
-  const renewTimer = timers.find((timer) => timer.delay === 100_000 - 60_000 - 1000)
-  assert.ok(renewTimer)
-  renewTimer.callback()
-  await turn()
-  await turn()
-  assert.deepEqual(calls.refresh, ['refresh-one'])
-  assert.deepEqual(calls.streams, ['session-one', 'session-two'])
-  assert.deepEqual(calls.saved, ['refresh-one', 'refresh-two'])
-  assert.deepEqual(calls.deleted, [])
-})
-
-test('resume reattaches a stored refresh token and quitting keeps the server session', async () => {
-  const { runtime, calls } = refreshHarness({ stored: [[account, 'refresh-saved']] })
   await runtime.resume(account)
   await turn()
   await turn()
-  assert.deepEqual(calls.refresh, ['refresh-saved'])
-  assert.deepEqual(calls.streams, ['session-two'])
-  await runtime.dispose()
-  assert.deepEqual(calls.deleted, [])
-  assert.deepEqual(calls.removed, [])
+  assert.equal(streams, 1)
+  await runtime.reconnect(account)
+  await turn()
+  await turn()
+  assert.equal(streams, 2)
+  runtime.disconnect(account)
 })
 
-test('a dead refresh token is forgotten while a transient failure retries later', async () => {
-  const dead = refreshHarness({
-    stored: [[account, 'refresh-saved']],
-    refreshSession: async () => {
-      throw new relayClientModule.RelayFailure('unauthorized')
-    }
+test('relay runtime reports session, stream failure and retry outcome with fixed codes', async () => {
+  const timers = []
+  const diagnostics = []
+  const runtime = runtimeModule.createRelayRuntime({
+    client: {
+      createSession: async () => ({ accessToken: 'opaque-session', expiresAt: 100_000 }),
+      deleteSession: async () => undefined,
+      consumeEvents: async () => {
+        throw new relayClientModule.RelayFailure('network_error')
+      }
+    },
+    accountExists: () => true,
+    now: () => 1000,
+    onSignal: () => undefined,
+    onDiagnostic: (event) => diagnostics.push(event),
+    setTimeout: (callback, delay) => (timers.push({ callback, delay }), timers.length),
+    clearTimeout: () => undefined
   })
-  await dead.runtime.resume(account)
-  await turn()
-  await turn()
-  assert.deepEqual(dead.calls.removed, [account])
-  assert.equal(dead.timers.length, 0)
-
-  let attempts = 0
-  const flaky = refreshHarness({
-    stored: [[account, 'refresh-saved']],
-    refreshSession: async () => {
-      attempts += 1
-      throw new relayClientModule.RelayFailure('network_error')
-    }
-  })
-  await flaky.runtime.resume(account)
-  await turn()
-  await turn()
-  assert.deepEqual(flaky.calls.removed, [])
-  assert.equal(flaky.timers.at(-1).delay, 60_000)
-  flaky.timers.at(-1).callback()
-  await turn()
-  await turn()
-  assert.equal(attempts, 2)
-  assert.equal(flaky.timers.at(-1).delay, 120_000)
-  // Disconnect cancels the pending retry.
-  flaky.runtime.disconnect(account)
-  flaky.timers.at(-1).callback()
-  await turn()
-  assert.equal(attempts, 2)
-})
-
-test('disconnect logs out and forgets the refresh token; a new login does not log out', async () => {
-  const { runtime, calls } = refreshHarness()
   runtime.accept(account, { idToken: 'proof', nonce: 'nonce_1' })
   await turn()
   await turn()
-  runtime.accept(account, { idToken: 'proof', nonce: 'nonce_2' })
-  await turn()
-  await turn()
-  assert.deepEqual(calls.deleted, [])
+  assert.deepEqual(
+    diagnostics
+      .filter((event) => event.type !== 'bootstrap')
+      .map((event) => [event.type, event.outcome, event.code]),
+    [
+      ['session', 'success', undefined],
+      ['transport', undefined, 'network_error'],
+      ['reconnect', 'retry', 'network_error']
+    ]
+  )
   runtime.disconnect(account)
-  await turn()
-  assert.deepEqual(calls.deleted, ['session-one'])
-  assert.deepEqual(calls.removed, [account])
 })
