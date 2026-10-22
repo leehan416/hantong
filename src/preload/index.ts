@@ -5,6 +5,7 @@ import {
   ACCOUNT_MOVE_CHANNEL,
   ACCOUNT_DISPLAY_NAME_CHANNEL,
   ACCOUNT_COLOR_CHANNEL,
+  ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
@@ -60,6 +61,8 @@ const api: HantongApi = Object.freeze({
     ipcRenderer.invoke(ACCOUNT_DISPLAY_NAME_CHANNEL, accountId, displayName),
   updateAccountColor: (accountId, color) =>
     ipcRenderer.invoke(ACCOUNT_COLOR_CHANNEL, accountId, color),
+  setAccountNotificationsEnabled: (accountId, enabled) =>
+    ipcRenderer.invoke(ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL, accountId, enabled),
   moveAccount: (accountId, toIndex) => ipcRenderer.invoke(ACCOUNT_MOVE_CHANNEL, accountId, toIndex),
   retryAccount: () => ipcRenderer.invoke(ACCOUNT_RETRY_CHANNEL),
   onAccountViewStatus: (listener) => {

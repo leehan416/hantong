@@ -172,6 +172,11 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
   const korean = (): boolean => dependencies.locale() === 'ko'
   mailAlerts = createGmailMailAlerts({
     accountExists,
+    notificationsEnabled: (id) =>
+      dependencies
+        .requireAccountStore()
+        .getState()
+        .accounts.find((account) => account.id === id)?.notificationsEnabled !== false,
     korean,
     readUnreadCount: async (accountId) =>
       fetchGmailUnreadCount(await gmailAccessToken(accountId), 'INBOX', {

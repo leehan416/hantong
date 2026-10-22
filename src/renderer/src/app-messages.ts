@@ -45,6 +45,7 @@ export const messages = {
     editName: '수정',
     accountNamePlaceholder: '이메일 주소 사용',
     accountColor: '계정 색상',
+    notificationsEnabled: '알림 받기',
     accountColors: { blue: '파랑', purple: '보라', green: '초록', orange: '주황', gray: '회색' },
     noAccounts: '연결된 계정이 없습니다.',
     accountSaveError: '계정 설정을 저장하지 못했습니다. 다시 시도해 주세요.',
@@ -110,6 +111,7 @@ export const messages = {
     editName: 'Edit',
     accountNamePlaceholder: 'Use email address',
     accountColor: 'Account color',
+    notificationsEnabled: 'Receive notifications',
     accountColors: {
       blue: 'Blue',
       purple: 'Purple',

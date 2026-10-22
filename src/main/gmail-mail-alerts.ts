@@ -9,6 +9,7 @@ export interface GmailMailAlert {
 
 export interface GmailMailAlertsDependencies {
   readonly accountExists: (accountId: string) => boolean
+  readonly notificationsEnabled: (accountId: string) => boolean
   readonly korean: () => boolean
   readonly readUnreadCount: (accountId: string) => Promise<number>
   readonly readSummary: (accountId: string, messageId: string) => Promise<GmailMessageSummary>
@@ -79,6 +80,7 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
     messageIds: readonly string[],
     generation: number
   ): Promise<void> => {
+    if (!dependencies.notificationsEnabled(accountId)) return
     const korean = dependencies.korean()
     const detailed = messageIds.slice(0, MAX_DETAILED_ALERTS)
     const summaries = await Promise.allSettled(
@@ -88,6 +90,7 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
     for (const summary of summaries) {
       // Skip mail already read or archived elsewhere, and lookups that failed.
       if (summary.status !== 'fulfilled' || !summary.value.unreadInInbox) continue
+      if (!dependencies.notificationsEnabled(accountId)) continue
       const sender = senderName(summary.value.from)
       dependencies.notify({
         accountId,
@@ -96,7 +99,7 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
       })
     }
     const rest = messageIds.length - detailed.length
-    if (rest > 0) {
+    if (rest > 0 && dependencies.notificationsEnabled(accountId)) {
       dependencies.notify({
         accountId,
         title: korean ? '새 메일' : 'New mail',
@@ -111,7 +114,9 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
       const work = [refreshUnread(accountId, generation)]
       // A baseline is the first look at the mailbox; existing mail never notifies.
       if (result.kind === 'changes' && result.addedMessageIds.length) {
-        work.push(alertArrivals(accountId, result.addedMessageIds, generation))
+        if (dependencies.notificationsEnabled(accountId)) {
+          work.push(alertArrivals(accountId, result.addedMessageIds, generation))
+        }
       }
       await Promise.all(work)
     },

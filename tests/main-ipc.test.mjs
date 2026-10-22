@@ -76,6 +76,36 @@ test('trusted URL from a foreign sender is rejected by IPC ownership checks', ()
   assert.throws(() => handler(invokeEvent(owner, {})), /Request rejected/)
 })
 
+test('notification preference IPC validates exact arguments and persists through account store', () => {
+  let persisted = false
+  let published = null
+  const { owner } = fixture({
+    requireAccountStore: () => ({
+      getState: () => ({ accounts: [{ id: accountId }], activeAccountId: accountId }),
+      setNotificationsEnabled: (id, enabled) => {
+        assert.equal(id, accountId)
+        assert.equal(enabled, false)
+        persisted = true
+        return {
+          version: 1,
+          accounts: [{ id, notificationsEnabled: enabled }],
+          activeAccountId: id
+        }
+      }
+    }),
+    publishAccountState: (_owner, state) => (published = state)
+  })
+  const handler = handlers.get('hantong:accounts-notifications-enabled')
+  const event = invokeEvent(owner)
+  assert.throws(() => handler(event, accountId), /Request rejected/)
+  assert.throws(() => handler(event, accountId, 'false'), /Request rejected/)
+  assert.throws(() => handler(event, accountId, false, 'extra'), /Request rejected/)
+  assert.equal(persisted, false)
+  const state = handler(event, accountId, false)
+  assert.equal(persisted, true)
+  assert.deepEqual(published, state)
+})
+
 test('Google status completion is rejected after its owning window changes', async () => {
   const pending = deferred()
   const firstWindow = { webContents: { send: () => undefined }, isDestroyed: () => false }

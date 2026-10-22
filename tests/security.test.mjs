@@ -160,6 +160,14 @@ test('account IPC validates operation arguments and requires a stored account fo
     }),
     true
   )
+  assert.equal(
+    policy.isAllowedAccountRequest({
+      ...base,
+      operation: 'setNotificationsEnabled',
+      args: [base.args[0], false]
+    }),
+    true
+  )
   for (const patch of [
     { operation: 'setDefault', args: [base.args[0]] },
     { operation: 'setColor', args: [base.args[0], 'red'] },
@@ -167,6 +175,9 @@ test('account IPC validates operation arguments and requires a stored account fo
     { operation: 'setColor', args: [base.args[0], 'green', 'extra'] },
     { operation: 'setColor', args: ['../other-session', 'green'] },
     { operation: 'setColor', args: [base.args[0], 'green'], accountExists: false },
+    { operation: 'setNotificationsEnabled', args: [base.args[0], true, 'extra'] },
+    { operation: 'setNotificationsEnabled', args: [base.args[0], 'false'] },
+    { operation: 'setNotificationsEnabled', args: [base.args[0], false], accountExists: false },
     { operation: 'move', args: [base.args[0], '1'] },
     { operation: 'move', args: [base.args[0], 0.5] },
     { operation: 'move', args: [base.args[0]] },

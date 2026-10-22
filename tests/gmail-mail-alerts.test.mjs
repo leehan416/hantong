@@ -15,6 +15,7 @@ function setup(overrides = {}) {
   const badges = []
   const module = createGmailMailAlerts({
     accountExists: () => true,
+    notificationsEnabled: () => true,
     korean: () => true,
     readUnreadCount: async (id) => (id === first ? 3 : 4),
     readSummary: async (_id, messageId) => unread('Ann <ann@example.com>', `subject ${messageId}`),
@@ -34,6 +35,65 @@ test('sender name prefers the display name and falls back to the address', () =>
 test('a baseline refreshes the badge but never notifies', async () => {
   const { module, alerts, badges } = setup()
   await module.onChanges(first, { kind: 'baseline', historyId: '1', addedMessageIds: [] })
+  assert.deepEqual(alerts, [])
+  assert.deepEqual(badges, [3])
+})
+
+test('disabled account still refreshes its badge and never reads or queues arrival summaries', async () => {
+  let enabled = false
+  let finishUnread
+  let summaryCalls = 0
+  const { module, alerts, badges } = setup({
+    notificationsEnabled: () => enabled,
+    readUnreadCount: () => new Promise((resolve) => (finishUnread = resolve)),
+    readSummary: async () => {
+      summaryCalls += 1
+      throw new Error('disabled batches must not read summaries')
+    }
+  })
+  const pending = module.onChanges(first, {
+    kind: 'changes',
+    historyId: '2',
+    addedMessageIds: ['m1', 'm2', 'm3', 'm4']
+  })
+  enabled = true
+  finishUnread(3)
+  await pending
+  assert.deepEqual(alerts, [])
+  assert.deepEqual(badges, [3])
+  assert.equal(summaryCalls, 0)
+})
+
+test('notification preference gates only its account while badge counts still sum across accounts', async () => {
+  const { module, alerts, badges } = setup({
+    notificationsEnabled: (id) => id !== first
+  })
+  for (const accountId of [first, second]) {
+    await module.onChanges(accountId, {
+      kind: 'changes',
+      historyId: '2',
+      addedMessageIds: ['m1']
+    })
+  }
+  assert.deepEqual(alerts, [{ accountId: second, title: 'Ann', body: 'subject m1' }])
+  assert.deepEqual(badges, [3, 7])
+})
+
+test('turning notifications off while summaries are pending suppresses detailed and summary alerts', async () => {
+  let enabled = true
+  const finish = []
+  const { module, alerts, badges } = setup({
+    notificationsEnabled: () => enabled,
+    readSummary: () => new Promise((resolve) => finish.push(resolve))
+  })
+  const pending = module.onChanges(first, {
+    kind: 'changes',
+    historyId: '2',
+    addedMessageIds: ['m1', 'm2', 'm3', 'm4']
+  })
+  enabled = false
+  for (const resolve of finish) resolve(unread('Ann <ann@example.com>', 'subject'))
+  await pending
   assert.deepEqual(alerts, [])
   assert.deepEqual(badges, [3])
 })

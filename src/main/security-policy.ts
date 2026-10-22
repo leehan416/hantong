@@ -114,6 +114,14 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
       request.accountExists
     )
   }
+  if (request.operation === 'setNotificationsEnabled') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      typeof request.args[1] === 'boolean' &&
+      request.accountExists
+    )
+  }
   return (
     (request.operation === 'activate' || request.operation === 'remove') &&
     request.args.length === 1 &&

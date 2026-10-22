@@ -9,6 +9,7 @@ export const ACCOUNT_RETRY_CHANNEL = 'hantong:accounts-retry'
 export const ACCOUNT_REMOVE_CHANNEL = 'hantong:accounts-remove'
 export const ACCOUNT_DISPLAY_NAME_CHANNEL = 'hantong:accounts-display-name'
 export const ACCOUNT_COLOR_CHANNEL = 'hantong:accounts-color'
+export const ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL = 'hantong:accounts-notifications-enabled'
 export const ACCOUNT_MOVE_CHANNEL = 'hantong:accounts-move'
 export const ACCOUNT_VIEW_STATUS_EVENT = 'hantong:account-view-status'
 export const ACCOUNT_STATE_EVENT = 'hantong:accounts-change'
@@ -96,6 +97,7 @@ export interface HantongApi {
   activateAccount: (accountId: string) => Promise<AccountState>
   setAccountDisplayName: (accountId: string, displayName: string | null) => Promise<AccountState>
   updateAccountColor: (accountId: string, color: AccountColor) => Promise<AccountState>
+  setAccountNotificationsEnabled: (accountId: string, enabled: boolean) => Promise<AccountState>
   moveAccount: (accountId: string, toIndex: number) => Promise<AccountState>
   retryAccount: () => Promise<void>
   removeAccount: (accountId: string) => Promise<AccountRemovalResult>

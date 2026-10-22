@@ -71,6 +71,10 @@ export function parseAccountState(value: unknown): AccountState {
       if (!isAccountColor(entry.color)) throw new Error('Invalid account data')
       account.color = entry.color
     }
+    if (entry.notificationsEnabled !== undefined) {
+      if (typeof entry.notificationsEnabled !== 'boolean') throw new Error('Invalid account data')
+      account.notificationsEnabled = entry.notificationsEnabled
+    }
     accounts.push(account)
   }
   const activeAccountId = value.activeAccountId
@@ -138,6 +142,24 @@ export function setGmailAccountColor(
   }
   const accounts = state.accounts.map((account) =>
     account.id === id ? { ...account, color } : account
+  )
+  return parseAccountState({ ...state, accounts })
+}
+
+export function setGmailAccountNotificationsEnabled(
+  state: AccountState,
+  id: string,
+  notificationsEnabled: boolean
+): AccountState {
+  if (
+    !isAccountId(id) ||
+    !state.accounts.some((account) => account.id === id) ||
+    typeof notificationsEnabled !== 'boolean'
+  ) {
+    throw new Error('Invalid account data')
+  }
+  const accounts = state.accounts.map((account) =>
+    account.id === id ? { ...account, notificationsEnabled } : account
   )
   return parseAccountState({ ...state, accounts })
 }

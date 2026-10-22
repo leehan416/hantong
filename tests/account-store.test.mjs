@@ -81,6 +81,7 @@ test('invalid saved data is reported without overwriting the file', (t) => {
     JSON.stringify({ ...first, accounts: [{ id: '../other-session' }] }),
     JSON.stringify({ ...first, accounts: [{ id: firstId, email: 'not-an-email' }] }),
     JSON.stringify({ ...first, accounts: [{ id: firstId, displayName: '  ' }] }),
+    JSON.stringify({ ...first, accounts: [{ id: firstId, notificationsEnabled: 'false' }] }),
     JSON.stringify({ ...first, accounts: [{ id: firstId }, { id: firstId }] })
   ]) {
     writeFileSync(join(directory, 'accounts.json'), value)
@@ -200,6 +201,27 @@ test('account metadata persists independently of active selection', (t) => {
   )
 })
 
+test('notification preference defaults on for legacy accounts and persists independently', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'hantong-accounts-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const { createAccountStore } = loadTypeScript(sourceUrl)
+  const ids = [firstId, secondId]
+  const store = createAccountStore(directory, () => ids.shift())
+  store.add()
+  store.add()
+  assert.equal(store.getState().accounts[0].notificationsEnabled, undefined)
+  assert.equal(store.getState().accounts[1].notificationsEnabled, undefined)
+  store.setNotificationsEnabled(firstId, false)
+  store.setDisplayName(firstId, 'Personal')
+  store.setColor(secondId, 'green')
+  store.move(firstId, 1)
+  const reopened = createAccountStore(directory)
+  assert.deepEqual(structuredClone(reopened.getState()).accounts, [
+    { id: secondId, color: 'green' },
+    { id: firstId, displayName: 'Personal', notificationsEnabled: false }
+  ])
+})
+
 test('invalid account metadata and unknown account updates do not persist', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'hantong-accounts-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
@@ -215,6 +237,8 @@ test('invalid account metadata and unknown account updates do not persist', (t) 
     /Invalid account data/
   )
   assert.throws(() => store.setDisplayName(secondId, 'Other'), /Invalid account data/)
+  assert.throws(() => store.setNotificationsEnabled(firstId, 'false'), /Invalid account data/)
+  assert.throws(() => store.setNotificationsEnabled(secondId, false), /Invalid account data/)
   assert.equal(readFileSync(join(directory, 'accounts.json'), 'utf8'), saved)
 })
 
