@@ -57,6 +57,10 @@ export const messages = {
     themeOptions: { system: '시스템 설정', light: '밝게', dark: '어둡게' },
     closeAction: '창을 닫을 때',
     closeActionOptions: { hide: '숨기기 (알림 계속 받기)', quit: '앱 종료' },
+    launchAtLogin: '로그인 시 자동 실행',
+    loginItemsGuidance: '시스템 설정 > 일반 > 로그인 항목에서 Hantong을 허용해 주세요.',
+    launchLoginUnsupported: '로그인 항목은 설치된 macOS 앱에서 사용할 수 있습니다.',
+    launchLoginError: '로그인 항목 설정을 확인하지 못했습니다.',
     gmailCleanup: 'Gmail 화면에서 숨기기',
     gmailCleanupOptions: {
       hideGmailLogo: 'Gmail 로고',
@@ -129,6 +133,10 @@ export const messages = {
     themeOptions: { system: 'System', light: 'Light', dark: 'Dark' },
     closeAction: 'When closing the window',
     closeActionOptions: { hide: 'Hide (keep notifications)', quit: 'Quit the app' },
+    launchAtLogin: 'Launch at login',
+    loginItemsGuidance: 'Allow Hantong in System Settings > General > Login Items.',
+    launchLoginUnsupported: 'Login Items are available in the installed macOS app.',
+    launchLoginError: 'Unable to update the login item. Please retry.',
     gmailCleanup: 'Hide in Gmail',
     gmailCleanupOptions: {
       hideGmailLogo: 'Gmail logo',

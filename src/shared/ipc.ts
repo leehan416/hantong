@@ -21,6 +21,13 @@ export const SETTINGS_EVENT = 'hantong:settings-change'
 export const SETTINGS_PANEL_CHANNEL = 'hantong:settings-panel'
 export const ACCOUNT_STATUS_STRIP_CHANNEL = 'hantong:account-status-strip'
 export const SETTINGS_OPEN_EVENT = 'hantong:settings-open'
+export const LOGIN_LAUNCH_GET_CHANNEL = 'hantong:login-launch-get'
+export const LOGIN_LAUNCH_SET_CHANNEL = 'hantong:login-launch-set'
+export type LoginLaunchState = {
+  supported: boolean
+  enabled: boolean
+  status: 'enabled' | 'disabled' | 'requires_approval' | 'unavailable'
+}
 export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
@@ -91,6 +98,8 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  getLoginLaunchState: () => Promise<LoginLaunchState>
+  setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>
   getAccounts: () => Promise<AccountState>
   addAccount: () => Promise<AccountState>

@@ -37,7 +37,9 @@ import {
   NOTIFICATION_RECOVER_CHANNEL,
   NOTIFICATION_RECOVERY_CANCEL_CHANNEL,
   NOTIFICATION_RETRY_CHANNEL,
-  ACCOUNT_ACCESS_STATE_CHANNEL
+  ACCOUNT_ACCESS_STATE_CHANNEL,
+  LOGIN_LAUNCH_GET_CHANNEL,
+  LOGIN_LAUNCH_SET_CHANNEL
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
@@ -45,8 +47,10 @@ import {
   isAllowedGoogleConnectionRequest,
   isAllowedNotificationRequest,
   isAllowedSettingsRequest,
-  isTrustedRendererUrl
+  isTrustedRendererUrl,
+  isAllowedLoginLaunchRequest
 } from './security-policy'
+import type { createLoginLaunchController } from './login-launch'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -67,9 +71,32 @@ export interface MainIpcDependencies {
   readonly publishAccountState: (owner: BrowserWindow, state: AccountState) => void
   readonly installAppMenu: () => void
   readonly createWindow: () => void
+  readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
 }
 
 export function registerMainIpc(dependencies: MainIpcDependencies): void {
+  for (const [channel, operation] of [
+    [LOGIN_LAUNCH_GET_CHANNEL, 'get'],
+    [LOGIN_LAUNCH_SET_CHANNEL, 'set']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      const request = {
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        args
+      }
+      if (!isAllowedLoginLaunchRequest(request, operation)) throw new Error('Request rejected')
+      return operation === 'get'
+        ? dependencies.loginLaunch.getState()
+        : dependencies.loginLaunch.setEnabled(args[0] as boolean)
+    })
+  }
   ipcMain.handle(APP_INFO_CHANNEL, (event, ...args: unknown[]): AppInfo => {
     const owner = dependencies.window()
     const ownerAlive = owner !== null && !owner.isDestroyed()

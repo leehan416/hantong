@@ -10,6 +10,7 @@ const {
   isAllowedGoogleConnectionRequest,
   isAllowedNotificationRequest,
   isAllowedSettingsRequest,
+  isAllowedLoginLaunchRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
 const policy = {
@@ -37,6 +38,26 @@ test('only the exact local renderer document and its hash are trusted', () => {
   ]) {
     assert.equal(policy.isTrustedRendererUrl(url, rendererUrl), false, url)
   }
+})
+
+test('login launch IPC requires the owner main frame and exact boolean argument', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: []
+  }
+  assert.equal(isAllowedLoginLaunchRequest(base, 'get'), true)
+  assert.equal(isAllowedLoginLaunchRequest({ ...base, args: [true] }, 'get'), false)
+  assert.equal(isAllowedLoginLaunchRequest({ ...base, args: [false] }, 'set'), true)
+  for (const args of [[], [1], ['true'], [true, false]])
+    assert.equal(isAllowedLoginLaunchRequest({ ...base, args }, 'set'), false)
+  assert.equal(
+    isAllowedLoginLaunchRequest({ ...base, senderMatches: false, args: [true] }, 'set'),
+    false
+  )
 })
 
 test('development trust is limited to the exact configured document', () => {

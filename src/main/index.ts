@@ -42,6 +42,8 @@ import { is } from '@electron-toolkit/utils'
 import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
 import { createNotificationPauseStore } from './notification-pause-store'
+import { createLoginLaunchController } from './login-launch'
+import { createLoginLaunchStartupController } from './login-launch-startup'
 import {
   createNotificationPauseController,
   createNotificationPauseMenuActions
@@ -83,6 +85,7 @@ let quitCleanupComplete = false
 let updateRuntime: ReturnType<typeof createAppUpdateRuntime> | null = null
 let fallbackSync: ReturnType<typeof setInterval> | undefined
 let cleanupPromise: Promise<void> | undefined
+let wasOpenedAtLogin = false
 
 const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   window: () => mainWindow,
@@ -95,6 +98,11 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   isQuitting: () => appQuitting,
   locale: uiLocale,
   showAccount
+})
+const loginLaunch = createLoginLaunchController({
+  supported: process.platform === 'darwin' && app.isPackaged,
+  getLoginItemSettings: () => app.getLoginItemSettings(),
+  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings)
 })
 
 function prepareApplicationShutdown(): Promise<void> {
@@ -201,6 +209,13 @@ function showMainWindow(): void {
   window.focus()
 }
 
+const loginLaunchStartup = createLoginLaunchStartupController({
+  showWindow: showMainWindow,
+  hideDock: () => app.dock?.hide()
+})
+
+app.on('activate', () => loginLaunchStartup.requestReveal())
+
 // Rebuilt whenever the language changes, so every Hantong-owned label follows the setting.
 function installAppMenu(): void {
   const locale = uiLocale()
@@ -274,14 +289,7 @@ function installAppMenu(): void {
 }
 
 app.on('second-instance', () => {
-  const window = mainWindow
-  if (!window || window.isDestroyed()) {
-    if (app.isReady() && accountStore) createWindow()
-    return
-  }
-  if (window.isMinimized()) window.restore()
-  window.show()
-  window.focus()
+  loginLaunchStartup.requestReveal()
 })
 
 const gmailCleanupRuntime = createGmailCleanupRuntime(() => settingsStore?.get())
@@ -377,6 +385,13 @@ const mainWindowRuntime = createMainWindowRuntime({
 void app
   .whenReady()
   .then(() => {
+    if (app.isPackaged && process.platform === 'darwin') {
+      try {
+        wasOpenedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin
+      } catch {
+        wasOpenedAtLogin = false
+      }
+    }
     const diagnostics = createMainDiagnostics({
       now: () => Date.now(),
       sink: createRotatingDiagnosticsSink({
@@ -469,9 +484,10 @@ void app
       activateView: activateAccountView,
       publishAccountState,
       installAppMenu,
-      createWindow
+      createWindow,
+      loginLaunch
     })
-    createWindow()
+    loginLaunchStartup.start(wasOpenedAtLogin)
     app.on('before-quit', (event) => {
       if (quitCleanupComplete) return
       event.preventDefault()
@@ -492,13 +508,6 @@ void app
           updateRuntime?.dispose()
           app.quit()
         })
-    })
-    app.on('activate', () => {
-      if (!mainWindow) createWindow()
-      else {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.show()
-      }
     })
   })
   .catch(() => {
