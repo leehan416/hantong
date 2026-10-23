@@ -2,6 +2,7 @@ import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
 import type { AccountState } from '../../shared/accounts'
 import { ACCOUNT_COLOR_OPTIONS, accountLabel } from '../../shared/accounts'
 import type { AppMessages } from './app-messages'
+import { SettingsRow } from './SettingsDialog'
 
 export function AccountSettings({
   accounts,
@@ -165,6 +166,23 @@ export function AccountSettings({
                   ))}
                 </div>
               </div>
+              <SettingsRow label={text.notificationsEnabled}>
+                <input
+                  className="settings-switch"
+                  type="checkbox"
+                  role="switch"
+                  checked={account.notificationsEnabled !== false}
+                  disabled={locked}
+                  onChange={(event) => {
+                    setAccountSettingsBusy(account.id)
+                    setAccountSettingsFailed(false)
+                    void window.api
+                      .setAccountNotificationsEnabled(account.id, event.target.checked)
+                      .then(onAccountsChange, () => setAccountSettingsFailed(true))
+                      .finally(() => setAccountSettingsBusy(null))
+                  }}
+                />
+              </SettingsRow>
             </section>
           )
         })

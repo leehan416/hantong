@@ -9,6 +9,7 @@ export const ACCOUNT_RETRY_CHANNEL = 'hantong:accounts-retry'
 export const ACCOUNT_REMOVE_CHANNEL = 'hantong:accounts-remove'
 export const ACCOUNT_DISPLAY_NAME_CHANNEL = 'hantong:accounts-display-name'
 export const ACCOUNT_COLOR_CHANNEL = 'hantong:accounts-color'
+export const ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL = 'hantong:accounts-notifications-enabled'
 export const ACCOUNT_MOVE_CHANNEL = 'hantong:accounts-move'
 export const ACCOUNT_VIEW_STATUS_EVENT = 'hantong:account-view-status'
 export const ACCOUNT_STATE_EVENT = 'hantong:accounts-change'
@@ -20,6 +21,13 @@ export const SETTINGS_EVENT = 'hantong:settings-change'
 export const SETTINGS_PANEL_CHANNEL = 'hantong:settings-panel'
 export const ACCOUNT_STATUS_STRIP_CHANNEL = 'hantong:account-status-strip'
 export const SETTINGS_OPEN_EVENT = 'hantong:settings-open'
+export const LOGIN_LAUNCH_GET_CHANNEL = 'hantong:login-launch-get'
+export const LOGIN_LAUNCH_SET_CHANNEL = 'hantong:login-launch-set'
+export type LoginLaunchState = {
+  supported: boolean
+  enabled: boolean
+  status: 'enabled' | 'disabled' | 'requires_approval' | 'unavailable'
+}
 export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
@@ -90,12 +98,15 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  getLoginLaunchState: () => Promise<LoginLaunchState>
+  setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>
   getAccounts: () => Promise<AccountState>
   addAccount: () => Promise<AccountState>
   activateAccount: (accountId: string) => Promise<AccountState>
   setAccountDisplayName: (accountId: string, displayName: string | null) => Promise<AccountState>
   updateAccountColor: (accountId: string, color: AccountColor) => Promise<AccountState>
+  setAccountNotificationsEnabled: (accountId: string, enabled: boolean) => Promise<AccountState>
   moveAccount: (accountId: string, toIndex: number) => Promise<AccountState>
   retryAccount: () => Promise<void>
   removeAccount: (accountId: string) => Promise<AccountRemovalResult>

@@ -17,6 +17,7 @@ import {
   ACCOUNT_MOVE_CHANNEL,
   ACCOUNT_DISPLAY_NAME_CHANNEL,
   ACCOUNT_COLOR_CHANNEL,
+  ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
@@ -36,7 +37,9 @@ import {
   NOTIFICATION_RECOVER_CHANNEL,
   NOTIFICATION_RECOVERY_CANCEL_CHANNEL,
   NOTIFICATION_RETRY_CHANNEL,
-  ACCOUNT_ACCESS_STATE_CHANNEL
+  ACCOUNT_ACCESS_STATE_CHANNEL,
+  LOGIN_LAUNCH_GET_CHANNEL,
+  LOGIN_LAUNCH_SET_CHANNEL
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
@@ -44,8 +47,10 @@ import {
   isAllowedGoogleConnectionRequest,
   isAllowedNotificationRequest,
   isAllowedSettingsRequest,
-  isTrustedRendererUrl
+  isTrustedRendererUrl,
+  isAllowedLoginLaunchRequest
 } from './security-policy'
+import type { createLoginLaunchController } from './login-launch'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -66,9 +71,32 @@ export interface MainIpcDependencies {
   readonly publishAccountState: (owner: BrowserWindow, state: AccountState) => void
   readonly installAppMenu: () => void
   readonly createWindow: () => void
+  readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
 }
 
 export function registerMainIpc(dependencies: MainIpcDependencies): void {
+  for (const [channel, operation] of [
+    [LOGIN_LAUNCH_GET_CHANNEL, 'get'],
+    [LOGIN_LAUNCH_SET_CHANNEL, 'set']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      const request = {
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        args
+      }
+      if (!isAllowedLoginLaunchRequest(request, operation)) throw new Error('Request rejected')
+      return operation === 'get'
+        ? dependencies.loginLaunch.getState()
+        : dependencies.loginLaunch.setEnabled(args[0] as boolean)
+    })
+  }
   ipcMain.handle(APP_INFO_CHANNEL, (event, ...args: unknown[]): AppInfo => {
     const owner = dependencies.window()
     const ownerAlive = owner !== null && !owner.isDestroyed()
@@ -95,7 +123,15 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
   function accountRequestAllowed(
     event: Electron.IpcMainInvokeEvent,
     operation:
-      'get' | 'add' | 'activate' | 'retry' | 'remove' | 'setDisplayName' | 'setColor' | 'move',
+      | 'get'
+      | 'add'
+      | 'activate'
+      | 'retry'
+      | 'remove'
+      | 'setDisplayName'
+      | 'setColor'
+      | 'setNotificationsEnabled'
+      | 'move',
     args: unknown[]
   ): boolean {
     const owner = dependencies.window()
@@ -115,6 +151,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         operation === 'remove' ||
         operation === 'setDisplayName' ||
         operation === 'setColor' ||
+        operation === 'setNotificationsEnabled' ||
         operation === 'move'
           ? state.accounts.some((account) => account.id === id)
           : operation === 'retry' && state.activeAccountId !== null
@@ -359,6 +396,21 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     if (!owner) throw new Error('Request rejected')
     if (!isAccountColor(color)) throw new Error('Request rejected')
     const state = dependencies.requireAccountStore().setColor(accountId, color)
+    dependencies.publishAccountState(owner, state)
+    return state
+  })
+  ipcMain.handle(ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL, (event, ...args: unknown[]) => {
+    dependencies.requireAccountRemoval().assertIdle()
+    if (!accountRequestAllowed(event, 'setNotificationsEnabled', args)) {
+      throw new Error('Request rejected')
+    }
+    const [accountId, enabled] = args
+    if (typeof accountId !== 'string' || typeof enabled !== 'boolean') {
+      throw new Error('Request rejected')
+    }
+    const owner = dependencies.window()
+    if (!owner) throw new Error('Request rejected')
+    const state = dependencies.requireAccountStore().setNotificationsEnabled(accountId, enabled)
     dependencies.publishAccountState(owner, state)
     return state
   })

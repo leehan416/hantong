@@ -79,6 +79,21 @@ export function isAllowedAppInfoRequest(request: AppInfoRequest): boolean {
   )
 }
 
+export function isAllowedLoginLaunchRequest(
+  request: AppInfoRequest,
+  operation: 'get' | 'set'
+): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl) &&
+    (operation === 'get'
+      ? request.args.length === 0
+      : request.args.length === 1 && typeof request.args[0] === 'boolean')
+  )
+}
+
 export function isAllowedAccountRequest(request: AccountRequest): boolean {
   const common =
     request.ownerAlive &&
@@ -111,6 +126,14 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
       request.args.length === 2 &&
       isAccountId(request.args[0]) &&
       isAccountColor(request.args[1]) &&
+      request.accountExists
+    )
+  }
+  if (request.operation === 'setNotificationsEnabled') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      typeof request.args[1] === 'boolean' &&
       request.accountExists
     )
   }

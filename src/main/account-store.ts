@@ -10,7 +10,8 @@ import {
   removeGmailAccount,
   setGmailAccountColor,
   moveGmailAccount,
-  setGmailAccountDisplayName
+  setGmailAccountDisplayName,
+  setGmailAccountNotificationsEnabled
 } from './account-state'
 
 interface AccountStore {
@@ -20,6 +21,7 @@ interface AccountStore {
   remove: (id: string) => AccountState
   setDisplayName: (id: string, displayName: string | null) => AccountState
   setColor: (id: string, color: AccountColor) => AccountState
+  setNotificationsEnabled: (id: string, enabled: boolean) => AccountState
   recordWebIdentityEmail: (id: string, email: string) => AccountState
   move: (id: string, toIndex: number) => AccountState
 }
@@ -86,6 +88,8 @@ export function createAccountStore(
     remove: (id) => save(removeGmailAccount(state, id)),
     setDisplayName: (id, displayName) => save(setGmailAccountDisplayName(state, id, displayName)),
     setColor: (id, color) => save(setGmailAccountColor(state, id, color)),
+    setNotificationsEnabled: (id, enabled) =>
+      save(setGmailAccountNotificationsEnabled(state, id, enabled)),
     recordWebIdentityEmail: (id, email) => save(recordWebIdentityGmailEmail(state, id, email)),
     move: (id, toIndex) => save(moveGmailAccount(state, id, toIndex))
   }

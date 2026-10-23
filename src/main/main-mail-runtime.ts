@@ -39,6 +39,7 @@ import type { GoogleConnectionFailureCode } from './google-connection'
 import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import type { AuthorizationErrorCode } from './google-authorization'
 import type { GmailMailAlert } from './gmail-mail-alerts'
+import type { NotificationPauseSnapshot } from './notification-pause'
 import { UNREAD_COUNTS_EVENT, NOTIFICATION_CONNECTIONS_EVENT } from '../shared/ipc'
 
 type AccountStore = ReturnType<typeof createAccountStore>
@@ -66,6 +67,8 @@ export interface MainMailRuntimeDependencies {
   readonly recovery: ReturnType<typeof createNotificationRecoveryRuntime>
   readonly locale: () => 'ko' | 'en'
   readonly notify: (alert: GmailMailAlert) => void
+  readonly notificationPause: () => NotificationPauseSnapshot
+  readonly refreshNotificationPause: () => void
   readonly reportOAuthDiagnostic: (
     stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
     code:
@@ -171,7 +174,13 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
   })
   const korean = (): boolean => dependencies.locale() === 'ko'
   mailAlerts = createGmailMailAlerts({
+    notificationPause: dependencies.notificationPause,
     accountExists,
+    notificationsEnabled: (id) =>
+      dependencies
+        .requireAccountStore()
+        .getState()
+        .accounts.find((account) => account.id === id)?.notificationsEnabled !== false,
     korean,
     readUnreadCount: async (accountId) =>
       fetchGmailUnreadCount(await gmailAccessToken(accountId), 'INBOX', {
@@ -233,6 +242,7 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
   powerMonitor.on('resume', () => {
     gmailRelaySync?.resume(allAccountIds())
     notificationConnectionController?.resume(allAccountIds())
+    dependencies.refreshNotificationPause()
   })
   // ponytail: fixed 15-minute fallback poll; derive from relay health if quota or latency matters.
   const fallbackSync = setInterval(() => gmailRelaySync?.syncAll(allAccountIds()), 15 * 60_000)

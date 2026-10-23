@@ -11,7 +11,13 @@ const TEXT = {
     checkUpdates: '업데이트 확인…',
     restartUpdate: '재시작하여 업데이트…',
     checkingUpdates: '업데이트 확인 중…',
-    downloadingUpdate: '업데이트 다운로드 중…'
+    downloadingUpdate: '업데이트 다운로드 중…',
+    pauseNotifications: '알림 잠시 끄기',
+    pausedNotifications: '알림 일시 중지됨',
+    pause30Minutes: '30분 동안 끄기',
+    pause1Hour: '1시간 동안 끄기',
+    pauseUntilTomorrow: '내일 자정까지 끄기',
+    resumeNotifications: '알림 다시 켜기'
   },
   en: {
     settings: 'Settings…',
@@ -22,7 +28,13 @@ const TEXT = {
     checkUpdates: 'Check for Updates…',
     restartUpdate: 'Restart to Update…',
     checkingUpdates: 'Checking for Updates…',
-    downloadingUpdate: 'Downloading Update…'
+    downloadingUpdate: 'Downloading Update…',
+    pauseNotifications: 'Pause notifications',
+    pausedNotifications: 'Paused until',
+    pause30Minutes: 'Pause for 30 minutes',
+    pause1Hour: 'Pause for 1 hour',
+    pauseUntilTomorrow: 'Pause until tomorrow',
+    resumeNotifications: 'Resume notifications'
   }
 } as const
 
@@ -37,6 +49,7 @@ export function buildAppMenuTemplate(
       readonly check: () => void
       readonly restart: () => void
     }
+    readonly notifications?: NotificationPauseMenuState
   }
 ): MenuItemConstructorOptions[] {
   const text = TEXT[locale]
@@ -47,6 +60,9 @@ export function buildAppMenuTemplate(
         { role: 'about' },
         { type: 'separator' },
         { label: text.settings, accelerator: 'CommandOrControl+,', click: actions.openSettings },
+        ...(actions.notifications
+          ? [{ type: 'separator' as const }, pauseMenuItem(locale, actions.notifications)]
+          : []),
         ...(actions.update
           ? [
               { type: 'separator' as const },
@@ -129,12 +145,54 @@ export function buildContextMenuTemplate(
 
 export function buildTrayMenuTemplate(
   locale: 'ko' | 'en',
-  actions: { readonly open: () => void; readonly quit: () => void }
+  actions: {
+    readonly open: () => void
+    readonly quit: () => void
+    readonly notifications?: NotificationPauseMenuState
+  }
 ): MenuItemConstructorOptions[] {
   const text = TEXT[locale]
   return [
     { label: text.open, click: actions.open },
+    ...(actions.notifications ? [pauseMenuItem(locale, actions.notifications)] : []),
     { type: 'separator' },
     { label: text.quit, click: actions.quit }
   ]
+}
+
+interface NotificationPauseMenuState {
+  readonly paused: boolean
+  readonly pausedUntil: number | null
+  readonly pause30: () => void
+  readonly pause60: () => void
+  readonly pauseTomorrow: () => void
+  readonly resume: () => void
+}
+
+function pauseMenuItem(
+  locale: 'ko' | 'en',
+  state: NotificationPauseMenuState
+): MenuItemConstructorOptions {
+  const text = TEXT[locale]
+  const pausedLabel =
+    state.paused && state.pausedUntil !== null
+      ? `${text.pausedNotifications} ${new Intl.DateTimeFormat(locale, {
+          dateStyle: 'short',
+          timeStyle: 'short'
+        }).format(new Date(state.pausedUntil))}`
+      : text.pausedNotifications
+  return {
+    label: text.pauseNotifications,
+    submenu: state.paused
+      ? [
+          { label: pausedLabel, enabled: false },
+          { type: 'separator' },
+          { label: text.resumeNotifications, click: state.resume }
+        ]
+      : [
+          { label: text.pause30Minutes, click: state.pause30 },
+          { label: text.pause1Hour, click: state.pause60 },
+          { label: text.pauseUntilTomorrow, click: state.pauseTomorrow }
+        ]
+  }
 }
