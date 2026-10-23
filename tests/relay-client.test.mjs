@@ -113,6 +113,72 @@ test('SSE parser accepts recognized normalized events across chunk boundaries', 
   )
 })
 
+test('SSE observer distinguishes ready, bytes, heartbeat, normal close and idle timeout', async () => {
+  const seen = []
+  const chunks = [': heartbeat\nevent: ready\ndata: {"resync":true}\n\n'].map((chunk) =>
+    new TextEncoder().encode(chunk)
+  )
+  const client = relay.createRelayClient({
+    baseUrl: 'https://relay.example',
+    fetch: async () => ({
+      status: 200,
+      ok: true,
+      redirected: false,
+      headers: { get: () => 'text/event-stream' },
+      body: {
+        getReader: () => ({
+          read: async () => {
+            const value = chunks.shift()
+            return value ? { done: false, value } : { done: true }
+          },
+          cancel: async () => undefined,
+          releaseLock: () => undefined
+        })
+      }
+    }),
+    now: () => 1000
+  })
+  await client.consumeEvents(
+    'opaque',
+    () => undefined,
+    undefined,
+    (event) => seen.push(event.type)
+  )
+  assert.deepEqual(seen, ['receive', 'heartbeat', 'ready', 'closed'])
+
+  const timed = relay.createRelayClient({
+    baseUrl: 'https://relay.example',
+    fetch: async () => ({
+      status: 200,
+      ok: true,
+      redirected: false,
+      headers: { get: () => 'text/event-stream' },
+      body: {
+        getReader: () => {
+          return {
+            read: () => new Promise(() => {}),
+            cancel: async () => undefined,
+            releaseLock: () => undefined
+          }
+        }
+      }
+    }),
+    now: () => 1000,
+    streamIdleMs: 5
+  })
+  seen.length = 0
+  await assert.rejects(
+    timed.consumeEvents(
+      'opaque',
+      () => undefined,
+      undefined,
+      (event) => seen.push(event.type === 'failure' ? event.code : event.type)
+    ),
+    { code: 'timeout' }
+  )
+  assert.equal(seen.at(-1), 'timeout')
+})
+
 test('SSE stream read failures remain retryable network errors and data buffers stay bounded', async () => {
   const makeClient = (read) =>
     relay.createRelayClient({

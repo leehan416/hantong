@@ -1,5 +1,6 @@
 import { isAccountId } from './account-state'
 import { GmailMetadataFailure } from './gmail-metadata'
+import type { GmailMetadataFailureCode } from './gmail-metadata'
 
 export type GmailWatchRenewalResult = {
   readonly accountId: string
@@ -19,6 +20,7 @@ export class GmailWatchManagerFailure extends Error {
 
 export type GmailWatchManager = {
   connect: (accountId: string, now: number) => Promise<GmailWatchRenewalResult>
+  retry: (accountId: string, now: number) => Promise<GmailWatchRenewalResult>
   runDue: (now: number) => Promise<readonly GmailWatchRenewalResult[]>
   pause: () => void
   resume: (now: number) => Promise<readonly GmailWatchRenewalResult[]>
@@ -33,6 +35,19 @@ export type GmailWatchManagerDependencies = {
     accountId: string,
     signal: AbortSignal
   ) => Promise<{ readonly expiresAt: number }>
+  readonly onDiagnostic?: (event: {
+    readonly accountId: string
+    readonly status: GmailWatchRenewalResult['status']
+    readonly nextAttemptAt: number | null
+    readonly expiresAt?: number
+    readonly code?:
+      | 'unauthorized'
+      | 'forbidden'
+      | 'invalid_response'
+      | 'redirect_refused'
+      | 'unavailable'
+      | 'unknown'
+  }) => void
 }
 
 type Entry = {
@@ -57,6 +72,14 @@ const BLOCKING_FAILURES = new Set([
   'invalid_response',
   'redirect_refused'
 ])
+type BlockingFailureCode = Extract<
+  GmailMetadataFailureCode,
+  'unauthorized' | 'forbidden' | 'invalid_response' | 'redirect_refused'
+>
+
+function isBlockingFailureCode(code: GmailMetadataFailureCode): code is BlockingFailureCode {
+  return BLOCKING_FAILURES.has(code)
+}
 
 function validTime(now: number): boolean {
   return Number.isSafeInteger(now) && now >= 0 && now <= MAX_TIME
@@ -74,6 +97,15 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
   const entries = new Map<string, Entry>()
   let paused = false
   let disposed = false
+  const report = (
+    event: Parameters<NonNullable<GmailWatchManagerDependencies['onDiagnostic']>>[0]
+  ): void => {
+    try {
+      deps.onDiagnostic?.(event)
+    } catch {
+      // Diagnostics cannot change watch renewal behavior.
+    }
+  }
 
   function assertAvailable(): void {
     if (disposed) throw new GmailWatchManagerFailure('disposed')
@@ -165,7 +197,7 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
           !Number.isSafeInteger(lease.expiresAt) ||
           lease.expiresAt <= now
         ) {
-          return scheduleBlocked(accountId, entry, flight)
+          return scheduleBlocked(accountId, entry, flight, 'invalid_response')
         }
         const delay = Math.min(86_400_000, Math.max(1, Math.floor((lease.expiresAt - now) / 2)))
         const nextAttemptAt = now + delay
@@ -174,6 +206,7 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
         entry.nextAttemptAt = nextAttemptAt
         entry.flight = null
         entry.result = outcome(accountId, 'renewed', nextAttemptAt)
+        report({ accountId, status: 'renewed', nextAttemptAt, expiresAt: lease.expiresAt })
         return entry.result
       } catch (error) {
         if (!current(entry, flight)) return cancelled(accountId)
@@ -190,8 +223,8 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
           entry.flight = null
           return outcome(accountId, 'cancelled', null)
         }
-        if (error instanceof GmailMetadataFailure && BLOCKING_FAILURES.has(error.code)) {
-          return scheduleBlocked(accountId, entry, flight)
+        if (error instanceof GmailMetadataFailure && isBlockingFailureCode(error.code)) {
+          return scheduleBlocked(accountId, entry, flight, error.code)
         }
         return scheduleRetry(accountId, entry, flight, now)
       }
@@ -213,19 +246,22 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
     entry.nextAttemptAt = nextAttemptAt
     entry.flight = null
     entry.result = outcome(accountId, 'retry', nextAttemptAt)
+    report({ accountId, status: 'retry', nextAttemptAt, code: 'unavailable' })
     return entry.result
   }
 
   function scheduleBlocked(
     accountId: string,
     entry: Entry,
-    flight: Flight
+    flight: Flight,
+    code: BlockingFailureCode
   ): GmailWatchRenewalResult {
     if (!current(entry, flight)) return cancelled(accountId)
     entry.blocked = true
     entry.nextAttemptAt = Number.MAX_SAFE_INTEGER
     entry.flight = null
     entry.result = outcome(accountId, 'blocked', null)
+    report({ accountId, status: 'blocked', nextAttemptAt: null, code })
     return entry.result
   }
 
@@ -251,6 +287,24 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
     if (paused) {
       entry.nextAttemptAt = Math.min(entry.nextAttemptAt, now)
       entry.result = outcome(accountId, 'deferred', entry.nextAttemptAt)
+      return entry.result
+    }
+    return begin(accountId, entry, now)
+  }
+
+  async function retry(accountId: string, now: number): Promise<GmailWatchRenewalResult> {
+    assertAvailable()
+    assertAccount(accountId)
+    assertTime(now)
+    const entry = entries.get(accountId)
+    if (!entry) return connect(accountId, now)
+    if (entry.flight) return entry.flight.promise
+    if (!exists(accountId)) throw new GmailWatchManagerFailure('invalid_account')
+    entry.blocked = false
+    entry.failures = 0
+    entry.nextAttemptAt = now
+    if (paused) {
+      entry.result = outcome(accountId, 'deferred', now)
       return entry.result
     }
     return begin(accountId, entry, now)
@@ -312,5 +366,5 @@ export function createGmailWatchManager(deps: GmailWatchManagerDependencies): Gm
     paused = true
   }
 
-  return { connect, runDue, pause, resume, disconnect, getNextDueAt, dispose }
+  return { connect, retry, runDue, pause, resume, disconnect, getNextDueAt, dispose }
 }

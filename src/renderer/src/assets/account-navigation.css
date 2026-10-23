@@ -1,0 +1,491 @@
+#root {
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+}
+
+.app-shell {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.account-layout {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+}
+
+.account-layout-top,
+.account-layout-bottom {
+  grid-template-rows:
+    calc(var(--account-chrome-height, 72px) - 32px) var(--account-status-strip-height, 32px)
+    minmax(0, 1fr);
+}
+
+.account-layout-bottom {
+  grid-template-rows:
+    minmax(0, 1fr) var(--account-status-strip-height, 32px)
+    calc(var(--account-chrome-height, 72px) - 32px);
+}
+
+[data-status-strip-visible='false'] {
+  --account-status-strip-height: 0px;
+}
+
+.account-layout-left,
+.account-layout-right {
+  grid-template-columns: var(--account-sidebar-width, 248px) minmax(0, 1fr);
+}
+
+.account-layout-right {
+  grid-template-columns: minmax(0, 1fr) var(--account-sidebar-width, 248px);
+}
+
+.account-layout-top .account-chrome,
+.account-layout-bottom .account-chrome {
+  grid-column: 1;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  pointer-events: auto;
+}
+
+.account-layout-top .account-chrome {
+  grid-row: 1;
+}
+
+.account-layout-bottom .account-chrome {
+  grid-row: 3;
+}
+
+.account-layout-left .account-chrome,
+.account-layout-right .account-chrome {
+  grid-row: 1 / -1;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  padding: 12px 10px;
+  pointer-events: auto;
+}
+
+.account-layout-left .account-chrome {
+  grid-column: 1;
+}
+
+.account-layout-right .account-chrome {
+  grid-column: 2;
+}
+
+.account-chrome {
+  min-width: 0;
+  background: var(--color-surface);
+}
+
+[data-account-color='blue'] {
+  --account-color: #3b78d8;
+}
+[data-account-color='purple'] {
+  --account-color: #8b5cf6;
+}
+[data-account-color='green'] {
+  --account-color: #16a36a;
+}
+[data-account-color='orange'] {
+  --account-color: #e88a24;
+}
+[data-account-color='gray'] {
+  --account-color: #7b8794;
+}
+
+.account-avatar {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--account-color);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.unread-badge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  border-radius: 9px;
+  padding: 0 5px;
+  background: var(--color-accent-strong);
+  color: var(--color-accent-contrast);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Zero-specificity reset so each control's own class wins. */
+:where(.account-chrome button) {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.account-chrome button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.account-chrome button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.account-chrome svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+/* Top / bottom: browser-style tab strip. */
+.account-layout-top .account-chrome,
+.account-layout-bottom .account-chrome {
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+
+.account-layout-top .account-chrome {
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.account-layout-bottom .account-chrome {
+  border-top: 1px solid var(--color-rule);
+}
+
+.account-tabs {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
+}
+
+.account-tab {
+  display: flex;
+  min-width: 120px;
+  max-width: 280px;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 8px;
+  border-right: 1px solid var(--color-rule);
+  padding: 0 14px;
+  color: var(--color-muted);
+  font-size: 13px;
+  text-align: left;
+}
+
+.account-tab:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.account-tab[aria-current='true'],
+.account-tab[aria-current='true']:hover {
+  background: var(--color-background);
+  color: var(--color-text);
+  box-shadow: inset 0 2px 0 var(--account-color);
+}
+
+.account-layout-bottom .account-tab[aria-current='true'] {
+  box-shadow: inset 0 -2px 0 var(--account-color);
+}
+
+/* Drag reorder: the dragged item fades, the target shows where it will land. */
+[data-dragging] {
+  opacity: 0.4;
+}
+
+.account-tab[data-drop='before'] {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.account-tab[data-drop='after'] {
+  box-shadow: inset -2px 0 0 var(--color-accent);
+}
+
+.sidebar-account-row[data-drop='before'] {
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+
+.sidebar-account-row[data-drop='after'] {
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+.account-tab-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-tab-add {
+  display: grid;
+  width: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  color: var(--color-muted);
+}
+
+.account-tab-add:hover:not(:disabled),
+.icon-action-button:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.account-tab-add svg {
+  width: 18px;
+  height: 18px;
+}
+
+.account-layout-top .settings-trigger,
+.account-layout-bottom .settings-trigger {
+  align-self: center;
+  margin: 0 6px;
+}
+
+/* Left / right: plain one-line rows; the rail shows avatars only. */
+.account-layout-left .account-chrome,
+.account-layout-right .account-chrome {
+  padding: 10px 8px;
+}
+
+.account-layout-left .account-chrome {
+  border-right: 1px solid var(--color-rule);
+}
+
+.account-layout-right .account-chrome {
+  border-left: 1px solid var(--color-rule);
+}
+
+.sidebar-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.sidebar-account-list {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.sidebar-account-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--color-muted);
+  font-size: 14px;
+  text-align: left;
+}
+
+.sidebar-account-row:hover:not(:disabled) {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.sidebar-account-row[aria-current='true'] {
+  background: var(--color-selected);
+  color: var(--color-text);
+}
+
+.sidebar-account-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-account-add {
+  margin-top: 4px;
+}
+
+.sidebar-account-list.is-collapsed .sidebar-account-row {
+  min-height: 44px;
+  padding: 6px 8px;
+}
+
+[data-sidebar-collapsed='true'] .account-layout-left .account-chrome,
+[data-sidebar-collapsed='true'] .account-layout-right .account-chrome {
+  padding-right: 4px;
+  padding-left: 4px;
+}
+
+.sidebar-account-list.is-collapsed .sidebar-account-add svg {
+  width: 32px;
+  height: 20px;
+}
+
+.sidebar-unread-dot {
+  position: absolute;
+  top: 5px;
+  left: 34px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-accent-strong);
+}
+
+.sidebar-footer {
+  display: flex;
+  gap: 2px;
+  padding-top: 8px;
+}
+
+[data-sidebar-collapsed='true'] .sidebar-footer {
+  flex-direction: column;
+}
+
+.sidebar-action[data-position='right'] svg {
+  transform: scaleX(-1);
+}
+
+.icon-action-button {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  padding: 0;
+  color: var(--color-muted);
+}
+
+[data-sidebar-collapsed='true'] .icon-action-button {
+  width: 100%;
+  justify-items: start;
+  padding-left: 15px;
+}
+
+.icon-action-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.status-strip {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  overflow: hidden;
+  padding: 0 12px;
+  color: var(--color-muted);
+  font-size: 11px;
+  pointer-events: auto;
+}
+
+.account-layout-top .status-strip,
+.account-layout-bottom .status-strip {
+  grid-column: 1;
+  position: relative;
+  height: 32px;
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-background);
+}
+
+.account-layout-top .status-strip {
+  grid-row: 2;
+}
+
+.account-layout-bottom .status-strip {
+  grid-row: 2;
+}
+
+.account-layout-left .status-strip,
+.account-layout-right .status-strip {
+  position: fixed;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: var(--account-sidebar-width);
+  height: 32px;
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-background);
+}
+
+.account-layout-right .status-strip {
+  right: var(--account-sidebar-width);
+  left: 0;
+}
+
+[data-sidebar-collapsed='true'] .account-layout-left .status-strip {
+  left: var(--account-sidebar-width);
+}
+
+[data-sidebar-collapsed='true'] .account-layout-right .status-strip {
+  right: var(--account-sidebar-width);
+}
+
+.status-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.retry-button {
+  min-height: 24px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.retry-button:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+/* Settings: Notion-style modal with a section list on the left. */

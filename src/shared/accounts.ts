@@ -13,6 +13,7 @@ export interface GmailAccount {
   email?: string | null
   displayName?: string | null
   color?: AccountColor
+  notificationsEnabled?: boolean
 }
 
 export interface AccountState {

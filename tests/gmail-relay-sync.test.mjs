@@ -77,22 +77,27 @@ test('hints during an in-flight sync coalesce into exactly one follow-up pass', 
 
 test('sync results reach onChanges; failures and null results do not', async () => {
   const seen = []
+  const outcomes = []
   const results = [changes, null]
   const relay = createGmailRelaySync(
     base({
       sync: async () => {
-        if (!results.length) throw new Error('unavailable')
+        if (!results.length) throw new Error('SECRET provider payload')
         return results.shift()
       },
-      onChanges: (id, result) => seen.push([id, result])
+      onChanges: (id, result) => seen.push([id, result]),
+      onDiagnostic: (event) => outcomes.push(event.type)
     })
   )
   for (let i = 0; i < 3; i += 1) {
     relay.onSignal(account, { type: 'mailbox_changed', historyId: '20' })
     await turn()
     await turn()
+    await turn()
   }
   assert.deepEqual(seen, [[account, changes]])
+  assert.deepEqual(outcomes, ['sync.success', 'sync.null', 'sync.failure'])
+  assert.equal(JSON.stringify(outcomes).includes('SECRET'), false)
 })
 
 test('disconnect drops the watch, resets the cursor and discards a late sync result', async () => {

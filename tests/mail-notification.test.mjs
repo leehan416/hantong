@@ -16,6 +16,9 @@ test('mail notification options carry no icon (macOS shows it as a right-side im
 })
 
 test('mail notifications are built from the alert alone', async () => {
-  const source = await readFile(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  const source = await readFile(
+    new URL('../src/main/native-mail-notifications.ts', import.meta.url),
+    'utf8'
+  )
   assert.match(source, /new Notification\(buildMailNotificationOptions\(alert\)\)/)
 })

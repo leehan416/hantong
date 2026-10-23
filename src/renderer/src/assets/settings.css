@@ -1,0 +1,314 @@
+.settings-panel {
+  position: fixed;
+  width: min(820px, calc(100vw - 48px));
+  max-width: none;
+  height: min(600px, calc(100dvh - 48px));
+  max-height: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  padding: 0;
+  background: var(--color-background);
+  color: var(--color-text);
+  box-shadow:
+    0 0 0 1px var(--color-rule),
+    0 16px 48px rgb(0 0 0 / 24%);
+}
+
+.settings-panel[open] {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+}
+
+.settings-panel::backdrop {
+  background: rgb(0 0 0 / 40%);
+}
+
+.settings-background-snapshot {
+  position: fixed;
+  z-index: 2;
+  display: block;
+  max-width: none;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.settings-navigation {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding: 16px 8px;
+  background: var(--color-surface);
+}
+
+.settings-navigation h1 {
+  margin: 0 0 6px;
+  padding: 0 10px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-navigation-item {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-navigation-item:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.settings-navigation-item[aria-selected='true'] {
+  background: var(--color-selected);
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.settings-content {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px 40px 40px;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--color-rule);
+  margin-bottom: 4px;
+  padding-bottom: 12px;
+}
+
+.settings-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings-close {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.settings-group-title {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  margin: 28px 0 4px;
+  border-bottom: 1px solid var(--color-rule);
+  padding-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-group-title small {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-tab-panel > section:first-of-type .settings-group-title {
+  margin-top: 12px;
+}
+
+.settings-button-danger {
+  color: var(--color-danger);
+}
+
+.settings-row {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.settings-row-label {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.settings-row-label small {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.settings-select,
+.settings-input {
+  min-height: 30px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.settings-select {
+  width: 200px;
+  text-overflow: ellipsis;
+  appearance: none;
+  cursor: pointer;
+}
+
+.settings-select:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.settings-input {
+  width: 240px;
+}
+
+.settings-button,
+.settings-add-account {
+  min-height: 28px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-button:hover:not(:disabled),
+.settings-add-account:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.settings-panel button:disabled,
+.settings-panel select:disabled,
+.settings-panel input:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.settings-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--color-rule);
+  appearance: none;
+  cursor: pointer;
+}
+
+.settings-switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  content: '';
+}
+
+.settings-switch:checked {
+  background: var(--color-accent-strong);
+}
+
+.settings-switch:checked::after {
+  left: 16px;
+}
+
+.color-swatches {
+  display: flex;
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--account-color);
+  cursor: pointer;
+}
+
+.color-swatch[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 2px var(--color-background),
+    0 0 0 4px var(--account-color);
+}
+
+.settings-add-account {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+  border-style: dashed;
+  border-radius: 10px;
+  padding: 0 16px;
+  color: var(--color-muted);
+}
+
+.settings-empty-accounts {
+  margin: 16px 0 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.settings-error {
+  margin: 12px 0 0;
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}

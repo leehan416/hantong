@@ -28,6 +28,12 @@ interface GoogleConnectionRequest extends Omit<AppInfoRequest, 'args'> {
   accountExists: boolean
 }
 
+interface NotificationRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: unknown
+  args: unknown[]
+  accountExists: boolean
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)
@@ -73,6 +79,21 @@ export function isAllowedAppInfoRequest(request: AppInfoRequest): boolean {
   )
 }
 
+export function isAllowedLoginLaunchRequest(
+  request: AppInfoRequest,
+  operation: 'get' | 'set'
+): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl) &&
+    (operation === 'get'
+      ? request.args.length === 0
+      : request.args.length === 1 && typeof request.args[0] === 'boolean')
+  )
+}
+
 export function isAllowedAccountRequest(request: AccountRequest): boolean {
   const common =
     request.ownerAlive &&
@@ -108,6 +129,14 @@ export function isAllowedAccountRequest(request: AccountRequest): boolean {
       request.accountExists
     )
   }
+  if (request.operation === 'setNotificationsEnabled') {
+    return (
+      request.args.length === 2 &&
+      isAccountId(request.args[0]) &&
+      typeof request.args[1] === 'boolean' &&
+      request.accountExists
+    )
+  }
   return (
     (request.operation === 'activate' || request.operation === 'remove') &&
     request.args.length === 1 &&
@@ -127,6 +156,23 @@ export function isAllowedGoogleConnectionRequest(request: GoogleConnectionReques
     ['get', 'connect', 'cancel', 'disconnect'].includes(request.operation) &&
     request.args.length === 1 &&
     isAccountId(request.args[0])
+  )
+}
+
+export function isAllowedNotificationRequest(request: NotificationRequest): boolean {
+  const common =
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  if (!common) return false
+  if (request.operation === 'get') return request.args.length === 0
+  return (
+    typeof request.operation === 'string' &&
+    ['recover', 'cancel', 'retry'].includes(request.operation) &&
+    request.args.length === 1 &&
+    isAccountId(request.args[0]) &&
+    request.accountExists
   )
 }
 

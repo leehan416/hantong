@@ -8,7 +8,9 @@ const {
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
   isAllowedGoogleConnectionRequest,
+  isAllowedNotificationRequest,
   isAllowedSettingsRequest,
+  isAllowedLoginLaunchRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
 const policy = {
@@ -16,6 +18,7 @@ const policy = {
   isAllowedAppInfoRequest,
   isAllowedAccountRequest,
   isAllowedGoogleConnectionRequest,
+  isAllowedNotificationRequest,
   isTrustedRendererUrl
 }
 
@@ -35,6 +38,26 @@ test('only the exact local renderer document and its hash are trusted', () => {
   ]) {
     assert.equal(policy.isTrustedRendererUrl(url, rendererUrl), false, url)
   }
+})
+
+test('login launch IPC requires the owner main frame and exact boolean argument', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: []
+  }
+  assert.equal(isAllowedLoginLaunchRequest(base, 'get'), true)
+  assert.equal(isAllowedLoginLaunchRequest({ ...base, args: [true] }, 'get'), false)
+  assert.equal(isAllowedLoginLaunchRequest({ ...base, args: [false] }, 'set'), true)
+  for (const args of [[], [1], ['true'], [true, false]])
+    assert.equal(isAllowedLoginLaunchRequest({ ...base, args }, 'set'), false)
+  assert.equal(
+    isAllowedLoginLaunchRequest({ ...base, senderMatches: false, args: [true] }, 'set'),
+    false
+  )
 })
 
 test('development trust is limited to the exact configured document', () => {
@@ -158,6 +181,14 @@ test('account IPC validates operation arguments and requires a stored account fo
     }),
     true
   )
+  assert.equal(
+    policy.isAllowedAccountRequest({
+      ...base,
+      operation: 'setNotificationsEnabled',
+      args: [base.args[0], false]
+    }),
+    true
+  )
   for (const patch of [
     { operation: 'setDefault', args: [base.args[0]] },
     { operation: 'setColor', args: [base.args[0], 'red'] },
@@ -165,6 +196,9 @@ test('account IPC validates operation arguments and requires a stored account fo
     { operation: 'setColor', args: [base.args[0], 'green', 'extra'] },
     { operation: 'setColor', args: ['../other-session', 'green'] },
     { operation: 'setColor', args: [base.args[0], 'green'], accountExists: false },
+    { operation: 'setNotificationsEnabled', args: [base.args[0], true, 'extra'] },
+    { operation: 'setNotificationsEnabled', args: [base.args[0], 'false'] },
+    { operation: 'setNotificationsEnabled', args: [base.args[0], false], accountExists: false },
     { operation: 'move', args: [base.args[0], '1'] },
     { operation: 'move', args: [base.args[0], 0.5] },
     { operation: 'move', args: [base.args[0]] },
@@ -216,6 +250,31 @@ test('Google connection IPC accepts only known operations for the live owner mai
   for (const operation of ['get', 'connect', 'cancel', 'disconnect']) {
     assert.equal(policy.isAllowedGoogleConnectionRequest({ ...valid, operation }), true)
   }
+})
+
+test('notification IPC validates empty snapshot queries and existing account action UUIDs', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    operation: 'recover',
+    args: ['11111111-1111-4111-8111-111111111111'],
+    accountExists: true
+  }
+  assert.equal(policy.isAllowedNotificationRequest(base), true)
+  assert.equal(policy.isAllowedNotificationRequest({ ...base, operation: 'get', args: [] }), true)
+  for (const patch of [
+    { operation: 'unknown' },
+    { args: [] },
+    { args: ['not-an-id'] },
+    { accountExists: false },
+    { senderMatches: false },
+    { senderUrl: 'https://mail.google.com/' },
+    { operation: 'get', args: ['11111111-1111-4111-8111-111111111111'] }
+  ])
+    assert.equal(policy.isAllowedNotificationRequest({ ...base, ...patch }), false)
 })
 
 test('settings IPC allows get with no args and update with one valid patch from the owner frame', () => {

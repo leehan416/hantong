@@ -5,6 +5,7 @@ import {
   ACCOUNT_MOVE_CHANNEL,
   ACCOUNT_DISPLAY_NAME_CHANNEL,
   ACCOUNT_COLOR_CHANNEL,
+  ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL,
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_RETRY_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
@@ -17,6 +18,8 @@ import {
   SETTINGS_EVENT,
   SETTINGS_PANEL_CHANNEL,
   SETTINGS_OPEN_EVENT,
+  LOGIN_LAUNCH_GET_CHANNEL,
+  LOGIN_LAUNCH_SET_CHANNEL,
   ACCOUNT_VIEW_STATUS_EVENT,
   ACCOUNT_ACCESS_STATE_CHANNEL,
   ACCOUNT_ACCESS_STATE_EVENT,
@@ -25,9 +28,15 @@ import {
   GOOGLE_CONNECTION_CONNECT_CHANNEL,
   GOOGLE_CONNECTION_DISCONNECT_CHANNEL,
   GOOGLE_CONNECTION_STATUS_CHANNEL,
+  NOTIFICATION_CONNECTIONS_CHANNEL,
+  NOTIFICATION_CONNECTIONS_EVENT,
+  NOTIFICATION_RECOVER_CHANNEL,
+  NOTIFICATION_RECOVERY_CANCEL_CHANNEL,
+  NOTIFICATION_RETRY_CHANNEL,
   type AccountViewStatus,
   type UnreadCounts,
   type AccountAccessState,
+  type NotificationConnectionStates,
   type HantongApi
 } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
@@ -37,6 +46,8 @@ if (!process.contextIsolated) throw new Error('Context isolation is required')
 
 // Expose operations rather than a generic channel sender or Electron objects.
 const api: HantongApi = Object.freeze({
+  getLoginLaunchState: () => ipcRenderer.invoke(LOGIN_LAUNCH_GET_CHANNEL),
+  setLoginLaunchEnabled: (enabled) => ipcRenderer.invoke(LOGIN_LAUNCH_SET_CHANNEL, enabled),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),
   getGoogleConnectionStatus: (accountId) =>
     ipcRenderer.invoke(GOOGLE_CONNECTION_STATUS_CHANNEL, accountId),
@@ -54,6 +65,8 @@ const api: HantongApi = Object.freeze({
     ipcRenderer.invoke(ACCOUNT_DISPLAY_NAME_CHANNEL, accountId, displayName),
   updateAccountColor: (accountId, color) =>
     ipcRenderer.invoke(ACCOUNT_COLOR_CHANNEL, accountId, color),
+  setAccountNotificationsEnabled: (accountId, enabled) =>
+    ipcRenderer.invoke(ACCOUNT_NOTIFICATIONS_ENABLED_CHANNEL, accountId, enabled),
   moveAccount: (accountId, toIndex) => ipcRenderer.invoke(ACCOUNT_MOVE_CHANNEL, accountId, toIndex),
   retryAccount: () => ipcRenderer.invoke(ACCOUNT_RETRY_CHANNEL),
   onAccountViewStatus: (listener) => {
@@ -91,7 +104,18 @@ const api: HantongApi = Object.freeze({
     const handler = (_event: IpcRendererEvent, state: AccountAccessState): void => listener(state)
     ipcRenderer.on(ACCOUNT_ACCESS_STATE_EVENT, handler)
     return () => ipcRenderer.removeListener(ACCOUNT_ACCESS_STATE_EVENT, handler)
-  }
+  },
+  getNotificationConnections: () => ipcRenderer.invoke(NOTIFICATION_CONNECTIONS_CHANNEL),
+  onNotificationConnections: (listener) => {
+    const handler = (_event: IpcRendererEvent, states: NotificationConnectionStates): void =>
+      listener(states)
+    ipcRenderer.on(NOTIFICATION_CONNECTIONS_EVENT, handler)
+    return () => ipcRenderer.removeListener(NOTIFICATION_CONNECTIONS_EVENT, handler)
+  },
+  recoverNotifications: (accountId) => ipcRenderer.invoke(NOTIFICATION_RECOVER_CHANNEL, accountId),
+  cancelNotificationRecovery: (accountId) =>
+    ipcRenderer.invoke(NOTIFICATION_RECOVERY_CANCEL_CHANNEL, accountId),
+  retryNotifications: (accountId) => ipcRenderer.invoke(NOTIFICATION_RETRY_CHANNEL, accountId)
 })
 
 if (process.isMainFrame) contextBridge.exposeInMainWorld('api', api)
