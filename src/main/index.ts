@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   clipboard,
   Menu,
+  dialog,
   nativeImage,
   Tray,
   nativeTheme,
@@ -40,6 +41,11 @@ import type { AuthorizationErrorCode } from './google-authorization'
 import { is } from '@electron-toolkit/utils'
 import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
+import { createNotificationPauseStore } from './notification-pause-store'
+import {
+  createNotificationPauseController,
+  createNotificationPauseMenuActions
+} from './notification-pause'
 
 app.setName('Hantong')
 
@@ -58,6 +64,7 @@ const rendererUrl =
 let mainWindow: BrowserWindow | null = null
 let accountStore: ReturnType<typeof createAccountStore> | null = null
 let settingsStore: ReturnType<typeof createSettingsStore> | null = null
+let notificationPauseController: ReturnType<typeof createNotificationPauseController> | null = null
 let windowStateStore: ReturnType<typeof createWindowStateStore> | null = null
 let tray: Tray | null = null
 let accountViewManager: ReturnType<typeof createAccountViewManager> | null = null
@@ -95,6 +102,7 @@ function prepareApplicationShutdown(): Promise<void> {
   if (fallbackSync) clearInterval(fallbackSync)
   gmailRelaySync?.dispose()
   notificationConnectionController?.dispose()
+  notificationPauseController?.dispose()
   notificationRecoveryRuntime.resolveAll()
   const cleanup = Promise.all([
     googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
@@ -196,10 +204,46 @@ function showMainWindow(): void {
 // Rebuilt whenever the language changes, so every Hantong-owned label follows the setting.
 function installAppMenu(): void {
   const locale = uiLocale()
+  const pauseController = notificationPauseController
+  const pauseSnapshot = pauseController?.snapshot()
+  const pauseActions = pauseController
+    ? createNotificationPauseMenuActions(
+        {
+          pauseFor: (choice) => {
+            if (appQuitting) return pauseController.snapshot()
+            return pauseController.pauseFor(choice)
+          },
+          resumeNow: () => {
+            if (appQuitting) return pauseController.snapshot()
+            return pauseController.resumeNow()
+          }
+        },
+        () => {
+          if (appQuitting) return
+          const message =
+            uiLocale() === 'ko'
+              ? '알림 일시 중지 설정을 저장하지 못했습니다.'
+              : 'Could not save notification pause settings.'
+          const options = {
+            type: 'error' as const,
+            title: uiLocale() === 'ko' ? '알림 설정 오류' : 'Notification settings error',
+            message
+          }
+          const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+          const showError = parent
+            ? dialog.showMessageBox(parent, options)
+            : dialog.showMessageBox(options)
+          void showError.catch(() => console.error('Unable to show notification pause error'))
+        }
+      )
+    : null
+  const notifications =
+    pauseSnapshot && pauseActions ? { ...pauseSnapshot, ...pauseActions } : undefined
   Menu.setApplicationMenu(
     Menu.buildFromTemplate(
       buildAppMenuTemplate(locale, {
         openSettings,
+        ...(notifications ? { notifications } : {}),
         ...(updateRuntime
           ? {
               update: {
@@ -220,7 +264,11 @@ function installAppMenu(): void {
   }
   tray.setContextMenu(
     Menu.buildFromTemplate(
-      buildTrayMenuTemplate(locale, { open: showMainWindow, quit: () => app.quit() })
+      buildTrayMenuTemplate(locale, {
+        open: showMainWindow,
+        quit: () => app.quit(),
+        ...(notifications ? { notifications } : {})
+      })
     )
   )
 }
@@ -339,6 +387,12 @@ void app
     })
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
+    const pauseController = createNotificationPauseController({
+      store: createNotificationPauseStore(app.getPath('userData')),
+      now: () => Date.now(),
+      onChange: () => installAppMenu()
+    })
+    notificationPauseController = pauseController
     windowStateStore = createWindowStateStore(app.getPath('userData'))
     nativeTheme.themeSource = settingsStore.get().theme
     installAppMenu()
@@ -354,6 +408,8 @@ void app
       recovery: notificationRecoveryRuntime,
       locale: uiLocale,
       notify: showMailNotification,
+      notificationPause: () => pauseController.snapshot(),
+      refreshNotificationPause: () => pauseController.refresh(),
       reportOAuthDiagnostic,
       bundledEnvironment: __HANTONG_BUNDLED_ENV__
     })

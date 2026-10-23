@@ -370,7 +370,7 @@ test('pre-aborted signal and invalid timeout reject before fetch', async () => {
   assert.equal(calls, 0)
 })
 
-test('message summary requests only From/Subject metadata and label ids', async () => {
+test('message summary requests From/Subject and internalDate for pause backlog filtering', async () => {
   let requestedUrl
   const summary = await fetchGmailMessageSummary(
     'token-value',
@@ -378,6 +378,7 @@ test('message summary requests only From/Subject metadata and label ids', async 
     options(async (url) => {
       requestedUrl = url
       return response(200, {
+        internalDate: '1800000000123',
         labelIds: ['UNREAD', 'INBOX'],
         payload: {
           headers: [
@@ -392,10 +393,15 @@ test('message summary requests only From/Subject metadata and label ids', async 
   assert.equal(parsed.pathname, '/gmail/v1/users/me/messages/msg_1-a')
   assert.equal(parsed.searchParams.get('format'), 'metadata')
   assert.deepEqual(parsed.searchParams.getAll('metadataHeaders'), ['From', 'Subject'])
-  assert.equal(parsed.searchParams.get('fields'), 'labelIds,payload/headers')
+  assert.equal(parsed.searchParams.get('fields'), 'internalDate,labelIds,payload/headers')
   assert.deepEqual(
     { ...summary },
-    { from: 'Ann <ann@example.com>', subject: 'Hello', unreadInInbox: true }
+    {
+      from: 'Ann <ann@example.com>',
+      subject: 'Hello',
+      unreadInInbox: true,
+      receivedAt: 1800000000123
+    }
   )
 })
 
@@ -403,9 +409,9 @@ test('message summary marks read or archived mail and rejects unsafe ids or head
   const read = await fetchGmailMessageSummary(
     'token-value',
     'm1',
-    options(async () => response(200, { labelIds: ['INBOX'] }))
+    options(async () => response(200, { internalDate: '0', labelIds: ['INBOX'] }))
   )
-  assert.deepEqual({ ...read }, { from: '', subject: '', unreadInInbox: false })
+  assert.deepEqual({ ...read }, { from: '', subject: '', unreadInInbox: false, receivedAt: 0 })
   let fetched = false
   await assert.rejects(
     fetchGmailMessageSummary(
@@ -418,6 +424,16 @@ test('message summary marks read or archived mail and rejects unsafe ids or head
     ),
     { code: 'invalid_response' }
   )
+  for (const internalDate of [undefined, -1, '1.5', '1e3', 'NaN', '9007199254740992']) {
+    await assert.rejects(
+      fetchGmailMessageSummary(
+        'token-value',
+        'm1',
+        options(async () => response(200, { internalDate, labelIds: ['INBOX'] }))
+      ),
+      { code: 'invalid_response' }
+    )
+  }
   assert.equal(fetched, false)
   await assert.rejects(
     fetchGmailMessageSummary(

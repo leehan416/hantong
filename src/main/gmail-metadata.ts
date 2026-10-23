@@ -36,6 +36,7 @@ export interface GmailMessageSummary {
   readonly from: string
   readonly subject: string
   readonly unreadInInbox: boolean
+  readonly receivedAt: number
 }
 
 export interface GmailHistoryPage {
@@ -342,9 +343,16 @@ export async function fetchGmailMessageSummary(
   url.searchParams.set('format', 'metadata')
   url.searchParams.append('metadataHeaders', 'From')
   url.searchParams.append('metadataHeaders', 'Subject')
-  url.searchParams.set('fields', 'labelIds,payload/headers')
+  url.searchParams.set('fields', 'internalDate,labelIds,payload/headers')
   const payload = await requestJson(url.toString(), accessToken, options)
   if (!isRecord(payload)) throw new GmailMetadataFailure('invalid_response')
+  if (typeof payload.internalDate !== 'string' || !/^\d+$/.test(payload.internalDate)) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
+  const receivedAt = Number(payload.internalDate)
+  if (!Number.isSafeInteger(receivedAt) || receivedAt < 0 || receivedAt > 8_640_000_000_000_000) {
+    throw new GmailMetadataFailure('invalid_response')
+  }
   const labelIds = payload.labelIds ?? []
   if (!Array.isArray(labelIds) || !labelIds.every((label) => typeof label === 'string')) {
     throw new GmailMetadataFailure('invalid_response')
@@ -363,6 +371,7 @@ export async function fetchGmailMessageSummary(
   return {
     from: header('from'),
     subject: header('subject'),
-    unreadInInbox: labelIds.includes('INBOX') && labelIds.includes('UNREAD')
+    unreadInInbox: labelIds.includes('INBOX') && labelIds.includes('UNREAD'),
+    receivedAt
   }
 }
