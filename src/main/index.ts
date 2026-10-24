@@ -87,7 +87,6 @@ let mainDiagnostics: ReturnType<typeof createMainDiagnostics> | null = null
 
 const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   window: () => mainWindow,
-  googleRuntime: () => googleConnectionRuntime,
   views: () => accountViewManager,
   accessController: () => accountAccessController,
   notificationController: () => notificationConnectionController,

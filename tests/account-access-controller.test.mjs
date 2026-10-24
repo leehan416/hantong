@@ -191,29 +191,72 @@ test('late OAuth completion after cancellation cannot restore mail access', asyn
   f.controller.dispose()
 })
 
-test('cancellation before identity readiness prevents the queued automatic launch', async () => {
-  let releaseIdentity
+test('cancellation before the stored grant check prevents the queued automatic launch', async () => {
+  let releaseStatus
   let launches = 0
-  const f = fixture()
-  f.setIdentity(
-    () =>
-      new Promise((resolve) => {
-        releaseIdentity = resolve
-      })
-  )
+  const f = fixture({
+    connections: {
+      getStatus: () =>
+        new Promise((resolve) => {
+          releaseStatus = resolve
+        }),
+      getAccessToken: async () => 'opaque-test-token'
+    }
+  })
   f.setConnect(async () => {
     launches += 1
     return { status: 'connected' }
   })
   f.controller.onViewReady(accountId)
   await f.controller.cancel(accountId)
-  releaseIdentity({ accountExists: true, emailAddress: 'user@example.com' })
+  releaseStatus({ status: 'disconnected' })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(launches, 0)
   assert.equal(
     f.grants.some((grant) => grant[1] === true),
     false
   )
+  f.controller.dispose()
+})
+
+test('unreadable Gmail web identity still launches OAuth but keeps mail locked', async () => {
+  let launches = 0
+  const timers = []
+  const f = fixture({
+    setTimeout: (callback) => {
+      timers.push(callback)
+      return timers.length
+    },
+    clearTimeout: () => undefined
+  })
+  f.setIdentity({ accountExists: true, emailAddress: null })
+  f.setConnect(async () => {
+    launches += 1
+    return { status: 'connected' }
+  })
+  f.controller.onViewReady(accountId)
+  for (let tick = 0; tick < 20; tick += 1) {
+    await new Promise((resolve) => setImmediate(resolve))
+    timers.shift()?.()
+  }
+  assert.equal(launches, 1)
+  assert.equal(
+    f.grants.some((grant) => grant[1] === true),
+    false
+  )
+  assert.equal(f.controller.getState(accountId).status, 'error')
+  f.controller.dispose()
+})
+
+test('OAuth email that differs from the Gmail web account keeps mail locked', async () => {
+  const f = fixture()
+  f.setIdentity({ accountExists: true, emailAddress: 'other@school.ac.kr' })
+  await f.controller.connect(accountId)
+  assert.equal(
+    f.grants.some((grant) => grant[1] === true),
+    false
+  )
+  assert.equal(f.controller.getState(accountId).status, 'error')
   f.controller.dispose()
 })
 
@@ -312,6 +355,34 @@ test('switching away cancels pending validation and switching back revalidates t
   assert.equal(
     f.grants.some((grant) => grant[0] === accountId && grant[1] === true),
     true
+  )
+  f.controller.dispose()
+})
+
+test('explicit connect on another account cancels the previous pending OAuth', async () => {
+  const otherId = '22222222-2222-4222-8222-222222222222'
+  const cancelled = []
+  const f = fixture({
+    accountExists: () => true,
+    runtime: {
+      connect: async (id) =>
+        id === accountId ? new Promise(() => undefined) : { status: 'disconnected' },
+      cancel: async (id) => {
+        cancelled.push(id)
+        return { status: 'disconnected' }
+      },
+      disconnect: async () => ({ status: 'disconnected' })
+    }
+  })
+  f.controller.onViewReady(accountId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(f.controller.getState(accountId).connectionStatus, 'connecting')
+  f.setActiveAccount(otherId)
+  await f.controller.connect(otherId)
+  assert.deepEqual(cancelled, [accountId])
+  assert.deepEqual(
+    { ...f.controller.getState(accountId) },
+    { accountId, status: 'required', connectionStatus: 'disconnected' }
   )
   f.controller.dispose()
 })

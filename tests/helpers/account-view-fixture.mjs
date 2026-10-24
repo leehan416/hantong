@@ -55,7 +55,7 @@ export function fixture({
           webContents.capturePage = async () => ({
             toDataURL: () => 'data:image/png;base64,bWFpbA=='
           })
-          webContents.executeJavaScriptInIsolatedWorld = async () => 'private@example.com'
+          webContents.getTitle = () => 'Inbox - private@example.com - Gmail'
           const view = {
             session,
             callbacks,

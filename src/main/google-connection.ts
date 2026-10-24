@@ -244,11 +244,8 @@ export function startGoogleConnection(
 
   const run = async (): Promise<GoogleConnectionResult> => {
     if (!accountId.trim()) throw new GoogleConnectionFailure('account_missing')
-    assertCurrent()
-    beginStage('identity_check')
-    const initialIdentity = await getIdentity()
-    reportProgress('identity_check', 'success')
-    currentStage = null
+    // OAuth starts without reading the Gmail page; the API profile names the account and is
+    // matched against the page only after authorization.
     assertCurrent()
 
     let relayNonce: string | undefined
@@ -318,12 +315,9 @@ export function startGoogleConnection(
     currentStage = null
 
     beginStage('identity_match')
-    const finalIdentity = await getIdentity()
+    const webIdentity = await getIdentity()
     assertCurrent()
-    if (initialIdentity.normalized !== finalIdentity.normalized) {
-      throw new GoogleConnectionFailure('identity_changed')
-    }
-    if (normalizedApiEmail !== finalIdentity.normalized) {
+    if (normalizedApiEmail !== webIdentity.normalized) {
       throw new GoogleConnectionFailure('identity_mismatch')
     }
     reportProgress('identity_match', 'success')

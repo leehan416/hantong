@@ -92,8 +92,6 @@ test('OAuth progress diagnostics report safe stages through credential persisten
       ['config', 'started'],
       ['config', 'success'],
       ['connection', 'started'],
-      ['identity_check', 'started'],
-      ['identity_check', 'success'],
       ['authorization', 'started'],
       ['authorization', 'success'],
       ['token_exchange', 'started'],
@@ -182,7 +180,7 @@ test('connection diagnostics report only allowlisted failure codes and cannot br
   assert.equal(JSON.stringify(diagnostics).includes('private'), false)
 })
 
-test('an unavailable web identity fails safely before opening browser authorization', async () => {
+test('an unavailable web identity still opens authorization but stores no grant', async () => {
   const diagnostics = []
   const f = fixture({
     reportFailure: (stage, code) => diagnostics.push([stage, code]),
@@ -190,7 +188,7 @@ test('an unavailable web identity fails safely before opening browser authorizat
   })
   const result = await f.runtime.connect(accountId)
   assert.deepEqual({ ...result }, { accountId, status: 'error' })
-  assert.equal(f.calls.authorization, 0)
+  assert.equal(f.calls.authorization, 1)
   assert.deepEqual(diagnostics, [['connection', 'identity_unavailable']])
 })
 
