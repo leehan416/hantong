@@ -307,10 +307,13 @@ export class AccountAccessController {
   ) {
     try {
       this.unsubscribe = api.onAccountAccessState((state) => {
-        if (this.disposed || state.accountId !== this.state.accountId) return
+        if (this.disposed) return
+        // Main releases a previous account's OAuth after the selection moved; its connection status
+        // must still update, or that stale "connecting" state keeps account switching locked.
+        this.onConnectionStatus(state)
+        if (state.accountId !== this.state.accountId) return
         this.revision += 1
         this.state = { accountId: state.accountId, state, loading: false, readFailed: false }
-        this.onConnectionStatus(state)
         this.publish()
       })
     } catch {

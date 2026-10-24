@@ -401,6 +401,36 @@ test('Main access event invalidates an older access snapshot', async () => {
   controller.dispose()
 })
 
+test('Main access event for an unselected account still updates its connection status', async () => {
+  const states = []
+  const connectionStates = []
+  let listener
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: (callback) => {
+        listener = callback
+        return () => {}
+      },
+      getAccountAccessState: (accountId) =>
+        Promise.resolve({ accountId, status: 'checking', connectionStatus: 'connecting' })
+    },
+    (state) => states.push(state),
+    (state) => connectionStates.push(state)
+  )
+
+  controller.selectAccount('second')
+  await tick()
+  listener({ accountId: 'first', status: 'required', connectionStatus: 'disconnected' })
+
+  assert.deepEqual(connectionStates.at(-1), {
+    accountId: 'first',
+    status: 'required',
+    connectionStatus: 'disconnected'
+  })
+  assert.equal(states.at(-1).accountId, 'second')
+  controller.dispose()
+})
+
 test('access controller ignores responses from the previous account', async () => {
   const oldSnapshot = deferred()
   const states = []

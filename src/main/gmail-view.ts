@@ -60,12 +60,18 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
   webSession.setPermissionCheckHandler(() => false)
   webSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
 
-  function openExternal(url: string, context: 'main' | 'popup'): void {
+  function openExternal(url: string, context: 'main' | 'popup', revealHost: boolean): void {
     void callbacks
       .openExternal(url)
       .catch(() =>
         callbacks.onNavigationBlocked(
-          sanitizeNavigationDiagnostic('external_open_failure', context, url, 'external_redirect')
+          sanitizeNavigationDiagnostic(
+            'external_open_failure',
+            context,
+            url,
+            'external_redirect',
+            revealHost
+          )
         )
       )
   }
@@ -96,7 +102,7 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       }
       if (target === 'internal') return
       event.preventDefault()
-      if (target === 'external') openExternal(event.url, child ? 'popup' : 'main')
+      if (target === 'external') openExternal(event.url, child ? 'popup' : 'main', true)
       else
         reportBlocked(
           'navigation',
@@ -130,7 +136,7 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
     contents.setWindowOpenHandler(({ url }) => {
       const target = classifyGmailNavigation(url)
       if (target === 'external') {
-        openExternal(url, child ? 'popup' : 'main')
+        openExternal(url, child ? 'popup' : 'main', false)
         return { action: 'deny' }
       }
       const lockedGoogleSignIn =

@@ -24,6 +24,14 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+const runtimeFailures =
+  (diagnostics, throwAfterPush = false) =>
+  (_account, stage, outcome, code) => {
+    if (outcome !== 'failure' || !['config', 'connection', 'persistence'].includes(stage)) return
+    diagnostics.push([stage, code])
+    if (throwAfterPush) throw new Error('observer failure')
+  }
+
 function fixture(overrides = {}) {
   const calls = { authorization: 0, accept: 0, disconnect: 0 }
   const state = { status: 'connected' }
@@ -152,7 +160,7 @@ test('failed identity checks and cancellation skip relay hooks while cancelAll p
 test('missing OAuth config fails safely without starting browser authorization', async () => {
   const diagnostics = []
   const f = fixture({
-    reportFailure: (stage, code) => diagnostics.push([stage, code]),
+    reportProgress: runtimeFailures(diagnostics),
     loadConfig: () => {
       throw new Error('private config failure')
     }
@@ -166,10 +174,7 @@ test('missing OAuth config fails safely without starting browser authorization',
 test('connection diagnostics report only allowlisted failure codes and cannot break the result', async () => {
   const diagnostics = []
   const f = fixture({
-    reportFailure: (stage, code) => {
-      diagnostics.push([stage, code])
-      throw new Error('observer failure')
-    },
+    reportProgress: runtimeFailures(diagnostics, true),
     readWebIdentity: async () => {
       throw new Error('private identity data')
     }
@@ -183,8 +188,10 @@ test('connection diagnostics report only allowlisted failure codes and cannot br
 test('an unavailable web identity still opens authorization but stores no grant', async () => {
   const diagnostics = []
   const f = fixture({
-    reportFailure: (stage, code) => diagnostics.push([stage, code]),
-    readWebIdentity: async () => ({ accountExists: true, emailAddress: null })
+    reportProgress: runtimeFailures(diagnostics),
+    readWebIdentity: async () => {
+      throw new Error('private view failure')
+    }
   })
   const result = await f.runtime.connect(accountId)
   assert.deepEqual({ ...result }, { accountId, status: 'error' })
@@ -211,7 +218,7 @@ test('identity mismatch progress records only its allowlisted failure code', asy
 test('persistence diagnostics identify acceptance failure without exposing its error', async () => {
   const diagnostics = []
   const f = fixture({
-    reportFailure: (stage, code) => diagnostics.push([stage, code]),
+    reportProgress: runtimeFailures(diagnostics),
     manager: {
       acceptConnection: async () => {
         throw new Error('private storage detail')

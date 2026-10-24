@@ -227,6 +227,42 @@ test('blocked navigation diagnostics retain only safe host and fixed route metad
   )
 })
 
+test('popup diagnostics keep Google hosts but redact other destinations', () => {
+  assert.equal(
+    sanitizeNavigationDiagnostic('popup', 'main', 'https://bank.example.com/login', 'unsafe_url')
+      .hostname,
+    'redacted'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'popup',
+      'popup',
+      'https://accounts.google.co.kr/accounts/SetSID',
+      'unsafe_url'
+    ).hostname,
+    'accounts.google.co.kr'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'external_open_failure',
+      'main',
+      'https://bank.example.com/',
+      'external_redirect',
+      false
+    ).hostname,
+    'redacted'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'redirect',
+      'main',
+      'https://login.school.example.edu/sso',
+      'external_redirect'
+    ).hostname,
+    'login.school.example.edu'
+  )
+})
+
 test('already sanitized school SSO hostname survives the main diagnostics projection', () => {
   const lines = []
   const recorder = diagnostics.createMainDiagnostics({

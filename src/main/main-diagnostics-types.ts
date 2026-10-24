@@ -160,7 +160,6 @@ export type OAuthDiagnosticCode =
   | 'invalid_response'
   | 'identity_unavailable'
   | 'account_missing'
-  | 'identity_changed'
   | 'identity_mismatch'
   | 'config_unavailable'
   | 'connection_start_failed'
@@ -176,13 +175,6 @@ export type OAuthDiagnosticCode =
   | 'document_destroyed'
   | 'document_loading'
   | 'untrusted_document'
-  | 'script_failed'
-  | 'navigation_changed'
-  | 'header_missing'
-  | 'account_link_missing'
-  | 'account_label_missing'
-  | 'account_email_unavailable'
-  | 'identity_ambiguous'
 
 export interface MainDiagnosticSink {
   append(line: string): void | Promise<void>

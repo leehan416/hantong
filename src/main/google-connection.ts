@@ -17,7 +17,6 @@ export type GoogleConnectionFailureCode =
   | 'invalid_response'
   | 'identity_unavailable'
   | 'account_missing'
-  | 'identity_changed'
   | 'identity_mismatch'
 
 export class GoogleConnectionFailure extends Error {
@@ -70,6 +69,7 @@ export interface GoogleConnectionOperation {
 }
 
 const activeByAccount = new Map<string, GoogleConnectionOperation>()
+const IDENTITY_RETRY_MS = 500
 
 function readErrorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error)) return undefined
@@ -212,34 +212,48 @@ export function startGoogleConnection(
     }
   }
 
+  // Gmail may briefly show a title without the account email, so retry until the identity timeout
+  // instead of discarding a completed browser authorization.
   const getIdentity = async (): Promise<{ emailAddress: string; normalized: string }> => {
-    let snapshot: WebIdentitySnapshot | null
     let timedOut = false
     const identityTimeout = setTimeout(() => {
       timedOut = true
       controller.abort()
     }, dependencies.identityTimeoutMs ?? 10_000)
     try {
-      snapshot = await waitForAbort(
-        Promise.resolve().then(() => {
-          assertCurrent()
-          return dependencies.readWebIdentity(accountId, controller.signal)
-        }),
-        controller.signal
-      )
-    } catch {
-      if (timedOut) throw new GoogleConnectionFailure('timeout')
-      if (controller.signal.aborted) throw new GoogleConnectionFailure('cancelled')
-      throw new GoogleConnectionFailure('identity_unavailable')
+      for (;;) {
+        let snapshot: WebIdentitySnapshot | null
+        try {
+          snapshot = await waitForAbort(
+            Promise.resolve().then(() => {
+              assertCurrent()
+              return dependencies.readWebIdentity(accountId, controller.signal)
+            }),
+            controller.signal
+          )
+        } catch {
+          if (timedOut) throw new GoogleConnectionFailure('timeout')
+          if (controller.signal.aborted) throw new GoogleConnectionFailure('cancelled')
+          throw new GoogleConnectionFailure('identity_unavailable')
+        }
+        if (!snapshot || !snapshot.accountExists)
+          throw new GoogleConnectionFailure('account_missing')
+        const normalized = normalizeEmail(snapshot.emailAddress)
+        if (normalized && typeof snapshot.emailAddress === 'string')
+          return { emailAddress: snapshot.emailAddress.trim(), normalized }
+        try {
+          await waitForAbort(
+            new Promise((resolve) => setTimeout(resolve, IDENTITY_RETRY_MS)),
+            controller.signal
+          )
+        } catch {
+          if (timedOut) throw new GoogleConnectionFailure('identity_unavailable')
+          throw new GoogleConnectionFailure('cancelled')
+        }
+      }
     } finally {
       clearTimeout(identityTimeout)
     }
-    if (!snapshot || !snapshot.accountExists) throw new GoogleConnectionFailure('account_missing')
-    const normalized = normalizeEmail(snapshot.emailAddress)
-    if (!normalized || typeof snapshot.emailAddress !== 'string') {
-      throw new GoogleConnectionFailure('identity_unavailable')
-    }
-    return { emailAddress: snapshot.emailAddress.trim(), normalized }
   }
 
   const run = async (): Promise<GoogleConnectionResult> => {

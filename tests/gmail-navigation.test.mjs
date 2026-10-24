@@ -44,3 +44,27 @@ test('Google OAuth authorization endpoints are never opened in the embedded sess
     assert.equal(policy.classifyGmailNavigation(`https://accounts.google.com${path}`), 'blocked')
   }
 })
+
+test('Google sign-in cookie hosts stay internal only over default-port HTTPS', () => {
+  for (const url of [
+    'https://accounts.youtube.com/accounts/SetSID',
+    'https://accounts.google.co.kr/accounts/SetSID'
+  ]) {
+    assert.equal(policy.classifyGmailNavigation(url), 'internal', url)
+  }
+  for (const url of [
+    'http://accounts.youtube.com/accounts/SetSID',
+    'https://accounts.youtube.com:8443/accounts/SetSID',
+    'https://accounts.google.co.kr:444/',
+    'https://user:pw@accounts.google.co.kr/'
+  ]) {
+    assert.equal(policy.classifyGmailNavigation(url), 'blocked', url)
+  }
+  for (const url of [
+    'https://accounts.youtube.com.attacker.example/',
+    'https://evilaccounts.google.co.kr/',
+    'https://www.youtube.com/'
+  ]) {
+    assert.equal(policy.classifyGmailNavigation(url), 'external', url)
+  }
+})

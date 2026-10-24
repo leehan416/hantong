@@ -311,13 +311,33 @@ test('relay challenge failure falls back to Google OAuth without nonce', async (
 })
 
 test('missing web identity never blocks browser authorization but returns no tokens', async () => {
+  let reads = 0
   const { dependencies, calls } = makeConnectionDependencies({
-    readWebIdentity: async () => ({ accountExists: true, emailAddress: null })
+    identityTimeoutMs: 1_200,
+    readWebIdentity: async () => {
+      reads += 1
+      return { accountExists: true, emailAddress: null }
+    }
   })
   const operation = connection.startGoogleConnection('account-a', { clientId }, dependencies)
   await assert.rejects(operation.result, { code: 'identity_unavailable' })
   assert.equal(calls.auth, 1)
   assert.equal(calls.profile, 1)
+  assert.ok(reads >= 2, 'a missing title email is retried before failing')
+})
+
+test('a late Gmail title email still completes the connection', async () => {
+  let reads = 0
+  const { dependencies } = makeConnectionDependencies({
+    readWebIdentity: async () => {
+      reads += 1
+      return { accountExists: true, emailAddress: reads === 1 ? null : 'owner+tag@example.com' }
+    }
+  })
+  const result = await connection.startGoogleConnection('account-a', { clientId }, dependencies)
+    .result
+  assert.equal(result.emailAddress, 'owner+tag@example.com')
+  assert.equal(reads, 2)
 })
 
 test('deleted account and API identity mismatch cannot return tokens', async () => {

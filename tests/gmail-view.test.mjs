@@ -204,6 +204,19 @@ test('OAuth popup and external launch failure report sanitized destinations', as
   })
 })
 
+test('failed external launch of a mail link redacts its non-Google host', async () => {
+  const failing = fixture({ rejectOpenExternal: true })
+  failing.handle.view.webContents.openWindow({ url: 'https://clinic.example.com/result?id=1' })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(structuredClone(failing.diagnostics[0]), {
+    source: 'external_open_failure',
+    context: 'main',
+    hostname: 'redacted',
+    route: 'other',
+    reason: 'external_redirect'
+  })
+})
+
 test('authentication popups share the session and inherit the navigation guards', async () => {
   const { handle, webSession, opened } = fixture({ allowed: true })
   const response = handle.view.webContents.openWindow({

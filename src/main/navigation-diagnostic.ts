@@ -16,7 +16,10 @@ export function sanitizeNavigationDiagnostic(
   source: unknown,
   context: unknown,
   value: unknown,
-  reason: unknown
+  reason: unknown,
+  // Popup and window-open targets are usually links inside mail, so only Google hosts are kept;
+  // sign-in redirects keep their host so a blocked school SSO step stays diagnosable.
+  revealHost = source !== 'popup'
 ): NavigationDiagnostic {
   const safeSource: NavigationDiagnosticSource =
     source === 'redirect' ||
@@ -50,7 +53,11 @@ export function sanitizeNavigationDiagnostic(
               /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
           ) &&
         !candidate.includes('@')
-      if (validHost) {
+      const googleHost =
+        candidate.endsWith('.google.com') ||
+        candidate === 'accounts.youtube.com' ||
+        /^accounts\.google\.[a-z.]+$/.test(candidate)
+      if (validHost && (revealHost || googleHost)) {
         hostname = candidate
         if (candidate === 'accounts.google.com' && /^\/o\/oauth2(?:\/|$)/.test(url.pathname))
           route = 'google_oauth'

@@ -155,7 +155,6 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
             'invalid_response',
             'identity_unavailable',
             'account_missing',
-            'identity_changed',
             'identity_mismatch',
             'config_unavailable',
             'connection_start_failed',
@@ -170,14 +169,7 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
             'view_disposing',
             'document_destroyed',
             'document_loading',
-            'untrusted_document',
-            'script_failed',
-            'navigation_changed',
-            'header_missing',
-            'account_link_missing',
-            'account_label_missing',
-            'account_email_unavailable',
-            'identity_ambiguous'
+            'untrusted_document'
           ].includes(event.code))))
   )
     return false

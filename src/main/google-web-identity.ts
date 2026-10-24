@@ -1,16 +1,10 @@
-import { isAccountId } from './account-state'
+import { isAccountId, isValidEmail } from './account-state'
 
 // Gmail titles end with "<view> - <account email> - <product>" for every account domain.
-// The rightmost email-only segment is the signed-in account, so an address in a subject
-// (always left of it) cannot replace it. Titles without that segment fail closed.
+// Only that fixed position is trusted: scanning further left could pick an address from a subject.
 export function emailFromGmailTitle(title: string): string | null {
-  const segments = title.split(' - ')
-  for (let index = segments.length - 2; index >= 0; index -= 1) {
-    const segment = segments[index].trim()
-    if (segment.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(segment))
-      return segment.toLowerCase()
-  }
-  return null
+  const segment = title.split(' - ').at(-2)?.trim()
+  return segment && isValidEmail(segment) ? segment.toLowerCase() : null
 }
 
 interface IdentityWebContents {

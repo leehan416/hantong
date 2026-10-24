@@ -40,7 +40,7 @@ test('title parser reads the account email for any domain', () => {
     'student@school.ac.kr'
   )
   assert.equal(
-    identity.emailFromGmailTitle('Inbox - me@university.edu - Org - Name Mail'),
+    identity.emailFromGmailTitle('Inbox - me@university.edu - Gmail'),
     'me@university.edu'
   )
 })
@@ -56,16 +56,22 @@ test('title parser keeps the account email when a subject contains another addre
   )
 })
 
-test('title parser fails closed without an account segment', () => {
+test('title parser trusts only the account position and fails closed otherwise', () => {
   for (const title of [
     'Gmail',
     'Loading…',
     '',
     'Inbox - Gmail',
     'owner@example.com',
-    'a@b - Gmail'
+    'a@b - Gmail',
+    'Fwd - victim@example.com - Chat - Gmail',
+    'Inbox - me@university.edu - Org - Name Mail',
+    `Inbox - ${'a'.repeat(65)}@example.com - Gmail`,
+    `Inbox - a@${'b'.repeat(250)}.com - Gmail`,
+    'Inbox - a\u0000b@example.com - Gmail',
+    'Inbox - a@ex\u202eample.com - Gmail'
   ])
-    assert.equal(identity.emailFromGmailTitle(title), null)
+    assert.equal(identity.emailFromGmailTitle(title), null, title)
 })
 
 test('reader returns the title email from a trusted, loaded Gmail document', async () => {

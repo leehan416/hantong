@@ -46,10 +46,6 @@ interface RuntimeDependencies {
   readonly exchangeCode: Parameters<typeof startGoogleConnection>[2]['exchangeCode']
   readonly fetchProfile: Parameters<typeof startGoogleConnection>[2]['fetchProfile']
   readonly manager: ConnectionManager
-  readonly reportFailure?: (
-    stage: 'config' | 'connection' | 'persistence',
-    code: RuntimeDiagnosticCode
-  ) => void
   readonly reportProgress?: (
     accountId: string,
     stage: OAuthDiagnosticStage,
@@ -89,16 +85,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
     accountId,
     status: value
   })
-  const reportFailure = (
-    stage: 'config' | 'connection' | 'persistence',
-    code: RuntimeDiagnosticCode
-  ): void => {
-    try {
-      dependencies.reportFailure?.(stage, code)
-    } catch {
-      // Diagnostics must never affect connection behavior.
-    }
-  }
   const reportProgress = (
     accountId: string,
     stage: OAuthDiagnosticStage,
@@ -129,7 +115,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
       case 'invalid_response':
       case 'identity_unavailable':
       case 'account_missing':
-      case 'identity_changed':
       case 'identity_mismatch':
         return error.code
       case 'cancelled':
@@ -189,7 +174,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         }
         reportProgress(accountId, 'config', 'success')
       } catch {
-        reportFailure('config', 'config_unavailable')
         reportProgress(accountId, 'config', 'failure', 'config_unavailable')
         return status(accountId, 'error')
       }
@@ -208,7 +192,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           reportProgress: (stage, outcome, code) => reportProgress(accountId, stage, outcome, code)
         })
       } catch {
-        reportFailure('connection', 'connection_start_failed')
         reportProgress(accountId, 'connection', 'failure', 'connection_start_failed')
         return status(accountId, 'error')
       }
@@ -252,7 +235,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           reportPendingChanged()
         }
         if (operation.phase === 'accepting') {
-          reportFailure('persistence', 'accept_failed')
           reportProgress(accountId, 'persistence', 'failure', 'accept_failed')
           return status(accountId, 'error')
         }
@@ -261,7 +243,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           reportProgress(accountId, 'connection', 'cancelled', failureCode)
           return status(accountId, 'disconnected')
         }
-        reportFailure('connection', failureCode)
         reportProgress(accountId, 'connection', 'failure', failureCode)
         return status(accountId, 'error')
       }
