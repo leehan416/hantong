@@ -8,6 +8,8 @@ import { createGoogleWebIdentityReader, isAllowedGmailIdentityUrl } from './goog
 import { getAccountViewBounds } from '../shared/account-layout'
 import type { GmailDocumentState, ViewEntry, ViewHandle } from './account-view-types'
 import { createAccountViewLifecycle } from './account-view-lifecycle'
+import type { GmailViewLoadDiagnostic } from './account-view-lifecycle'
+import type { NavigationDiagnostic } from './navigation-diagnostic'
 
 interface AccountStore {
   getState: () => AccountState
@@ -21,7 +23,9 @@ export function createAccountViewManager(
   report: (status: AccountViewStatus) => void,
   openExternal: (url: string) => Promise<void>,
   loadTimeoutMs = 30_000,
-  reportIdentityFailure?: Parameters<typeof createGoogleWebIdentityReader>[1]
+  reportIdentityFailure?: Parameters<typeof createGoogleWebIdentityReader>[1],
+  reportLoadDiagnostic?: (id: string, diagnostic: GmailViewLoadDiagnostic) => void,
+  reportNavigationDiagnostic?: (id: string, diagnostic: NavigationDiagnostic) => void
 ): {
   activate: (id: string) => void
   retry: () => void
@@ -116,7 +120,8 @@ export function createAccountViewManager(
     isCurrent: (id, entry) => views.get(id) === entry,
     isActive: (id) => activeAccountId === id,
     publish,
-    reconcileVisibility
+    reconcileVisibility,
+    reportLoadDiagnostic
   })
 
   window.on('resize', () => {
@@ -143,7 +148,12 @@ export function createAccountViewManager(
       try {
         handle = createGmailView(getAccountSession(id), {
           openExternal,
-          onNavigationBlocked: () => {
+          onNavigationBlocked: (diagnostic) => {
+            try {
+              reportNavigationDiagnostic?.(id, diagnostic)
+            } catch {
+              // Diagnostics must never affect navigation policy.
+            }
             const current = views.get(id)
             if (current) {
               current.blocked = true
@@ -215,6 +225,7 @@ export function createAccountViewManager(
     if (entry.loaded) {
       publish(id, entry.blocked ? 'blocked' : 'ready')
     } else if (!entry.loading) {
+      setBounds(entry.handle.view)
       lifecycle.load(id, entry)
     } else {
       publish(id, 'loading')

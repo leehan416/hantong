@@ -5,7 +5,13 @@ import { loadTypeScript } from './load-typescript.mjs'
 export const firstId = '11111111-1111-4111-8111-111111111111'
 export const secondId = '22222222-2222-4222-8222-222222222222'
 
-export function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
+export function fixture({
+  deferLoads = false,
+  loadTimeoutMs = 30_000,
+  onLoadDiagnostic = () => {},
+  onNavigationDiagnostic = () => {},
+  onLoadStart = () => {}
+} = {}) {
   const created = []
   const attached = []
   const detached = []
@@ -49,7 +55,7 @@ export function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
           webContents.capturePage = async () => ({
             toDataURL: () => 'data:image/png;base64,bWFpbA=='
           })
-          webContents.executeJavaScriptInIsolatedWorld = async () => 'private@example.com'
+          webContents.getTitle = () => 'Inbox - private@example.com - Gmail'
           const view = {
             session,
             callbacks,
@@ -68,6 +74,7 @@ export function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
             disposeCount: 0,
             load: async () => {
               handle.loads += 1
+              onLoadStart(view)
               if (deferLoads) {
                 await new Promise((resolve) => resolvers.push(resolve))
               }
@@ -89,7 +96,9 @@ export function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
     (status) => statuses.push(status),
     async () => {},
     loadTimeoutMs,
-    (reason) => identityFailures.push(reason)
+    (reason) => identityFailures.push(reason),
+    onLoadDiagnostic,
+    onNavigationDiagnostic
   )
   return {
     manager,
@@ -98,6 +107,7 @@ export function fixture({ deferLoads = false, loadTimeoutMs = 30_000 } = {}) {
     detached,
     statuses,
     identityFailures,
+    onLoadDiagnostic,
     accounts,
     window,
     resolvers,

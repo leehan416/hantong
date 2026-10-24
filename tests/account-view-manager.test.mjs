@@ -76,7 +76,7 @@ test('inactive load completion is cached and the view stays below the fixed chro
     height: 668
   })
   fixtureData.resize()
-  assert.equal(fixtureData.created[0].view.boundsCount, 6)
+  assert.equal(fixtureData.created[0].view.boundsCount, 7)
   assert.equal(fixtureData.created[0].loads, 1)
   assert.deepEqual(structuredClone(fixtureData.statuses.at(-1)), {
     accountId: firstId,
@@ -140,6 +140,34 @@ test('mail view stays detached until Main grants access and sign-in remains visi
   assert.equal(fixtureData.detached.length, 2)
   assert.equal(fixtureData.manager.setMailAccess(firstId, false), true)
   assert.equal(fixtureData.detached.length, 2)
+  await fixtureData.manager.dispose()
+})
+
+test('cached Gmail view receives usable bounds before its first load while remaining detached', async () => {
+  let loadStartBounds
+  let attachedAtLoadStart
+  const fixtureData = fixture({
+    onLoadStart: (view) => {
+      loadStartBounds = view.bounds
+      attachedAtLoadStart = fixtureData.attached.length
+    }
+  })
+  await fixtureData.manager.activate(firstId)
+  assert.deepEqual(structuredClone(loadStartBounds), {
+    x: 0,
+    y: 72,
+    width: 900,
+    height: 628
+  })
+  assert.equal(attachedAtLoadStart, 0)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 72,
+    width: 900,
+    height: 628
+  })
+  assert.equal(fixtureData.attached.length, 0)
+  assert.equal(fixtureData.created[0].loads, 1)
   await fixtureData.manager.dispose()
 })
 

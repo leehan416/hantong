@@ -1,6 +1,11 @@
 import type { AuthorizationCode, GoogleAuthorizationOperation } from './google-authorization'
 import type { GoogleOAuthConfig } from './google-oauth-config'
 import type { GoogleOAuthTokens } from './google-token-exchange'
+import type {
+  OAuthDiagnosticCode,
+  OAuthDiagnosticOutcome,
+  OAuthDiagnosticStage
+} from './main-diagnostics-types'
 
 export type GoogleConnectionFailureCode =
   | 'cancelled'
@@ -12,7 +17,6 @@ export type GoogleConnectionFailureCode =
   | 'invalid_response'
   | 'identity_unavailable'
   | 'account_missing'
-  | 'identity_changed'
   | 'identity_mismatch'
 
 export class GoogleConnectionFailure extends Error {
@@ -52,6 +56,11 @@ export interface GoogleConnectionDependencies {
     signal: AbortSignal
   ) => Promise<GoogleOAuthTokens>
   readonly fetchProfile: (accessToken: string, signal: AbortSignal) => Promise<string>
+  readonly reportProgress?: (
+    stage: Exclude<OAuthDiagnosticStage, 'config' | 'connection' | 'persistence'>,
+    outcome: OAuthDiagnosticOutcome,
+    code?: OAuthDiagnosticCode
+  ) => void
 }
 
 export interface GoogleConnectionOperation {
@@ -60,6 +69,7 @@ export interface GoogleConnectionOperation {
 }
 
 const activeByAccount = new Map<string, GoogleConnectionOperation>()
+const IDENTITY_RETRY_MS = 500
 
 function readErrorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error)) return undefined
@@ -134,6 +144,8 @@ export function startGoogleConnection(
   const controller = new AbortController()
   let authorization: GoogleAuthorizationOperation | undefined
   let settled = false
+  let currentStage: Exclude<OAuthDiagnosticStage, 'config' | 'connection' | 'persistence'> | null =
+    null
   let resolveResult: (value: GoogleConnectionResult) => void = () => undefined
   let rejectResult: (reason: GoogleConnectionFailure) => void = () => undefined
   const result = new Promise<GoogleConnectionResult>((resolve, reject) => {
@@ -148,11 +160,38 @@ export function startGoogleConnection(
     cancel: () => finish(new GoogleConnectionFailure('cancelled'))
   }
 
+  const reportProgress = (
+    stage: Exclude<OAuthDiagnosticStage, 'config' | 'connection' | 'persistence'>,
+    outcome: OAuthDiagnosticOutcome,
+    code?: OAuthDiagnosticCode
+  ): void => {
+    try {
+      dependencies.reportProgress?.(stage, outcome, code)
+    } catch {
+      // Diagnostics must never affect authorization behavior.
+    }
+  }
+
+  const beginStage = (
+    stage: Exclude<OAuthDiagnosticStage, 'config' | 'connection' | 'persistence'>
+  ): void => {
+    currentStage = stage
+    reportProgress(stage, 'started')
+  }
+
   const finish = (error?: GoogleConnectionFailure, value?: GoogleConnectionResult): void => {
     if (settled) return
     settled = true
     if (activeByAccount.get(accountId) === operation) activeByAccount.delete(accountId)
     if (error) {
+      if (currentStage) {
+        reportProgress(
+          currentStage,
+          error.code === 'cancelled' ? 'cancelled' : 'failure',
+          error.code
+        )
+        currentStage = null
+      }
       controller.abort()
       try {
         authorization?.cancel()
@@ -173,40 +212,54 @@ export function startGoogleConnection(
     }
   }
 
+  // Gmail may briefly show a title without the account email, so retry until the identity timeout
+  // instead of discarding a completed browser authorization.
   const getIdentity = async (): Promise<{ emailAddress: string; normalized: string }> => {
-    let snapshot: WebIdentitySnapshot | null
     let timedOut = false
     const identityTimeout = setTimeout(() => {
       timedOut = true
       controller.abort()
     }, dependencies.identityTimeoutMs ?? 10_000)
     try {
-      snapshot = await waitForAbort(
-        Promise.resolve().then(() => {
-          assertCurrent()
-          return dependencies.readWebIdentity(accountId, controller.signal)
-        }),
-        controller.signal
-      )
-    } catch {
-      if (timedOut) throw new GoogleConnectionFailure('timeout')
-      if (controller.signal.aborted) throw new GoogleConnectionFailure('cancelled')
-      throw new GoogleConnectionFailure('identity_unavailable')
+      for (;;) {
+        let snapshot: WebIdentitySnapshot | null
+        try {
+          snapshot = await waitForAbort(
+            Promise.resolve().then(() => {
+              assertCurrent()
+              return dependencies.readWebIdentity(accountId, controller.signal)
+            }),
+            controller.signal
+          )
+        } catch {
+          if (timedOut) throw new GoogleConnectionFailure('timeout')
+          if (controller.signal.aborted) throw new GoogleConnectionFailure('cancelled')
+          throw new GoogleConnectionFailure('identity_unavailable')
+        }
+        if (!snapshot || !snapshot.accountExists)
+          throw new GoogleConnectionFailure('account_missing')
+        const normalized = normalizeEmail(snapshot.emailAddress)
+        if (normalized && typeof snapshot.emailAddress === 'string')
+          return { emailAddress: snapshot.emailAddress.trim(), normalized }
+        try {
+          await waitForAbort(
+            new Promise((resolve) => setTimeout(resolve, IDENTITY_RETRY_MS)),
+            controller.signal
+          )
+        } catch {
+          if (timedOut) throw new GoogleConnectionFailure('identity_unavailable')
+          throw new GoogleConnectionFailure('cancelled')
+        }
+      }
     } finally {
       clearTimeout(identityTimeout)
     }
-    if (!snapshot || !snapshot.accountExists) throw new GoogleConnectionFailure('account_missing')
-    const normalized = normalizeEmail(snapshot.emailAddress)
-    if (!normalized || typeof snapshot.emailAddress !== 'string') {
-      throw new GoogleConnectionFailure('identity_unavailable')
-    }
-    return { emailAddress: snapshot.emailAddress.trim(), normalized }
   }
 
   const run = async (): Promise<GoogleConnectionResult> => {
     if (!accountId.trim()) throw new GoogleConnectionFailure('account_missing')
-    assertCurrent()
-    const initialIdentity = await getIdentity()
+    // OAuth starts without reading the Gmail page; the API profile names the account and is
+    // matched against the page only after authorization.
     assertCurrent()
 
     let relayNonce: string | undefined
@@ -223,6 +276,7 @@ export function startGoogleConnection(
       assertCurrent()
     }
 
+    beginStage('authorization')
     try {
       authorization = dependencies.startAuthorization(config, relayNonce)
     } catch {
@@ -234,9 +288,12 @@ export function startGoogleConnection(
     } catch (error) {
       throw authorizationFailure(error, controller.signal)
     }
+    reportProgress('authorization', 'success')
+    currentStage = null
     assertCurrent()
 
     let tokens: GoogleOAuthTokens
+    beginStage('token_exchange')
     try {
       tokens = await waitForAbort(
         Promise.resolve().then(() => {
@@ -248,9 +305,12 @@ export function startGoogleConnection(
     } catch (error) {
       throw requestFailure(error, controller.signal)
     }
+    reportProgress('token_exchange', 'success')
+    currentStage = null
     assertCurrent()
 
     let apiEmail: string
+    beginStage('profile_fetch')
     try {
       apiEmail = await waitForAbort(
         Promise.resolve().then(() => {
@@ -265,15 +325,17 @@ export function startGoogleConnection(
     assertCurrent()
     const normalizedApiEmail = normalizeEmail(apiEmail)
     if (!normalizedApiEmail) throw new GoogleConnectionFailure('invalid_response')
+    reportProgress('profile_fetch', 'success')
+    currentStage = null
 
-    const finalIdentity = await getIdentity()
+    beginStage('identity_match')
+    const webIdentity = await getIdentity()
     assertCurrent()
-    if (initialIdentity.normalized !== finalIdentity.normalized) {
-      throw new GoogleConnectionFailure('identity_changed')
-    }
-    if (normalizedApiEmail !== finalIdentity.normalized) {
+    if (normalizedApiEmail !== webIdentity.normalized) {
       throw new GoogleConnectionFailure('identity_mismatch')
     }
+    reportProgress('identity_match', 'success')
+    currentStage = null
     return { emailAddress: apiEmail.trim(), tokens, ...(relayNonce ? { relayNonce } : {}) }
   }
 

@@ -9,7 +9,8 @@ export function AccountAccessGate({
   text,
   onRetry,
   onCancel,
-  onReconnect
+  onReconnect,
+  onReopen
 }: {
   accessState: AccountAccessUiState
   access: AccountAccessUiState['state']
@@ -19,6 +20,7 @@ export function AccountAccessGate({
   onRetry: () => void
   onCancel: () => void
   onReconnect: () => void
+  onReopen: () => void
 }): React.JSX.Element {
   return (
     <main className="access-gate" aria-labelledby="access-gate-title">
@@ -53,14 +55,24 @@ export function AccountAccessGate({
             {text.accessRetry}
           </button>
         ) : access?.connectionStatus === 'connecting' ? (
-          <button
-            className="access-gate-action"
-            type="button"
-            disabled={googleOperation === 'cancelling'}
-            onClick={onCancel}
-          >
-            {googleOperation === 'cancelling' ? text.apiCancelling : text.accessCancel}
-          </button>
+          <div className="access-gate-actions">
+            <button
+              className="access-gate-action"
+              type="button"
+              disabled={googleOperation === 'cancelling' || googleOperation === 'restarting'}
+              onClick={onCancel}
+            >
+              {googleOperation === 'cancelling' ? text.apiCancelling : text.accessCancel}
+            </button>
+            <button
+              className="access-gate-action"
+              type="button"
+              disabled={googleOperation === 'cancelling' || googleOperation === 'restarting'}
+              onClick={onReopen}
+            >
+              {googleOperation === 'restarting' ? text.accessReopening : text.accessReopen}
+            </button>
+          </div>
         ) : access?.status === 'required' || access?.status === 'error' ? (
           <button
             className="access-gate-action"

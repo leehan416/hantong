@@ -10,7 +10,12 @@ export function classifyGmailNavigation(value: string): GmailNavigation {
       if (decodeURIComponent(url.pathname).startsWith('/o/oauth2')) return 'blocked'
       return url.port === '' ? 'internal' : 'blocked'
     }
-    if (url.hostname === 'mail.google.com') return url.port === '' ? 'internal' : 'blocked'
+    if (
+      url.hostname === 'mail.google.com' ||
+      url.hostname === 'accounts.youtube.com' ||
+      url.hostname === 'accounts.google.co.kr'
+    )
+      return url.port === '' ? 'internal' : 'blocked'
     return 'external'
   } catch {
     return 'blocked'

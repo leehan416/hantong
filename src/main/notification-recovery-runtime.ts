@@ -1,7 +1,6 @@
 import { dialog, type BrowserWindow } from 'electron'
 import type { createAccountStore } from './account-store'
 import type { createAccountViewManager } from './account-view-manager'
-import type { createGoogleConnectionRuntime } from './google-connection-runtime'
 import type { createAccountRemovalController } from './account-removal'
 import type { createNotificationConnectionController } from './notification-connection-controller'
 
@@ -14,7 +13,6 @@ type PendingNotificationRecovery = {
 
 export interface NotificationRecoveryDependencies {
   readonly window: () => BrowserWindow | null
-  readonly googleRuntime: () => ReturnType<typeof createGoogleConnectionRuntime> | null
   readonly views: () => ReturnType<typeof createAccountViewManager> | null
   readonly accessController: () => ReturnType<
     typeof import('./account-access-controller').createAccountAccessController
@@ -45,20 +43,21 @@ export function createNotificationRecoveryRuntime(dependencies: NotificationReco
 
   function startPending(accountId: string): void {
     const pending = pendingNotificationRecoveries.get(accountId)
-    const runtime = dependencies.googleRuntime()
+    const access = dependencies.accessController()
     const views = dependencies.views()
-    if (!pending || pending.started || !runtime || !views || dependencies.isQuitting()) return
+    if (!pending || pending.started || !access || !views || dependencies.isQuitting()) return
     if (views.getActiveAccountId() !== accountId || !views.getDocumentState(accountId).ready) return
     pending.started = true
-    void runtime
+    // Recovery reconnects through the access gate so it shows progress, can cancel, and releases
+    // any other account's pending OAuth instead of leaving account switching locked.
+    void access
       .connect(accountId)
-      .then((status) => {
-        if (status.status === 'error' || status.status === 'disconnected') {
+      .then((state) => {
+        if (state.connectionStatus !== 'connected') {
           pending.reject(new Error('Notification recovery did not complete'))
           return
         }
         pending.resolve()
-        dependencies.accessController()?.onViewReady(accountId)
       })
       .catch((error: unknown) => {
         pending.reject(error instanceof Error ? error : new Error('Notification recovery failed'))

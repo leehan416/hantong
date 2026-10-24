@@ -20,8 +20,6 @@ import { createAccountRemovalController } from './account-removal'
 import { clearAccountSession } from './account-session-cleanup'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
-import type { GoogleConnectionFailureCode } from './google-connection'
-import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 import { createRelayRuntime } from './relay-runtime'
 import { createSettingsStore } from './settings-store'
@@ -37,7 +35,6 @@ import { createMainDiagnostics, createRotatingDiagnosticsSink } from './main-dia
 import { createNativeMailNotifications } from './native-mail-notifications'
 import { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
 import { createMainMailRuntime } from './main-mail-runtime'
-import type { AuthorizationErrorCode } from './google-authorization'
 import { is } from '@electron-toolkit/utils'
 import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
@@ -86,10 +83,10 @@ let updateRuntime: ReturnType<typeof createAppUpdateRuntime> | null = null
 let fallbackSync: ReturnType<typeof setInterval> | undefined
 let cleanupPromise: Promise<void> | undefined
 let wasOpenedAtLogin = false
+let mainDiagnostics: ReturnType<typeof createMainDiagnostics> | null = null
 
 const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   window: () => mainWindow,
-  googleRuntime: () => googleConnectionRuntime,
   views: () => accountViewManager,
   accessController: () => accountAccessController,
   notificationController: () => notificationConnectionController,
@@ -126,20 +123,6 @@ function prepareApplicationShutdown(): Promise<void> {
     throw error
   })
   return cleanupPromise
-}
-
-function reportOAuthDiagnostic(
-  stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
-  code:
-    | Exclude<GoogleConnectionFailureCode, 'cancelled'>
-    | GoogleWebIdentityFailureReason
-    | AuthorizationErrorCode
-    | 'config_unavailable'
-    | 'connection_start_failed'
-    | 'connection_failed'
-    | 'accept_failed'
-): void {
-  if (!app.isPackaged) console.error(`[Hantong OAuth] ${stage}:${code}`)
 }
 
 app.on('window-all-closed', () => {
@@ -379,7 +362,48 @@ const mainWindowRuntime = createMainWindowRuntime({
   publishAccountState,
   openExternal: (url) => shell.openExternal(url),
   openValidatedExternal: openExternal,
-  reportIdentityDiagnostic: (reason) => reportOAuthDiagnostic('identity', reason)
+  reportIdentityDiagnostic: (reason, accountId) => {
+    mainDiagnostics?.record({
+      type: 'oauth.progress',
+      accountId,
+      stage: 'identity_check',
+      outcome: 'failure',
+      code: reason
+    })
+  },
+  reportViewLoadDiagnostic: (accountId, diagnostic) => {
+    if (!mainDiagnostics) return
+    switch (diagnostic.type) {
+      case 'load_failure':
+        mainDiagnostics.record({
+          type: 'gmail.load.failure',
+          accountId,
+          ...(diagnostic.errorCode !== undefined ? { errorCode: diagnostic.errorCode } : {})
+        })
+        break
+      case 'load_timeout':
+        mainDiagnostics.record({ type: 'gmail.load.timeout', accountId })
+        break
+      case 'process_gone':
+        mainDiagnostics.record({
+          type: 'gmail.process.gone',
+          accountId,
+          reason: diagnostic.reason
+        })
+        break
+    }
+  },
+  reportNavigationDiagnostic: (accountId, diagnostic) => {
+    mainDiagnostics?.record({
+      type: 'gmail.navigation.blocked',
+      accountId,
+      source: diagnostic.source,
+      context: diagnostic.context,
+      hostname: diagnostic.hostname,
+      route: diagnostic.route,
+      reason: diagnostic.reason
+    })
+  }
 })
 
 void app
@@ -400,6 +424,7 @@ void app
         maxFiles: 3
       })
     })
+    mainDiagnostics = diagnostics
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
     const pauseController = createNotificationPauseController({
@@ -425,7 +450,6 @@ void app
       notify: showMailNotification,
       notificationPause: () => pauseController.snapshot(),
       refreshNotificationPause: () => pauseController.refresh(),
-      reportOAuthDiagnostic,
       bundledEnvironment: __HANTONG_BUNDLED_ENV__
     })
     googleConnectionManager = mailRuntime.connectionManager

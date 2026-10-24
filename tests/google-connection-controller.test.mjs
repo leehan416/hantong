@@ -167,6 +167,64 @@ test('cancel invalidates a pending connect response and prevents duplicate conne
   assert.equal(states.at(-1).operation, null)
 })
 
+test('restart cancels the active flow before opening a replacement and ignores duplicate requests', async () => {
+  const cancelRead = deferred()
+  const calls = []
+  const states = []
+  const controller = new GoogleConnectionController(
+    {
+      getGoogleConnectionStatus: async () => status('first', 'disconnected'),
+      connectGoogleAccount: async () => {
+        calls.push('connect')
+        return status('first', 'connecting')
+      },
+      cancelGoogleConnection: () => {
+        calls.push('cancel')
+        return cancelRead.promise
+      },
+      disconnectGoogleAccount: async () => status('first', 'disconnected')
+    },
+    (state) => states.push(state)
+  )
+  controller.selectAccount('first')
+  await tick()
+  const first = controller.connect()
+  await tick()
+  const restarting = controller.restart(() => true)
+  await controller.restart(() => true)
+  assert.deepEqual(calls, ['connect', 'cancel'])
+  cancelRead.resolve(status('first', 'disconnected'))
+  await restarting
+  assert.deepEqual(calls, ['connect', 'cancel', 'connect'])
+  assert.equal(states.at(-1).operation, null)
+  controller.dispose()
+  await first
+})
+
+test('restart does not reopen after the selected account changes', async () => {
+  let connects = 0
+  const states = []
+  const controller = new GoogleConnectionController(
+    {
+      getGoogleConnectionStatus: async () => status('first', 'disconnected'),
+      connectGoogleAccount: async () => {
+        connects += 1
+        return status('first', 'connecting')
+      },
+      cancelGoogleConnection: async () => status('first', 'disconnected'),
+      disconnectGoogleAccount: async () => status('first', 'disconnected')
+    },
+    (state) => states.push(state)
+  )
+  controller.selectAccount('first')
+  await tick()
+  await controller.connect()
+  await controller.restart(() => false)
+  assert.equal(connects, 1)
+  assert.equal(states.at(-1).status, 'disconnected')
+  controller.dispose()
+})
+
 test('status read failure stays unknown and retries status without starting OAuth', async () => {
   let reads = 0
   let connects = 0
@@ -340,6 +398,36 @@ test('Main access event invalidates an older access snapshot', async () => {
 
   assert.equal(states.at(-1).state.status, 'ready')
   assert.equal(connectionStates.at(-1).status, 'ready')
+  controller.dispose()
+})
+
+test('Main access event for an unselected account still updates its connection status', async () => {
+  const states = []
+  const connectionStates = []
+  let listener
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: (callback) => {
+        listener = callback
+        return () => {}
+      },
+      getAccountAccessState: (accountId) =>
+        Promise.resolve({ accountId, status: 'checking', connectionStatus: 'connecting' })
+    },
+    (state) => states.push(state),
+    (state) => connectionStates.push(state)
+  )
+
+  controller.selectAccount('second')
+  await tick()
+  listener({ accountId: 'first', status: 'required', connectionStatus: 'disconnected' })
+
+  assert.deepEqual(connectionStates.at(-1), {
+    accountId: 'first',
+    status: 'required',
+    connectionStatus: 'disconnected'
+  })
+  assert.equal(states.at(-1).accountId, 'second')
   controller.dispose()
 })
 

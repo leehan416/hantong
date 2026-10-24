@@ -263,13 +263,13 @@ test('Gmail profile fetch uses bearer auth and validates the returned email addr
   }
 })
 
-test('connection verifies the per-account web identity before and after the Gmail profile call', async () => {
+test('connection matches the per-account web identity only after the Gmail profile call', async () => {
   const { dependencies, calls } = makeConnectionDependencies()
   const operation = connection.startGoogleConnection('account-a', { clientId }, dependencies)
   const result = await operation.result
   assert.equal(result.emailAddress, 'owner+tag@example.com')
   assert.equal(result.tokens.accessToken, tokens.accessToken)
-  assert.equal(calls.identity, 2)
+  assert.equal(calls.identity, 1)
   assert.equal(calls.auth, 1)
   assert.equal(calls.exchange, 1)
   assert.equal(calls.profile, 1)
@@ -310,43 +310,43 @@ test('relay challenge failure falls back to Google OAuth without nonce', async (
   assert.equal(Object.hasOwn(result, 'relayNonce'), false)
 })
 
-test('missing web identity prevents browser authorization from starting', async () => {
+test('missing web identity never blocks browser authorization but returns no tokens', async () => {
+  let reads = 0
   const { dependencies, calls } = makeConnectionDependencies({
-    readWebIdentity: async () => ({ accountExists: true, emailAddress: null })
+    identityTimeoutMs: 1_200,
+    readWebIdentity: async () => {
+      reads += 1
+      return { accountExists: true, emailAddress: null }
+    }
   })
   const operation = connection.startGoogleConnection('account-a', { clientId }, dependencies)
   await assert.rejects(operation.result, { code: 'identity_unavailable' })
-  assert.equal(calls.auth, 0)
+  assert.equal(calls.auth, 1)
+  assert.equal(calls.profile, 1)
+  assert.ok(reads >= 2, 'a missing title email is retried before failing')
 })
 
-test('deleted account, changed web identity, and API identity mismatch cannot return tokens', async () => {
-  let deletedReads = 0
-  const deleted = makeConnectionDependencies({
+test('a late Gmail title email still completes the connection', async () => {
+  let reads = 0
+  const { dependencies } = makeConnectionDependencies({
     readWebIdentity: async () => {
-      deletedReads += 1
-      return deletedReads === 1
-        ? { accountExists: true, emailAddress: 'owner@example.com' }
-        : { accountExists: false, emailAddress: null }
+      reads += 1
+      return { accountExists: true, emailAddress: reads === 1 ? null : 'owner+tag@example.com' }
     }
+  })
+  const result = await connection.startGoogleConnection('account-a', { clientId }, dependencies)
+    .result
+  assert.equal(result.emailAddress, 'owner+tag@example.com')
+  assert.equal(reads, 2)
+})
+
+test('deleted account and API identity mismatch cannot return tokens', async () => {
+  const deleted = makeConnectionDependencies({
+    readWebIdentity: async () => ({ accountExists: false, emailAddress: null })
   })
   await assert.rejects(
     connection.startGoogleConnection('account-a', { clientId }, deleted.dependencies).result,
     { code: 'account_missing' }
-  )
-
-  let changedReads = 0
-  const changed = makeConnectionDependencies({
-    readWebIdentity: async () => {
-      changedReads += 1
-      return {
-        accountExists: true,
-        emailAddress: changedReads === 1 ? 'owner@example.com' : 'other@example.com'
-      }
-    }
-  })
-  await assert.rejects(
-    connection.startGoogleConnection('account-a', { clientId }, changed.dependencies).result,
-    { code: 'identity_changed' }
   )
 
   const mismatch = makeConnectionDependencies({

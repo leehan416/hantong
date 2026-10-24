@@ -3,6 +3,11 @@ import type { GoogleConnectionStatus } from '../shared/ipc'
 import { GoogleConnectionFailure, startGoogleConnection } from './google-connection'
 import type { GoogleConnectionFailureCode, GoogleConnectionResult } from './google-connection'
 import type { GoogleOAuthConfig } from './google-oauth-config'
+import type {
+  OAuthDiagnosticCode,
+  OAuthDiagnosticOutcome,
+  OAuthDiagnosticStage
+} from './main-diagnostics-types'
 
 export type GoogleConnectionStatusDto = GoogleConnectionStatus
 type RuntimeDiagnosticCode =
@@ -41,9 +46,11 @@ interface RuntimeDependencies {
   readonly exchangeCode: Parameters<typeof startGoogleConnection>[2]['exchangeCode']
   readonly fetchProfile: Parameters<typeof startGoogleConnection>[2]['fetchProfile']
   readonly manager: ConnectionManager
-  readonly reportFailure?: (
-    stage: 'config' | 'connection' | 'persistence',
-    code: RuntimeDiagnosticCode
+  readonly reportProgress?: (
+    accountId: string,
+    stage: OAuthDiagnosticStage,
+    outcome: OAuthDiagnosticOutcome,
+    code?: OAuthDiagnosticCode
   ) => void
   readonly onConnected?: (accountId: string, result: GoogleConnectionResult) => void
   readonly onDisconnected?: (accountId: string) => void
@@ -78,12 +85,14 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
     accountId,
     status: value
   })
-  const reportFailure = (
-    stage: 'config' | 'connection' | 'persistence',
-    code: RuntimeDiagnosticCode
+  const reportProgress = (
+    accountId: string,
+    stage: OAuthDiagnosticStage,
+    outcome: OAuthDiagnosticOutcome,
+    code?: OAuthDiagnosticCode
   ): void => {
     try {
-      dependencies.reportFailure?.(stage, code)
+      dependencies.reportProgress?.(accountId, stage, outcome, code)
     } catch {
       // Diagnostics must never affect connection behavior.
     }
@@ -106,7 +115,6 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
       case 'invalid_response':
       case 'identity_unavailable':
       case 'account_missing':
-      case 'identity_changed':
       case 'identity_mismatch':
         return error.code
       case 'cancelled':
@@ -158,15 +166,18 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
       }
       let connection: ReturnType<typeof startGoogleConnection>
       let config: GoogleOAuthConfig
+      reportProgress(accountId, 'config', 'started')
       try {
         config = dependencies.loadConfig()
         if (generation(accountId) !== expected) {
           return status(accountId, active.has(accountId) ? 'connecting' : 'disconnected')
         }
+        reportProgress(accountId, 'config', 'success')
       } catch {
-        reportFailure('config', 'config_unavailable')
+        reportProgress(accountId, 'config', 'failure', 'config_unavailable')
         return status(accountId, 'error')
       }
+      reportProgress(accountId, 'connection', 'started')
       try {
         connection = startGoogleConnection(accountId, config, {
           readWebIdentity: dependencies.readWebIdentity,
@@ -177,10 +188,11 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
                 Promise.resolve(undefined)
             : undefined,
           exchangeCode: dependencies.exchangeCode,
-          fetchProfile: dependencies.fetchProfile
+          fetchProfile: dependencies.fetchProfile,
+          reportProgress: (stage, outcome, code) => reportProgress(accountId, stage, outcome, code)
         })
       } catch {
-        reportFailure('connection', 'connection_start_failed')
+        reportProgress(accountId, 'connection', 'failure', 'connection_start_failed')
         return status(accountId, 'error')
       }
       const operation: ActiveOperation = {
@@ -197,7 +209,9 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           !dependencies.accountExists(accountId)
         )
           return status(accountId, 'disconnected')
+        reportProgress(accountId, 'connection', 'success')
         operation.phase = 'accepting'
+        reportProgress(accountId, 'persistence', 'started')
         await dependencies.manager.acceptConnection(accountId, result)
         if (
           active.get(accountId) !== operation ||
@@ -206,6 +220,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         ) {
           return status(accountId, 'disconnected')
         }
+        reportProgress(accountId, 'persistence', 'success')
         active.delete(accountId)
         try {
           dependencies.onConnected?.(accountId, result)
@@ -220,14 +235,15 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
           reportPendingChanged()
         }
         if (operation.phase === 'accepting') {
-          reportFailure('persistence', 'accept_failed')
+          reportProgress(accountId, 'persistence', 'failure', 'accept_failed')
           return status(accountId, 'error')
         }
         const failureCode = connectionFailureCode(error)
         if (failureCode === 'cancelled') {
+          reportProgress(accountId, 'connection', 'cancelled', failureCode)
           return status(accountId, 'disconnected')
         }
-        reportFailure('connection', failureCode)
+        reportProgress(accountId, 'connection', 'failure', failureCode)
         return status(accountId, 'error')
       }
     },
