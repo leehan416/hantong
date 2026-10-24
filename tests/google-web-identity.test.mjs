@@ -18,10 +18,32 @@ function anchor(href, label, parentName = 'HEADER') {
 }
 
 function executeDocument(anchors) {
+  const headers =
+    anchors.length === 0
+      ? []
+      : [
+          {
+            closest: () => null,
+            querySelectorAll: (selector) => {
+              assert.equal(selector, 'a[href]')
+              return anchors
+            }
+          }
+        ]
   const document = {
     querySelectorAll: (selector) => {
-      assert.equal(selector, 'header a[href], [role="banner"] a[href]')
-      return anchors
+      assert.equal(selector, 'header, [role="banner"]')
+      return headers
+    }
+  }
+  return runInNewContext(identity.GMAIL_ACCOUNT_IDENTITY_SCRIPT, { document, URL })
+}
+
+function executeHeader(headers) {
+  const document = {
+    querySelectorAll: (selector) => {
+      assert.equal(selector, 'header, [role="banner"]')
+      return headers
     }
   }
   return runInNewContext(identity.GMAIL_ACCOUNT_IDENTITY_SCRIPT, { document, URL })
@@ -67,13 +89,13 @@ test('identity script rejects ambiguous, malformed, and content-only evidence', 
       anchor('https://accounts.google.com/SignOutOptions', 'a@example.com'),
       anchor('https://accounts.google.com/SignOutOptions', 'b@example.com')
     ]),
-    null
+    '__hantong_identity_failure__:identity_ambiguous'
   )
   assert.equal(
     executeDocument([
       anchor('https://accounts.google.com/SignOutOptions', 'a@example.com', 'MAIN')
     ]),
-    null
+    '__hantong_identity_failure__:account_link_missing'
   )
   assert.equal(
     executeDocument([anchor('https://accounts.google.com/SignOutOptions', '(a!b@example.com)')]),
@@ -81,14 +103,48 @@ test('identity script rejects ambiguous, malformed, and content-only evidence', 
   )
   assert.equal(
     executeDocument([anchor('https://accounts.google.com/SignOutOptions', 'bad:a!b@example.com')]),
-    null
+    '__hantong_identity_failure__:account_email_unavailable'
   )
   assert.equal(
     executeDocument([
       anchor('https://accounts.google.com.evil.test/SignOutOptions', 'a@example.com')
     ]),
-    null
+    '__hantong_identity_failure__:account_link_missing'
   )
+})
+
+test('identity script returns only fixed reasons for missing trusted account evidence', () => {
+  const header = (anchors) => ({
+    closest: () => null,
+    querySelectorAll: () => anchors
+  })
+  assert.equal(executeHeader([]), '__hantong_identity_failure__:header_missing')
+  assert.equal(
+    executeHeader([header([anchor('https://accounts.google.com/SignOutOptions', null)])]),
+    '__hantong_identity_failure__:account_label_missing'
+  )
+  assert.equal(
+    executeHeader([header([anchor('https://accounts.google.com/SignOutOptions', 'Account')])]),
+    '__hantong_identity_failure__:account_email_unavailable'
+  )
+})
+
+test('identity reader reports fixed extraction reasons while remaining fail-closed', async () => {
+  const reasons = []
+  const view = {
+    contents: makeContents({
+      executeJavaScriptInIsolatedWorld: async () =>
+        '__hantong_identity_failure__:account_email_unavailable'
+    }),
+    revision: () => 1,
+    eligible: () => true
+  }
+  const reader = identity.createGoogleWebIdentityReader(
+    () => view,
+    (reason, id) => reasons.push([reason, id])
+  )
+  assert.equal(await reader.read(accountId), null)
+  assert.deepEqual(reasons, [['account_email_unavailable', accountId]])
 })
 
 test('reader rejects unsafe URL, load, disposal, malformed result, and navigation races', async () => {
@@ -150,7 +206,7 @@ test('identity reader reports fixed failure reasons without changing fail-closed
   let view
   const reader = identity.createGoogleWebIdentityReader(
     () => view,
-    (reason) => reasons.push(reason)
+    (reason, id) => reasons.push([reason, id])
   )
   assert.equal(await reader.read(accountId), null)
   view = {
@@ -177,11 +233,11 @@ test('identity reader reports fixed failure reasons without changing fail-closed
   view.contents.executeJavaScriptInIsolatedWorld = async () => null
   assert.equal(await reader.read(accountId), null)
   assert.deepEqual(reasons, [
-    'missing_view',
-    'untrusted_document',
-    'document_loading',
-    'script_failed',
-    'identity_unavailable'
+    ['missing_view', accountId],
+    ['untrusted_document', accountId],
+    ['document_loading', accountId],
+    ['script_failed', accountId],
+    ['identity_unavailable', accountId]
   ])
 
   const observerFailure = identity.createGoogleWebIdentityReader(

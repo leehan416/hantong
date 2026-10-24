@@ -6,10 +6,12 @@ import {
   type WebPreferences
 } from 'electron'
 import { classifyGmailNavigation } from './gmail-navigation'
+import { sanitizeNavigationDiagnostic } from './navigation-diagnostic'
+import type { NavigationDiagnostic } from './navigation-diagnostic'
 
 interface GmailViewCallbacks {
   openExternal: (url: string) => Promise<void>
-  onNavigationBlocked: () => void
+  onNavigationBlocked: (diagnostic: NavigationDiagnostic) => void
   onMainFrameNavigation: (url: string) => void
   isMailAccessAllowed: () => boolean
 }
@@ -58,8 +60,23 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
   webSession.setPermissionCheckHandler(() => false)
   webSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
 
-  function openExternal(url: string): void {
-    void callbacks.openExternal(url).catch(callbacks.onNavigationBlocked)
+  function openExternal(url: string, context: 'main' | 'popup'): void {
+    void callbacks
+      .openExternal(url)
+      .catch(() =>
+        callbacks.onNavigationBlocked(
+          sanitizeNavigationDiagnostic('external_open_failure', context, url, 'external_redirect')
+        )
+      )
+  }
+
+  function reportBlocked(
+    source: 'redirect' | 'navigation' | 'popup',
+    context: 'main' | 'popup',
+    url: string,
+    reason: 'external_redirect' | 'oauth_endpoint' | 'unsafe_url' | 'mail_access_denied'
+  ): void {
+    callbacks.onNavigationBlocked(sanitizeNavigationDiagnostic(source, context, url, reason))
   }
 
   function guard(
@@ -79,8 +96,14 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       }
       if (target === 'internal') return
       event.preventDefault()
-      if (target === 'external') openExternal(event.url)
-      else callbacks.onNavigationBlocked()
+      if (target === 'external') openExternal(event.url, child ? 'popup' : 'main')
+      else
+        reportBlocked(
+          'navigation',
+          child ? 'popup' : 'main',
+          event.url,
+          navigationReason(event.url)
+        )
     })
     contents.on('will-redirect', (event) => {
       const target = classifyGmailNavigation(event.url)
@@ -90,25 +113,39 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
         callbacks.onMainFrameNavigation(event.url)
       if (event.isMainFrame && child && !callbacks.isMailAccessAllowed() && isMailUrl(event.url)) {
         event.preventDefault()
-        callbacks.onNavigationBlocked()
+        reportBlocked('redirect', 'popup', event.url, 'mail_access_denied')
         return
       }
       if (event.isMainFrame && target !== 'internal') {
         // Redirects must not launch an application without a new user action.
         event.preventDefault()
-        callbacks.onNavigationBlocked()
+        reportBlocked(
+          'redirect',
+          child ? 'popup' : 'main',
+          event.url,
+          target === 'external' ? 'external_redirect' : navigationReason(event.url)
+        )
       }
     })
     contents.setWindowOpenHandler(({ url }) => {
       const target = classifyGmailNavigation(url)
       if (target === 'external') {
-        openExternal(url)
+        openExternal(url, child ? 'popup' : 'main')
         return { action: 'deny' }
       }
       const lockedGoogleSignIn =
         !callbacks.isMailAccessAllowed() && target === 'internal' && isGoogleAuthUrl(url)
       if (!callbacks.isMailAccessAllowed() && !lockedGoogleSignIn) {
-        callbacks.onNavigationBlocked()
+        reportBlocked(
+          'popup',
+          child ? 'popup' : 'main',
+          url,
+          isMailUrl(url)
+            ? 'mail_access_denied'
+            : isGoogleOAuthUrl(url)
+              ? 'oauth_endpoint'
+              : 'unsafe_url'
+        )
         return { action: 'deny' }
       }
       if (target === 'internal') {
@@ -119,7 +156,7 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
           overrideBrowserWindowOptions: { webPreferences }
         }
       }
-      callbacks.onNavigationBlocked()
+      reportBlocked('popup', child ? 'popup' : 'main', url, navigationReason(url))
       return { action: 'deny' }
     })
     contents.on('did-create-window', (child, details) => {
@@ -202,4 +239,21 @@ function isGoogleAuthUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function isGoogleOAuthUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'accounts.google.com' &&
+      /^\/o\/oauth2(?:\/|$)/.test(url.pathname)
+    )
+  } catch {
+    return false
+  }
+}
+
+function navigationReason(value: string): 'oauth_endpoint' | 'unsafe_url' {
+  return isGoogleOAuthUrl(value) ? 'oauth_endpoint' : 'unsafe_url'
 }

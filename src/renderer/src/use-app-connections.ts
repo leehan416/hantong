@@ -24,6 +24,7 @@ export function useAppConnections(
   accessController: React.RefObject<AccountAccessController | null>
   accountActionsBusy: boolean
   reconnectFromGate: () => Promise<void>
+  reopenFromGate: () => Promise<void>
   cancelFromGate: () => Promise<void>
   removeAccount: (accountId: string, removed: boolean) => void
   setGoogleStates: React.Dispatch<React.SetStateAction<Record<string, GoogleConnectionUiState>>>
@@ -45,6 +46,7 @@ export function useAppConnections(
   const googleControllerPool = useRef<GoogleConnectionControllerPool | null>(null)
   const notificationRecoveryController = useRef<NotificationRecoveryController | null>(null)
   const accessController = useRef<AccountAccessController | null>(null)
+  const activeAccountIdRef = useRef(activeAccountId)
 
   useEffect(() => {
     const controller = new GoogleConnectionControllerPool(window.api, (state) => {
@@ -88,6 +90,7 @@ export function useAppConnections(
   }, [])
 
   useEffect(() => {
+    activeAccountIdRef.current = activeAccountId
     if (activeAccountId) googleControllerPool.current?.forAccount(activeAccountId)
     accessController.current?.selectAccount(activeAccountId)
     notificationRecoveryController.current?.selectAccount(activeAccountId)
@@ -111,6 +114,15 @@ export function useAppConnections(
     await accessController.current?.refresh()
   }
 
+  async function reopenFromGate(): Promise<void> {
+    if (!activeAccountId) return
+    const accountId = activeAccountId
+    const controller = googleControllerPool.current?.forAccount(accountId)
+    if (!controller) return
+    await controller.restart(() => activeAccountIdRef.current === accountId)
+    if (activeAccountIdRef.current === accountId) await accessController.current?.refresh()
+  }
+
   function removeAccount(accountId: string, removed: boolean): void {
     googleControllerPool.current?.remove(accountId)
     if (removed) {
@@ -132,6 +144,7 @@ export function useAppConnections(
     accessController,
     accountActionsBusy,
     reconnectFromGate,
+    reopenFromGate,
     cancelFromGate,
     removeAccount,
     setGoogleStates

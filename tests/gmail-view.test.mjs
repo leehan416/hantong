@@ -4,9 +4,10 @@ import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-function fixture({ allowed = false } = {}) {
+function fixture({ allowed = false, rejectOpenExternal = false } = {}) {
   const opened = []
   let blocked = 0
+  const diagnostics = []
   let reloads = 0
   const webSession = {
     setPermissionCheckHandler(handler) {
@@ -51,15 +52,25 @@ function fixture({ allowed = false } = {}) {
   const handle = createGmailView(webSession, {
     openExternal: async (url) => {
       opened.push(url)
+      if (rejectOpenExternal) throw new Error('private launch failure')
     },
-    onNavigationBlocked: () => {
+    onNavigationBlocked: (diagnostic) => {
       blocked += 1
+      diagnostics.push(diagnostic)
     },
     onMainFrameNavigation: (url) => navigated.push(url),
     isMailAccessAllowed: () => allowed
   })
   const navigated = []
-  return { handle, webSession, opened, blocked: () => blocked, navigated, reloads: () => reloads }
+  return {
+    handle,
+    webSession,
+    opened,
+    blocked: () => blocked,
+    diagnostics,
+    navigated,
+    reloads: () => reloads
+  }
 }
 
 test('creating a Gmail view grants no Node or preload access and does not load eagerly', async () => {
@@ -115,6 +126,82 @@ test('redirects cannot launch the system browser or leave the trusted hosts', ()
   assert.equal(prevented, true)
   assert.deepEqual(opened, [])
   assert.equal(blocked(), 1)
+})
+
+test('school SSO redirect reports only its validated hostname and fixed classification', () => {
+  const { handle, diagnostics } = fixture()
+  let prevented = false
+  handle.view.webContents.emit('will-redirect', {
+    url: 'https://login.school.example.edu/sso/private?email=a%40b.test#secret',
+    isMainFrame: true,
+    preventDefault() {
+      prevented = true
+    }
+  })
+  assert.equal(prevented, true)
+  assert.deepEqual(structuredClone(diagnostics[0]), {
+    source: 'redirect',
+    context: 'main',
+    hostname: 'login.school.example.edu',
+    route: 'other',
+    reason: 'external_redirect'
+  })
+})
+
+test('long school SSO query keeps the safe host without retaining query data', () => {
+  const { handle, diagnostics } = fixture()
+  const longPrivateQuery = 'private='.padEnd(6000, 'x')
+  let prevented = false
+  handle.view.webContents.emit('will-redirect', {
+    url: `https://login.school.example.edu/saml/consume?${longPrivateQuery}`,
+    isMainFrame: true,
+    preventDefault() {
+      prevented = true
+    }
+  })
+  assert.equal(prevented, true)
+  assert.equal(diagnostics[0].hostname, 'login.school.example.edu')
+  assert.equal(JSON.stringify(diagnostics[0]).includes('private='), false)
+})
+
+test('school SSO hostname remains reportable when its HTTPS URL uses a custom port', () => {
+  const { handle, diagnostics } = fixture()
+  let prevented = false
+  handle.view.webContents.emit('will-redirect', {
+    url: 'https://login.school.example.edu:8443/saml/consume?secret=value',
+    isMainFrame: true,
+    preventDefault() {
+      prevented = true
+    }
+  })
+  assert.equal(prevented, true)
+  assert.equal(diagnostics[0].hostname, 'login.school.example.edu')
+})
+
+test('OAuth popup and external launch failure report sanitized destinations', async () => {
+  const { handle, diagnostics } = fixture()
+  handle.view.webContents.openWindow({
+    url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=secret'
+  })
+  assert.equal(diagnostics[0].reason, 'oauth_endpoint')
+  const failing = fixture({ rejectOpenExternal: true })
+  let prevented = false
+  failing.handle.view.webContents.emit('will-frame-navigate', {
+    url: 'https://login.school.example.edu/sso/private?token=secret',
+    isMainFrame: true,
+    preventDefault() {
+      prevented = true
+    }
+  })
+  assert.equal(prevented, true)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(structuredClone(failing.diagnostics[0]), {
+    source: 'external_open_failure',
+    context: 'main',
+    hostname: 'login.school.example.edu',
+    route: 'other',
+    reason: 'external_redirect'
+  })
 })
 
 test('authentication popups share the session and inherit the navigation guards', async () => {

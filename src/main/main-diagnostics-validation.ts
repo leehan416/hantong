@@ -51,8 +51,19 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     count?: unknown
     delayMs?: unknown
     stage?: unknown
+    errorCode?: unknown
+    reason?: unknown
+    source?: unknown
+    context?: unknown
+    hostname?: unknown
+    route?: unknown
   }
   const types: readonly string[] = [
+    'gmail.load.failure',
+    'gmail.load.timeout',
+    'gmail.navigation.blocked',
+    'gmail.process.gone',
+    'oauth.progress',
     'relay.ready',
     'relay.receive',
     'relay.heartbeat',
@@ -75,6 +86,101 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     'unread.stale'
   ]
   if (typeof event.type !== 'string' || !types.includes(event.type)) return false
+  if (
+    event.type === 'gmail.navigation.blocked' &&
+    (typeof event.source !== 'string' ||
+      !['redirect', 'navigation', 'popup', 'external_open_failure'].includes(event.source) ||
+      typeof event.context !== 'string' ||
+      !['main', 'popup'].includes(event.context) ||
+      typeof event.hostname !== 'string' ||
+      event.hostname.length > 253 ||
+      (event.hostname !== 'redacted' &&
+        !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+          event.hostname
+        )) ||
+      typeof event.route !== 'string' ||
+      !['google_signin', 'google_oauth', 'gmail', 'other'].includes(event.route) ||
+      typeof event.reason !== 'string' ||
+      !['external_redirect', 'oauth_endpoint', 'unsafe_url', 'mail_access_denied'].includes(
+        event.reason
+      ))
+  )
+    return false
+  if (
+    event.type === 'gmail.load.failure' &&
+    event.errorCode !== undefined &&
+    !Number.isSafeInteger(event.errorCode)
+  )
+    return false
+  if (
+    event.type === 'gmail.process.gone' &&
+    (typeof event.reason !== 'string' ||
+      ![
+        'clean-exit',
+        'abnormal-exit',
+        'killed',
+        'crashed',
+        'oom',
+        'launch-failed',
+        'integrity-failure',
+        'memory-eviction',
+        'unknown'
+      ].includes(event.reason))
+  )
+    return false
+  if (
+    event.type === 'oauth.progress' &&
+    (typeof event.stage !== 'string' ||
+      ![
+        'config',
+        'connection',
+        'identity_check',
+        'authorization',
+        'token_exchange',
+        'profile_fetch',
+        'identity_match',
+        'persistence'
+      ].includes(event.stage) ||
+      typeof event.outcome !== 'string' ||
+      !['started', 'success', 'failure', 'cancelled'].includes(event.outcome) ||
+      (event.code !== undefined &&
+        (typeof event.code !== 'string' ||
+          ![
+            'cancelled',
+            'timeout',
+            'authorization_failed',
+            'network_error',
+            'redirect_refused',
+            'provider_error',
+            'invalid_response',
+            'identity_unavailable',
+            'account_missing',
+            'identity_changed',
+            'identity_mismatch',
+            'config_unavailable',
+            'connection_start_failed',
+            'connection_failed',
+            'accept_failed',
+            'missing_view',
+            'not_ready',
+            'manager_disposed',
+            'view_loading',
+            'view_not_loaded',
+            'view_blocked',
+            'view_disposing',
+            'document_destroyed',
+            'document_loading',
+            'untrusted_document',
+            'script_failed',
+            'navigation_changed',
+            'header_missing',
+            'account_link_missing',
+            'account_label_missing',
+            'account_email_unavailable',
+            'identity_ambiguous'
+          ].includes(event.code))))
+  )
+    return false
   if (
     event.type === 'relay.bootstrap' &&
     (typeof event.stage !== 'string' ||

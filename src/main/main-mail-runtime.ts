@@ -35,9 +35,6 @@ import type { createAccountStore } from './account-store'
 import type { createAccountAccessController } from './account-access-controller'
 import type { createAccountRemovalController } from './account-removal'
 import type { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
-import type { GoogleConnectionFailureCode } from './google-connection'
-import type { GoogleWebIdentityFailureReason } from './google-web-identity'
-import type { AuthorizationErrorCode } from './google-authorization'
 import type { GmailMailAlert } from './gmail-mail-alerts'
 import type { NotificationPauseSnapshot } from './notification-pause'
 import { UNREAD_COUNTS_EVENT, NOTIFICATION_CONNECTIONS_EVENT } from '../shared/ipc'
@@ -69,17 +66,6 @@ export interface MainMailRuntimeDependencies {
   readonly notify: (alert: GmailMailAlert) => void
   readonly notificationPause: () => NotificationPauseSnapshot
   readonly refreshNotificationPause: () => void
-  readonly reportOAuthDiagnostic: (
-    stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
-    code:
-      | Exclude<GoogleConnectionFailureCode, 'cancelled'>
-      | GoogleWebIdentityFailureReason
-      | AuthorizationErrorCode
-      | 'config_unavailable'
-      | 'connection_start_failed'
-      | 'connection_failed'
-      | 'accept_failed'
-  ) => void
   readonly bundledEnvironment: Record<string, string | undefined>
 }
 
@@ -314,7 +300,6 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
     startAuthorization: (config, nonce) =>
       startGoogleAuthorization(config, {
         openExternal: (url) => shell.openExternal(url),
-        reportFailure: (code) => dependencies.reportOAuthDiagnostic('authorization', code),
         nonce
       }),
     exchangeCode: (config, authorization, signal) =>
@@ -344,7 +329,15 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
       mailAlerts?.remove(accountId)
     },
     onPendingChanged: () => notificationConnectionController?.flushAlerts(),
-    reportFailure: (stage, code) => dependencies.reportOAuthDiagnostic(stage, code)
+    reportProgress: (accountId, stage, outcome, code) => {
+      diagnostics.record({
+        type: 'oauth.progress',
+        accountId,
+        stage,
+        outcome,
+        ...(code ? { code } : {})
+      })
+    }
   })
   notificationConnectionController = createNotificationConnectionController({
     accountExists,

@@ -79,6 +79,46 @@ test('connection lifecycle hook runs only after accepted connection and disconne
   assert.deepEqual(hooks[1], ['disconnected', accountId])
 })
 
+test('OAuth progress diagnostics report safe stages through credential persistence', async () => {
+  const progress = []
+  const f = fixture({
+    reportProgress: (account, stage, outcome, code) =>
+      progress.push({ account, stage, outcome, code })
+  })
+  assert.equal((await f.runtime.connect(accountId)).status, 'connected')
+  assert.deepEqual(
+    progress.map(({ stage, outcome }) => [stage, outcome]),
+    [
+      ['config', 'started'],
+      ['config', 'success'],
+      ['connection', 'started'],
+      ['identity_check', 'started'],
+      ['identity_check', 'success'],
+      ['authorization', 'started'],
+      ['authorization', 'success'],
+      ['token_exchange', 'started'],
+      ['token_exchange', 'success'],
+      ['profile_fetch', 'started'],
+      ['profile_fetch', 'success'],
+      ['identity_match', 'started'],
+      ['identity_match', 'success'],
+      ['connection', 'success'],
+      ['persistence', 'started'],
+      ['persistence', 'success']
+    ]
+  )
+  assert.ok(progress.every((event) => event.account === accountId))
+})
+
+test('OAuth progress callback failures do not change connection results', async () => {
+  const f = fixture({
+    reportProgress: () => {
+      throw new Error('private diagnostic writer failure')
+    }
+  })
+  assert.equal((await f.runtime.connect(accountId)).status, 'connected')
+})
+
 test('failed identity checks and cancellation skip relay hooks while cancelAll preserves accepted relay state', async () => {
   const hooks = []
   const mismatch = fixture({
@@ -152,6 +192,22 @@ test('an unavailable web identity fails safely before opening browser authorizat
   assert.deepEqual({ ...result }, { accountId, status: 'error' })
   assert.equal(f.calls.authorization, 0)
   assert.deepEqual(diagnostics, [['connection', 'identity_unavailable']])
+})
+
+test('identity mismatch progress records only its allowlisted failure code', async () => {
+  const progress = []
+  const f = fixture({
+    reportProgress: (account, stage, outcome, code) =>
+      progress.push({ account, stage, outcome, code }),
+    fetchProfile: async () => 'different@example.com'
+  })
+  assert.equal((await f.runtime.connect(accountId)).status, 'error')
+  assert.deepEqual(progress.at(-2), {
+    account: accountId,
+    stage: 'identity_match',
+    outcome: 'failure',
+    code: 'identity_mismatch'
+  })
 })
 
 test('persistence diagnostics identify acceptance failure without exposing its error', async () => {

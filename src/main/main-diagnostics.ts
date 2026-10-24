@@ -55,6 +55,37 @@ export function createMainDiagnostics(options: MainDiagnosticsOptions): {
     account?: string
   ): MainDiagnosticRecord => {
     switch (event.type) {
+      case 'oauth.progress':
+        return {
+          at,
+          type: event.type,
+          ...(account ? { account } : {}),
+          stage: event.stage,
+          outcome: event.outcome,
+          ...(event.code ? { code: event.code } : {})
+        }
+      case 'gmail.load.failure':
+        return {
+          at,
+          type: event.type,
+          ...(account ? { account } : {}),
+          ...(event.errorCode !== undefined ? { errorCode: event.errorCode } : {})
+        }
+      case 'gmail.process.gone':
+        return { at, type: event.type, ...(account ? { account } : {}), reason: event.reason }
+      case 'gmail.load.timeout':
+        return { at, type: event.type, ...(account ? { account } : {}) }
+      case 'gmail.navigation.blocked':
+        return {
+          at,
+          type: event.type,
+          ...(account ? { account } : {}),
+          source: event.source,
+          context: event.context,
+          hostname: event.hostname,
+          route: event.route,
+          reason: event.reason
+        }
       case 'relay.failure':
         return { at, type: event.type, ...(account ? { account } : {}), code: safeCode(event.code) }
       case 'relay.retry':

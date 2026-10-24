@@ -12,6 +12,8 @@ import { optimizer } from '@electron-toolkit/utils'
 import { ACCOUNT_ACCESS_STATE_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
 import type { GoogleWebIdentityFailureReason } from './google-web-identity'
+import type { GmailViewLoadDiagnostic } from './account-view-lifecycle'
+import type { NavigationDiagnostic } from './navigation-diagnostic'
 import type { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
 import type { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 
@@ -43,7 +45,15 @@ export interface MainWindowRuntimeDependencies {
   readonly publishAccountState: (owner: BrowserWindow, state: AccountState) => void
   readonly openExternal: (url: string) => Promise<void>
   readonly openValidatedExternal: (url: string) => void
-  readonly reportIdentityDiagnostic: (reason: GoogleWebIdentityFailureReason) => void
+  readonly reportIdentityDiagnostic: (
+    reason: GoogleWebIdentityFailureReason,
+    accountId: string
+  ) => void
+  readonly reportViewLoadDiagnostic: (
+    accountId: string,
+    diagnostic: GmailViewLoadDiagnostic
+  ) => void
+  readonly reportNavigationDiagnostic: (accountId: string, diagnostic: NavigationDiagnostic) => void
 }
 
 export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependencies): {
@@ -143,7 +153,9 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       },
       dependencies.openExternal,
       30_000,
-      dependencies.reportIdentityDiagnostic
+      dependencies.reportIdentityDiagnostic,
+      dependencies.reportViewLoadDiagnostic,
+      dependencies.reportNavigationDiagnostic
     )
     dependencies.setViews(windowViewManager, windowViewManager)
     const savedSettings = dependencies.settings()?.get()
