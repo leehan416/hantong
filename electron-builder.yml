@@ -14,6 +14,7 @@ publish:
   provider: github
   owner: leehan416
   repo: hantong
+  channel: ${channel}
   releaseType: draft
 asarUnpack:
   - resources/**
