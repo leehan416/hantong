@@ -39,6 +39,7 @@ import { is } from '@electron-toolkit/utils'
 import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
 import { createNotificationPauseStore } from './notification-pause-store'
+import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
 import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
 import {
@@ -84,6 +85,7 @@ let fallbackSync: ReturnType<typeof setInterval> | undefined
 let cleanupPromise: Promise<void> | undefined
 let wasOpenedAtLogin = false
 let mainDiagnostics: ReturnType<typeof createMainDiagnostics> | null = null
+let loginLaunchPromptStore: ReturnType<typeof createLoginLaunchPromptStore> | null = null
 
 const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   window: () => mainWindow,
@@ -99,7 +101,36 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
-  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings)
+  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),
+  ownerAlive: () => mainWindow !== null && !mainWindow.isDestroyed(),
+  confirmEnable: async () => {
+    const owner = mainWindow
+    if (!owner || owner.isDestroyed() || appQuitting) return undefined
+    const korean = uiLocale() === 'ko'
+    const result = await dialog.showMessageBox(owner, {
+      type: 'question',
+      title: korean ? '로그인 시 실행' : 'Launch at Login',
+      message: korean
+        ? '한통을 로그인할 때 자동으로 실행할까요?'
+        : 'Launch Hantong automatically when you log in?',
+      detail: korean
+        ? 'macOS 로그인 항목에 한통을 등록합니다.'
+        : 'Hantong will be added to your macOS Login Items.',
+      buttons: korean ? ['취소', '허용'] : ['Cancel', 'Allow'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (mainWindow !== owner || owner.isDestroyed() || appQuitting) return undefined
+    if (result.response !== 0 && result.response !== 1) return undefined
+    return result.response === 1
+  },
+  promptSeen: () => loginLaunchPromptStore?.isSeen() ?? false,
+  markPromptSeen: () => {
+    if (!loginLaunchPromptStore) throw new Error('Login launch prompt storage is unavailable')
+    loginLaunchPromptStore.markSeen()
+  },
+  onDiagnostic: (event) => mainDiagnostics?.record(event)
 })
 
 function prepareApplicationShutdown(): Promise<void> {
@@ -409,13 +440,6 @@ const mainWindowRuntime = createMainWindowRuntime({
 void app
   .whenReady()
   .then(() => {
-    if (app.isPackaged && process.platform === 'darwin') {
-      try {
-        wasOpenedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin
-      } catch {
-        wasOpenedAtLogin = false
-      }
-    }
     const diagnostics = createMainDiagnostics({
       now: () => Date.now(),
       sink: createRotatingDiagnosticsSink({
@@ -425,8 +449,38 @@ void app
       })
     })
     mainDiagnostics = diagnostics
+    if (app.isPackaged && process.platform === 'darwin') {
+      try {
+        const loginSettings = app.getLoginItemSettings()
+        wasOpenedAtLogin = loginSettings.wasOpenedAtLogin
+        diagnostics.record({
+          type: 'login.launch',
+          operation: 'startup_read',
+          openAtLogin: loginSettings.openAtLogin,
+          status:
+            loginSettings.status === 'enabled' ||
+            loginSettings.status === 'not-registered' ||
+            loginSettings.status === 'requires-approval' ||
+            loginSettings.status === 'not-found'
+              ? loginSettings.status
+              : loginSettings.status === undefined
+                ? 'missing'
+                : 'unknown',
+          outcome: 'success'
+        })
+      } catch {
+        wasOpenedAtLogin = false
+        diagnostics.record({
+          type: 'login.launch',
+          operation: 'startup_read',
+          status: 'missing',
+          outcome: 'failure'
+        })
+      }
+    }
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
+    loginLaunchPromptStore = createLoginLaunchPromptStore(app.getPath('userData'))
     const pauseController = createNotificationPauseController({
       store: createNotificationPauseStore(app.getPath('userData')),
       now: () => Date.now(),

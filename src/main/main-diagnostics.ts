@@ -123,6 +123,18 @@ export function createMainDiagnostics(options: MainDiagnosticsOptions): {
         }
       case 'unread.applied':
         return { at, type: event.type, ...(account ? { account } : {}), count: event.count }
+      case 'login.launch':
+        return {
+          at,
+          type: event.type,
+          operation: event.operation,
+          ...(event.requestedEnabled !== undefined
+            ? { requestedEnabled: event.requestedEnabled }
+            : {}),
+          ...(event.openAtLogin !== undefined ? { openAtLogin: event.openAtLogin } : {}),
+          ...(event.status !== undefined ? { status: event.status } : {}),
+          outcome: event.outcome
+        }
       default:
         return { at, type: event.type, ...(account ? { account } : {}) }
     }

@@ -24,6 +24,7 @@ export type MainDiagnosticType =
   | 'unread.failure'
   | 'unread.applied'
   | 'unread.stale'
+  | 'login.launch'
 
 export type MainDiagnosticEvent =
   | { readonly type: 'gmail.load.failure'; readonly accountId: string; readonly errorCode?: number }
@@ -115,6 +116,17 @@ export type MainDiagnosticEvent =
   | { readonly type: 'unread.failure'; readonly accountId: string }
   | { readonly type: 'unread.applied'; readonly accountId: string; readonly count: number }
   | { readonly type: 'unread.stale'; readonly accountId: string }
+  | LoginLaunchDiagnosticEvent
+
+export interface LoginLaunchDiagnosticEvent {
+  readonly type: 'login.launch'
+  readonly operation: 'startup_read' | 'read' | 'set' | 'readback'
+  readonly requestedEnabled?: boolean
+  readonly openAtLogin?: boolean
+  readonly status?:
+    'enabled' | 'not-registered' | 'requires-approval' | 'not-found' | 'unknown' | 'missing'
+  readonly outcome: 'returned' | 'success' | 'failure' | 'mismatch'
+}
 
 export type RelayDiagnosticCode =
   | 'cancelled'
@@ -209,6 +221,8 @@ export interface MainDiagnosticRecord {
     | 'missing'
     | 'unavailable'
     | 'skipped'
+    | 'mismatch'
+    | 'returned'
   readonly code?: RelayDiagnosticCode | OAuthDiagnosticCode
   readonly errorCode?: number
   readonly context?: 'main' | 'popup'
@@ -226,6 +240,11 @@ export interface MainDiagnosticRecord {
   readonly nextAttemptAt?: number | null
   readonly count?: number
   readonly stage?: string
+  readonly operation?: 'startup_read' | 'read' | 'set' | 'readback'
+  readonly requestedEnabled?: boolean
+  readonly openAtLogin?: boolean
+  readonly status?:
+    'enabled' | 'not-registered' | 'requires-approval' | 'not-found' | 'unknown' | 'missing'
 }
 
 export type AccountSnapshot = {

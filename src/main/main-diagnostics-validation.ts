@@ -57,6 +57,10 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     context?: unknown
     hostname?: unknown
     route?: unknown
+    operation?: unknown
+    requestedEnabled?: unknown
+    openAtLogin?: unknown
+    status?: unknown
   }
   const types: readonly string[] = [
     'gmail.load.failure',
@@ -83,9 +87,30 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     'unread.success',
     'unread.failure',
     'unread.applied',
-    'unread.stale'
+    'unread.stale',
+    'login.launch'
   ]
   if (typeof event.type !== 'string' || !types.includes(event.type)) return false
+  if (
+    event.type === 'login.launch' &&
+    (typeof event.operation !== 'string' ||
+      !['startup_read', 'read', 'set', 'readback'].includes(event.operation) ||
+      (event.requestedEnabled !== undefined && typeof event.requestedEnabled !== 'boolean') ||
+      (event.openAtLogin !== undefined && typeof event.openAtLogin !== 'boolean') ||
+      (event.status !== undefined &&
+        (typeof event.status !== 'string' ||
+          ![
+            'enabled',
+            'not-registered',
+            'requires-approval',
+            'not-found',
+            'unknown',
+            'missing'
+          ].includes(event.status))) ||
+      typeof event.outcome !== 'string' ||
+      !['returned', 'success', 'failure', 'mismatch'].includes(event.outcome))
+  )
+    return false
   if (
     event.type === 'gmail.navigation.blocked' &&
     (typeof event.source !== 'string' ||
@@ -210,10 +235,11 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     )
       return false
   } else if (
-    !('accountId' in event) ||
-    typeof event.accountId !== 'string' ||
-    event.accountId.length === 0 ||
-    event.accountId.length > 256
+    event.type !== 'login.launch' &&
+    (!('accountId' in event) ||
+      typeof event.accountId !== 'string' ||
+      event.accountId.length === 0 ||
+      event.accountId.length > 256)
   )
     return false
   if (

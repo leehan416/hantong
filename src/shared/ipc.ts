@@ -26,7 +26,7 @@ export const LOGIN_LAUNCH_SET_CHANNEL = 'hantong:login-launch-set'
 export type LoginLaunchState = {
   supported: boolean
   enabled: boolean
-  status: 'enabled' | 'disabled' | 'requires_approval' | 'unavailable'
+  status: 'enabled' | 'disabled' | 'requires_approval' | 'not_found' | 'unavailable'
 }
 export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-status'
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'

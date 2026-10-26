@@ -116,6 +116,7 @@ test('login launch IPC validates sender and exact arguments before calling its c
   await assert.rejects(get(invokeEvent(owner, {})), /Request rejected/)
   assert.equal(gets, 1)
   assert.deepEqual(writes, [])
+  // Invalid senders and arguments never reach the Main controller that owns the native prompt.
   await set(event, true)
   await set(event, false)
   assert.deepEqual(writes, [true, false])
