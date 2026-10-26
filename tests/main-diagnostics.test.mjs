@@ -60,6 +60,62 @@ test('diagnostics never serialize arbitrary errors, tokens, emails, or mail iden
   assert.equal(lines.join('').includes('m-123'), false)
 })
 
+test('login diagnostics serialize only allowlisted operation data', () => {
+  const lines = []
+  const recorder = diagnostics.createMainDiagnostics({
+    now: () => 123,
+    sink: { append: (line) => lines.push(JSON.parse(line)) }
+  })
+  recorder.record({
+    type: 'login.launch',
+    operation: 'readback',
+    requestedEnabled: true,
+    openAtLogin: false,
+    status: 'not-found',
+    outcome: 'mismatch',
+    error: 'private error /Users/person token=secret',
+    path: '/Users/person/private.app'
+  })
+  recorder.record({
+    type: 'login.launch',
+    operation: 'read',
+    status: 'private provider status',
+    outcome: 'failure'
+  })
+  assert.deepEqual(lines, [
+    {
+      at: 123,
+      type: 'login.launch',
+      operation: 'readback',
+      requestedEnabled: true,
+      openAtLogin: false,
+      status: 'not-found',
+      outcome: 'mismatch'
+    }
+  ])
+  assert.equal(JSON.stringify(lines).includes('private'), false)
+  assert.equal(JSON.stringify(lines).includes('secret'), false)
+  assert.equal(
+    isEvent({
+      type: 'login.launch',
+      operation: 'read',
+      status: 'unknown',
+      outcome: 'failure'
+    }),
+    true
+  )
+  assert.equal(isEvent({ type: 'login.launch', operation: 'unsafe', outcome: 'success' }), false)
+  assert.equal(
+    isEvent({
+      type: 'login.launch',
+      operation: 'read',
+      status: { toString: () => 'enabled' },
+      outcome: 'success'
+    }),
+    false
+  )
+})
+
 test('login diagnostics project only allowlisted stage, numeric load code, and process reason', () => {
   const lines = []
   const recorder = diagnostics.createMainDiagnostics({
@@ -346,7 +402,12 @@ test('recorder isolates sink and observer exceptions', () => {
     }
   })
   assert.doesNotThrow(() =>
-    recorder.record({ type: 'relay.ready', accountId: 'a1b2c3d4-e5f6-4789-8abc-123456789abc' })
+    recorder.record({
+      type: 'login.launch',
+      operation: 'startup_read',
+      status: 'unknown',
+      outcome: 'failure'
+    })
   )
   assert.equal(recorder.snapshot().events.length, 1)
 })
