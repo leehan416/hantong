@@ -6,7 +6,14 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
+const { sanitizeNavigationDiagnostic } = loadTypeScript(
+  new URL('../src/main/navigation-diagnostic.ts', import.meta.url)
+)
+
 const diagnostics = loadTypeScript(new URL('../src/main/main-diagnostics.ts', import.meta.url))
+const { isEvent } = loadTypeScript(
+  new URL('../src/main/main-diagnostics-validation.ts', import.meta.url)
+)
 
 test('diagnostic records allowlisted fields and anonymous stable account aliases', () => {
   const events = []
@@ -51,6 +58,283 @@ test('diagnostics never serialize arbitrary errors, tokens, emails, or mail iden
   assert.equal(lines.join('').includes('ann@example.test'), false)
   assert.equal(lines.join('').includes('subject body'), false)
   assert.equal(lines.join('').includes('m-123'), false)
+})
+
+test('login diagnostics serialize only allowlisted operation data', () => {
+  const lines = []
+  const recorder = diagnostics.createMainDiagnostics({
+    now: () => 123,
+    sink: { append: (line) => lines.push(JSON.parse(line)) }
+  })
+  recorder.record({
+    type: 'login.launch',
+    operation: 'readback',
+    requestedEnabled: true,
+    openAtLogin: false,
+    status: 'not-found',
+    outcome: 'mismatch',
+    error: 'private error /Users/person token=secret',
+    path: '/Users/person/private.app'
+  })
+  recorder.record({
+    type: 'login.launch',
+    operation: 'read',
+    status: 'private provider status',
+    outcome: 'failure'
+  })
+  assert.deepEqual(lines, [
+    {
+      at: 123,
+      type: 'login.launch',
+      operation: 'readback',
+      requestedEnabled: true,
+      openAtLogin: false,
+      status: 'not-found',
+      outcome: 'mismatch'
+    }
+  ])
+  assert.equal(JSON.stringify(lines).includes('private'), false)
+  assert.equal(JSON.stringify(lines).includes('secret'), false)
+  assert.equal(
+    isEvent({
+      type: 'login.launch',
+      operation: 'read',
+      status: 'unknown',
+      outcome: 'failure'
+    }),
+    true
+  )
+  assert.equal(isEvent({ type: 'login.launch', operation: 'unsafe', outcome: 'success' }), false)
+  assert.equal(
+    isEvent({
+      type: 'login.launch',
+      operation: 'read',
+      status: { toString: () => 'enabled' },
+      outcome: 'success'
+    }),
+    false
+  )
+})
+
+test('login diagnostics project only allowlisted stage, numeric load code, and process reason', () => {
+  const lines = []
+  const recorder = diagnostics.createMainDiagnostics({
+    now: () => 123,
+    sink: { append: (line) => lines.push(JSON.parse(line)) }
+  })
+  const accountId = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
+  recorder.record({
+    type: 'oauth.progress',
+    accountId,
+    stage: 'identity_match',
+    outcome: 'failure',
+    code: 'identity_mismatch',
+    email: 'private@example.test',
+    token: 'secret-token'
+  })
+  recorder.record({
+    type: 'gmail.load.failure',
+    accountId,
+    errorCode: -105,
+    email: 'private@example.test',
+    url: 'https://mail.google.com/private'
+  })
+  recorder.record({
+    type: 'gmail.process.gone',
+    accountId,
+    reason: 'crashed',
+    exitCode: 9,
+    detail: 'private failure text'
+  })
+  recorder.record({ type: 'oauth.progress', accountId, stage: 'secret-stage', outcome: 'success' })
+  recorder.record({
+    type: 'gmail.process.gone',
+    accountId,
+    reason: 'private failure text'
+  })
+  recorder.record({
+    type: 'oauth.progress',
+    accountId,
+    stage: 'authorization',
+    outcome: 'failure',
+    code: 'private provider response'
+  })
+  assert.deepEqual(lines, [
+    {
+      at: 123,
+      type: 'oauth.progress',
+      account: 'account-1',
+      stage: 'identity_match',
+      outcome: 'failure',
+      code: 'identity_mismatch'
+    },
+    { at: 123, type: 'gmail.load.failure', account: 'account-1', errorCode: -105 },
+    { at: 123, type: 'gmail.process.gone', account: 'account-1', reason: 'crashed' }
+  ])
+  assert.equal(JSON.stringify(lines).includes('private'), false)
+  assert.equal(JSON.stringify(lines).includes('secret'), false)
+})
+
+test('blocked navigation diagnostics retain only safe host and fixed route metadata', () => {
+  const lines = []
+  const recorder = diagnostics.createMainDiagnostics({
+    now: () => 123,
+    sink: { append: (line) => lines.push(JSON.parse(line)) }
+  })
+  const accountId = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
+  const sanitized = sanitizeNavigationDiagnostic(
+    'redirect',
+    'main',
+    'https://accounts.google.com/v3/signin/challenge/pwd?login_hint=private@example.com#secret',
+    'external_redirect'
+  )
+  recorder.record({
+    type: 'gmail.navigation.blocked',
+    accountId,
+    ...sanitized,
+    url: 'https://private@example.test/path?token=x'
+  })
+  recorder.record({
+    type: 'gmail.navigation.blocked',
+    accountId,
+    ...sanitizeNavigationDiagnostic(
+      'popup',
+      'popup',
+      'https://accounts.google.com/o/oauth2/v2/auth?client_id=secret&login_hint=a%40b.test',
+      'oauth_endpoint'
+    )
+  })
+  recorder.record({
+    type: 'gmail.navigation.blocked',
+    accountId,
+    ...sanitizeNavigationDiagnostic(
+      'external_open_failure',
+      'main',
+      'https://user:pass@example.com/private?email=a%40b.test#token',
+      'external_redirect'
+    )
+  })
+  assert.deepEqual(lines, [
+    {
+      at: 123,
+      type: 'gmail.navigation.blocked',
+      account: 'account-1',
+      source: 'redirect',
+      context: 'main',
+      hostname: 'accounts.google.com',
+      route: 'google_signin',
+      reason: 'external_redirect'
+    },
+    {
+      at: 123,
+      type: 'gmail.navigation.blocked',
+      account: 'account-1',
+      source: 'popup',
+      context: 'popup',
+      hostname: 'accounts.google.com',
+      route: 'google_oauth',
+      reason: 'oauth_endpoint'
+    },
+    {
+      at: 123,
+      type: 'gmail.navigation.blocked',
+      account: 'account-1',
+      source: 'external_open_failure',
+      context: 'main',
+      hostname: 'redacted',
+      route: 'other',
+      reason: 'external_redirect'
+    }
+  ])
+  assert.equal(JSON.stringify(lines).includes('private'), false)
+  assert.equal(JSON.stringify(lines).includes('secret'), false)
+  assert.equal(JSON.stringify(lines).includes('example.test'), false)
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'redirect',
+      'main',
+      'https://user:pass@login.school.example.edu/path',
+      'unsafe_url'
+    ).hostname,
+    'redacted'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic('redirect', 'main', 'https://bad host/path', 'unsafe_url')
+      .hostname,
+    'redacted'
+  )
+  assert.equal(
+    isEvent({
+      type: 'gmail.navigation.blocked',
+      accountId,
+      ...sanitized,
+      injected: 'private@example.test'
+    }),
+    true
+  )
+  assert.equal(
+    isEvent({
+      type: 'gmail.navigation.blocked',
+      accountId,
+      ...sanitized,
+      hostname: 'bad host'
+    }),
+    false
+  )
+})
+
+test('popup diagnostics keep Google hosts but redact other destinations', () => {
+  assert.equal(
+    sanitizeNavigationDiagnostic('popup', 'main', 'https://bank.example.com/login', 'unsafe_url')
+      .hostname,
+    'redacted'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'popup',
+      'popup',
+      'https://accounts.google.co.kr/accounts/SetSID',
+      'unsafe_url'
+    ).hostname,
+    'accounts.google.co.kr'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'external_open_failure',
+      'main',
+      'https://bank.example.com/',
+      'external_redirect',
+      false
+    ).hostname,
+    'redacted'
+  )
+  assert.equal(
+    sanitizeNavigationDiagnostic(
+      'redirect',
+      'main',
+      'https://login.school.example.edu/sso',
+      'external_redirect'
+    ).hostname,
+    'login.school.example.edu'
+  )
+})
+
+test('already sanitized school SSO hostname survives the main diagnostics projection', () => {
+  const lines = []
+  const recorder = diagnostics.createMainDiagnostics({
+    now: () => 123,
+    sink: { append: (line) => lines.push(JSON.parse(line)) }
+  })
+  const sanitized = sanitizeNavigationDiagnostic(
+    'redirect',
+    'main',
+    'https://login.school.example.edu/sso/private?email=a%40b.test',
+    'external_redirect'
+  )
+  recorder.record({ type: 'gmail.navigation.blocked', accountId: 'account-id', ...sanitized })
+  assert.equal(lines[0].hostname, 'login.school.example.edu')
+  assert.equal(JSON.stringify(lines).includes('/sso'), false)
+  assert.equal(JSON.stringify(lines).includes('a@b.test'), false)
 })
 
 test('diagnostic snapshots and retained events stay bounded', () => {
@@ -118,7 +402,12 @@ test('recorder isolates sink and observer exceptions', () => {
     }
   })
   assert.doesNotThrow(() =>
-    recorder.record({ type: 'relay.ready', accountId: 'a1b2c3d4-e5f6-4789-8abc-123456789abc' })
+    recorder.record({
+      type: 'login.launch',
+      operation: 'startup_read',
+      status: 'unknown',
+      outcome: 'failure'
+    })
   )
   assert.equal(recorder.snapshot().events.length, 1)
 })

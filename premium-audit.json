@@ -1,0 +1,32 @@
+{
+  "findings": [
+    {
+      "category": "unresolved",
+      "file": "src/renderer/src/AppearanceSettings.tsx",
+      "line": 32,
+      "message": "Native select is used without an explicit ownership decision.",
+      "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
+      "ruleId": "ownership.native-select-undecided",
+      "severity": "error"
+    },
+    {
+      "category": "unresolved",
+      "file": "src/renderer/src/GeneralSettings.tsx",
+      "line": 32,
+      "message": "Native select is used without an explicit ownership decision.",
+      "remediation": "Record Select/Listbox as native or reuse the authored canonical owner.",
+      "ruleId": "ownership.native-select-undecided",
+      "severity": "error"
+    }
+  ],
+  "mode": "strict",
+  "projectRoot": "/Users/whal3/Documents/hgmail_project/hantong",
+  "schemaVersion": 1,
+  "summary": {
+    "errors": 2,
+    "total": 2,
+    "unresolved": 2,
+    "violations": 0,
+    "warnings": 0
+  }
+}

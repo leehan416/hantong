@@ -20,8 +20,6 @@ import { createAccountRemovalController } from './account-removal'
 import { clearAccountSession } from './account-session-cleanup'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
-import type { GoogleConnectionFailureCode } from './google-connection'
-import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
 import { createRelayRuntime } from './relay-runtime'
 import { createSettingsStore } from './settings-store'
@@ -37,11 +35,11 @@ import { createMainDiagnostics, createRotatingDiagnosticsSink } from './main-dia
 import { createNativeMailNotifications } from './native-mail-notifications'
 import { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
 import { createMainMailRuntime } from './main-mail-runtime'
-import type { AuthorizationErrorCode } from './google-authorization'
 import { is } from '@electron-toolkit/utils'
 import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
 import { createNotificationPauseStore } from './notification-pause-store'
+import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
 import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
 import {
@@ -86,10 +84,11 @@ let updateRuntime: ReturnType<typeof createAppUpdateRuntime> | null = null
 let fallbackSync: ReturnType<typeof setInterval> | undefined
 let cleanupPromise: Promise<void> | undefined
 let wasOpenedAtLogin = false
+let mainDiagnostics: ReturnType<typeof createMainDiagnostics> | null = null
+let loginLaunchPromptStore: ReturnType<typeof createLoginLaunchPromptStore> | null = null
 
 const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   window: () => mainWindow,
-  googleRuntime: () => googleConnectionRuntime,
   views: () => accountViewManager,
   accessController: () => accountAccessController,
   notificationController: () => notificationConnectionController,
@@ -102,7 +101,36 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
-  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings)
+  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),
+  ownerAlive: () => mainWindow !== null && !mainWindow.isDestroyed(),
+  confirmEnable: async () => {
+    const owner = mainWindow
+    if (!owner || owner.isDestroyed() || appQuitting) return undefined
+    const korean = uiLocale() === 'ko'
+    const result = await dialog.showMessageBox(owner, {
+      type: 'question',
+      title: korean ? '로그인 시 실행' : 'Launch at Login',
+      message: korean
+        ? '한통을 로그인할 때 자동으로 실행할까요?'
+        : 'Launch Hantong automatically when you log in?',
+      detail: korean
+        ? 'macOS 로그인 항목에 한통을 등록합니다.'
+        : 'Hantong will be added to your macOS Login Items.',
+      buttons: korean ? ['취소', '허용'] : ['Cancel', 'Allow'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (mainWindow !== owner || owner.isDestroyed() || appQuitting) return undefined
+    if (result.response !== 0 && result.response !== 1) return undefined
+    return result.response === 1
+  },
+  promptSeen: () => loginLaunchPromptStore?.isSeen() ?? false,
+  markPromptSeen: () => {
+    if (!loginLaunchPromptStore) throw new Error('Login launch prompt storage is unavailable')
+    loginLaunchPromptStore.markSeen()
+  },
+  onDiagnostic: (event) => mainDiagnostics?.record(event)
 })
 
 function prepareApplicationShutdown(): Promise<void> {
@@ -126,20 +154,6 @@ function prepareApplicationShutdown(): Promise<void> {
     throw error
   })
   return cleanupPromise
-}
-
-function reportOAuthDiagnostic(
-  stage: 'config' | 'connection' | 'persistence' | 'identity' | 'authorization',
-  code:
-    | Exclude<GoogleConnectionFailureCode, 'cancelled'>
-    | GoogleWebIdentityFailureReason
-    | AuthorizationErrorCode
-    | 'config_unavailable'
-    | 'connection_start_failed'
-    | 'connection_failed'
-    | 'accept_failed'
-): void {
-  if (!app.isPackaged) console.error(`[Hantong OAuth] ${stage}:${code}`)
 }
 
 app.on('window-all-closed', () => {
@@ -379,19 +393,53 @@ const mainWindowRuntime = createMainWindowRuntime({
   publishAccountState,
   openExternal: (url) => shell.openExternal(url),
   openValidatedExternal: openExternal,
-  reportIdentityDiagnostic: (reason) => reportOAuthDiagnostic('identity', reason)
+  reportIdentityDiagnostic: (reason, accountId) => {
+    mainDiagnostics?.record({
+      type: 'oauth.progress',
+      accountId,
+      stage: 'identity_check',
+      outcome: 'failure',
+      code: reason
+    })
+  },
+  reportViewLoadDiagnostic: (accountId, diagnostic) => {
+    if (!mainDiagnostics) return
+    switch (diagnostic.type) {
+      case 'load_failure':
+        mainDiagnostics.record({
+          type: 'gmail.load.failure',
+          accountId,
+          ...(diagnostic.errorCode !== undefined ? { errorCode: diagnostic.errorCode } : {})
+        })
+        break
+      case 'load_timeout':
+        mainDiagnostics.record({ type: 'gmail.load.timeout', accountId })
+        break
+      case 'process_gone':
+        mainDiagnostics.record({
+          type: 'gmail.process.gone',
+          accountId,
+          reason: diagnostic.reason
+        })
+        break
+    }
+  },
+  reportNavigationDiagnostic: (accountId, diagnostic) => {
+    mainDiagnostics?.record({
+      type: 'gmail.navigation.blocked',
+      accountId,
+      source: diagnostic.source,
+      context: diagnostic.context,
+      hostname: diagnostic.hostname,
+      route: diagnostic.route,
+      reason: diagnostic.reason
+    })
+  }
 })
 
 void app
   .whenReady()
   .then(() => {
-    if (app.isPackaged && process.platform === 'darwin') {
-      try {
-        wasOpenedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin
-      } catch {
-        wasOpenedAtLogin = false
-      }
-    }
     const diagnostics = createMainDiagnostics({
       now: () => Date.now(),
       sink: createRotatingDiagnosticsSink({
@@ -400,8 +448,39 @@ void app
         maxFiles: 3
       })
     })
+    mainDiagnostics = diagnostics
+    if (app.isPackaged && process.platform === 'darwin') {
+      try {
+        const loginSettings = app.getLoginItemSettings()
+        wasOpenedAtLogin = loginSettings.wasOpenedAtLogin
+        diagnostics.record({
+          type: 'login.launch',
+          operation: 'startup_read',
+          openAtLogin: loginSettings.openAtLogin,
+          status:
+            loginSettings.status === 'enabled' ||
+            loginSettings.status === 'not-registered' ||
+            loginSettings.status === 'requires-approval' ||
+            loginSettings.status === 'not-found'
+              ? loginSettings.status
+              : loginSettings.status === undefined
+                ? 'missing'
+                : 'unknown',
+          outcome: 'success'
+        })
+      } catch {
+        wasOpenedAtLogin = false
+        diagnostics.record({
+          type: 'login.launch',
+          operation: 'startup_read',
+          status: 'missing',
+          outcome: 'failure'
+        })
+      }
+    }
     accountStore = createAccountStore(app.getPath('userData'))
     settingsStore = createSettingsStore(app.getPath('userData'))
+    loginLaunchPromptStore = createLoginLaunchPromptStore(app.getPath('userData'))
     const pauseController = createNotificationPauseController({
       store: createNotificationPauseStore(app.getPath('userData')),
       now: () => Date.now(),
@@ -425,7 +504,6 @@ void app
       notify: showMailNotification,
       notificationPause: () => pauseController.snapshot(),
       refreshNotificationPause: () => pauseController.refresh(),
-      reportOAuthDiagnostic,
       bundledEnvironment: __HANTONG_BUNDLED_ENV__
     })
     googleConnectionManager = mailRuntime.connectionManager

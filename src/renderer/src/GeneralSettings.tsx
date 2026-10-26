@@ -99,7 +99,16 @@ function LoginLaunchSettingsRow({ text }: { text: AppMessages }): React.JSX.Elem
       const result = await window.api.setLoginLaunchEnabled(enabled)
       if (mounted.current && current === sequence.current) setState(result)
     } catch {
-      if (mounted.current && current === sequence.current) setFailed(true)
+      if (mounted.current && current === sequence.current) {
+        setState(null)
+        try {
+          const result = await window.api.getLoginLaunchState()
+          if (mounted.current && current === sequence.current) setState(result)
+        } catch {
+          // Keep the control unknown when the OS readback also fails.
+        }
+        if (mounted.current && current === sequence.current) setFailed(true)
+      }
     } finally {
       busyRef.current = false
       if (mounted.current) setBusy(false)
@@ -120,10 +129,13 @@ function LoginLaunchSettingsRow({ text }: { text: AppMessages }): React.JSX.Elem
       {!state?.supported && state && (
         <p className="settings-error">{text.launchLoginUnsupported}</p>
       )}
+      {state?.status === 'not_found' && (
+        <p className="settings-error">{text.loginItemNotFoundGuidance}</p>
+      )}
       {state?.status === 'requires_approval' && (
         <p className="settings-error">{text.loginItemsGuidance}</p>
       )}
-      {state?.supported && (state.status === 'unavailable' || failed) && (
+      {state?.supported && state.status === 'unavailable' && (
         <p className="settings-error" role="alert">
           {text.launchLoginError}{' '}
           <button className="settings-text-button" type="button" onClick={() => void refresh()}>
@@ -131,7 +143,7 @@ function LoginLaunchSettingsRow({ text }: { text: AppMessages }): React.JSX.Elem
           </button>
         </p>
       )}
-      {failed && !state?.supported && (
+      {failed && (!state || !state.supported || state.status !== 'unavailable') && (
         <p className="settings-error" role="alert">
           {text.launchLoginError}{' '}
           <button className="settings-text-button" type="button" onClick={() => void refresh()}>

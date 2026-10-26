@@ -1,8 +1,14 @@
 import type { ViewEntry } from './account-view-types'
+import type { GmailProcessGoneReason } from './main-diagnostics-types'
 import { classifyGmailNavigation } from './gmail-navigation'
 import { isAllowedGmailIdentityUrl } from './google-web-identity'
 
 type DocumentKind = 'sign_in' | 'mail' | 'unknown'
+
+export type GmailViewLoadDiagnostic =
+  | { readonly type: 'load_failure'; readonly errorCode?: number }
+  | { readonly type: 'load_timeout' }
+  | { readonly type: 'process_gone'; readonly reason: GmailProcessGoneReason }
 
 interface AccountViewLifecycleOptions {
   loadTimeoutMs: number
@@ -11,6 +17,7 @@ interface AccountViewLifecycleOptions {
   isActive: (id: string) => boolean
   publish: (id: string, status: 'loading' | 'ready' | 'blocked' | 'error') => void
   reconcileVisibility: (id: string, entry: ViewEntry) => void
+  reportLoadDiagnostic?: (id: string, diagnostic: GmailViewLoadDiagnostic) => void
 }
 
 export function createAccountViewLifecycle({
@@ -19,7 +26,8 @@ export function createAccountViewLifecycle({
   isCurrent,
   isActive,
   publish,
-  reconcileVisibility
+  reconcileVisibility,
+  reportLoadDiagnostic
 }: AccountViewLifecycleOptions): {
   documentKind: (value: string) => DocumentKind
   load: (id: string, entry: ViewEntry) => void
@@ -27,6 +35,25 @@ export function createAccountViewLifecycle({
   register: (id: string, entry: ViewEntry) => void
   invalidate: (entry: ViewEntry) => void
 } {
+  const reportedLoadFailures = new WeakMap<ViewEntry, number>()
+
+  function reportDiagnostic(id: string, diagnostic: GmailViewLoadDiagnostic): void {
+    try {
+      reportLoadDiagnostic?.(id, diagnostic)
+    } catch {
+      // Diagnostics must never affect Gmail access.
+    }
+  }
+
+  function reportLoadFailure(id: string, entry: ViewEntry, errorCode?: number): void {
+    if (reportedLoadFailures.get(entry) === entry.loadNumber) return
+    reportedLoadFailures.set(entry, entry.loadNumber)
+    reportDiagnostic(id, {
+      type: 'load_failure',
+      ...(errorCode !== undefined ? { errorCode } : {})
+    })
+  }
+
   function documentKind(value: string): DocumentKind {
     try {
       const url = new URL(value)
@@ -44,7 +71,14 @@ export function createAccountViewLifecycle({
     if (entry.timeout) clearTimeout(entry.timeout)
     entry.timeout = setTimeout(() => {
       entry.timeout = null
-      if (entry.loadNumber !== loadNumber) return
+      if (
+        entry.loadNumber !== loadNumber ||
+        !isAlive() ||
+        entry.disposePromise ||
+        !isCurrent(id, entry)
+      )
+        return
+      reportDiagnostic(id, { type: 'load_timeout' })
       entry.loadNumber += 1
       entry.loading = false
       entry.loaded = false
@@ -113,6 +147,7 @@ export function createAccountViewLifecycle({
       () => {
         if (entry.loadNumber !== loadNumber || entry.navigationRevision !== navigationRevision)
           return
+        if (isAlive() && !entry.disposePromise && isCurrent(id, entry)) reportLoadFailure(id, entry)
         if (entry.timeout) clearTimeout(entry.timeout)
         entry.timeout = null
         if (isAlive()) {
@@ -175,7 +210,48 @@ export function createAccountViewLifecycle({
     view.webContents.on('did-stop-loading', () => {
       finishSuccessfulMainFrameNavigation(id, entry)
     })
-    view.webContents.on('render-process-gone', () => {
+    view.webContents.on('dom-ready', () => {
+      const contents = view.webContents
+      if (
+        !isAlive() ||
+        entry.disposePromise ||
+        !isCurrent(id, entry) ||
+        !entry.mainFrameNavigationPending ||
+        entry.pendingMainFrameKind !== 'sign_in' ||
+        contents.isDestroyed() ||
+        documentKind(contents.getURL()) !== 'sign_in'
+      )
+        return
+      entry.mainFrameNavigationPending = false
+      entry.pendingMainFrameKind = null
+      entry.mainFrameDocumentLoaded = false
+      entry.loaded = true
+      entry.loading = false
+      entry.committedUrl = contents.getURL()
+      if (entry.timeout) clearTimeout(entry.timeout)
+      entry.timeout = null
+      entry.loadNumber += 1
+      reconcileVisibility(id, entry)
+      if (isActive(id)) publish(id, entry.blocked ? 'blocked' : 'ready')
+    })
+    view.webContents.on('render-process-gone', (_event, details) => {
+      if (isAlive() && !entry.disposePromise && isCurrent(id, entry)) {
+        const allowedReasons = [
+          'clean-exit',
+          'abnormal-exit',
+          'killed',
+          'crashed',
+          'oom',
+          'launch-failed',
+          'integrity-failure',
+          'memory-eviction'
+        ]
+        const reason =
+          typeof details?.reason === 'string' && allowedReasons.includes(details.reason)
+            ? details.reason
+            : 'unknown'
+        reportDiagnostic(id, { type: 'process_gone', reason })
+      }
       if (entry.timeout) clearTimeout(entry.timeout)
       entry.timeout = null
       entry.loadNumber += 1
@@ -195,6 +271,17 @@ export function createAccountViewLifecycle({
       'did-fail-load',
       (_event, errorCode, _description, validatedUrl, isMainFrame) => {
         const contents = view.webContents
+        if (
+          isMainFrame &&
+          errorCode !== -3 &&
+          Number.isSafeInteger(errorCode) &&
+          isAlive() &&
+          !entry.disposePromise &&
+          isCurrent(id, entry) &&
+          !view.webContents.isDestroyed()
+        ) {
+          reportLoadFailure(id, entry, errorCode)
+        }
         if (
           !isMainFrame ||
           errorCode === -3 ||

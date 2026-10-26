@@ -1,4 +1,9 @@
 export type MainDiagnosticType =
+  | 'gmail.load.failure'
+  | 'gmail.load.timeout'
+  | 'gmail.navigation.blocked'
+  | 'gmail.process.gone'
+  | 'oauth.progress'
   | 'relay.ready'
   | 'relay.receive'
   | 'relay.heartbeat'
@@ -19,8 +24,32 @@ export type MainDiagnosticType =
   | 'unread.failure'
   | 'unread.applied'
   | 'unread.stale'
+  | 'login.launch'
 
 export type MainDiagnosticEvent =
+  | { readonly type: 'gmail.load.failure'; readonly accountId: string; readonly errorCode?: number }
+  | { readonly type: 'gmail.load.timeout'; readonly accountId: string }
+  | {
+      readonly type: 'gmail.navigation.blocked'
+      readonly accountId: string
+      readonly source: 'redirect' | 'navigation' | 'popup' | 'external_open_failure'
+      readonly context: 'main' | 'popup'
+      readonly hostname: string
+      readonly route: 'google_signin' | 'google_oauth' | 'gmail' | 'other'
+      readonly reason: 'external_redirect' | 'oauth_endpoint' | 'unsafe_url' | 'mail_access_denied'
+    }
+  | {
+      readonly type: 'gmail.process.gone'
+      readonly accountId: string
+      readonly reason: GmailProcessGoneReason
+    }
+  | {
+      readonly type: 'oauth.progress'
+      readonly accountId: string
+      readonly stage: OAuthDiagnosticStage
+      readonly outcome: OAuthDiagnosticOutcome
+      readonly code?: OAuthDiagnosticCode
+    }
   | { readonly type: 'relay.ready'; readonly accountId: string }
   | { readonly type: 'relay.receive'; readonly accountId: string }
   | { readonly type: 'relay.heartbeat'; readonly accountId: string }
@@ -87,6 +116,17 @@ export type MainDiagnosticEvent =
   | { readonly type: 'unread.failure'; readonly accountId: string }
   | { readonly type: 'unread.applied'; readonly accountId: string; readonly count: number }
   | { readonly type: 'unread.stale'; readonly accountId: string }
+  | LoginLaunchDiagnosticEvent
+
+export interface LoginLaunchDiagnosticEvent {
+  readonly type: 'login.launch'
+  readonly operation: 'startup_read' | 'read' | 'set' | 'readback'
+  readonly requestedEnabled?: boolean
+  readonly openAtLogin?: boolean
+  readonly status?:
+    'enabled' | 'not-registered' | 'requires-approval' | 'not-found' | 'unknown' | 'missing'
+  readonly outcome: 'returned' | 'success' | 'failure' | 'mismatch'
+}
 
 export type RelayDiagnosticCode =
   | 'cancelled'
@@ -98,6 +138,55 @@ export type RelayDiagnosticCode =
   | 'invalid_response'
   | 'redirect_refused'
   | 'unknown'
+
+export type GmailProcessGoneReason =
+  | 'clean-exit'
+  | 'abnormal-exit'
+  | 'killed'
+  | 'crashed'
+  | 'oom'
+  | 'launch-failed'
+  | 'integrity-failure'
+  | 'memory-eviction'
+  | 'unknown'
+
+export type OAuthDiagnosticStage =
+  | 'config'
+  | 'connection'
+  | 'identity_check'
+  | 'authorization'
+  | 'token_exchange'
+  | 'profile_fetch'
+  | 'identity_match'
+  | 'persistence'
+
+export type OAuthDiagnosticOutcome = 'started' | 'success' | 'failure' | 'cancelled'
+
+export type OAuthDiagnosticCode =
+  | 'cancelled'
+  | 'timeout'
+  | 'authorization_failed'
+  | 'network_error'
+  | 'redirect_refused'
+  | 'provider_error'
+  | 'invalid_response'
+  | 'identity_unavailable'
+  | 'account_missing'
+  | 'identity_mismatch'
+  | 'config_unavailable'
+  | 'connection_start_failed'
+  | 'connection_failed'
+  | 'accept_failed'
+  | 'missing_view'
+  | 'not_ready'
+  | 'manager_disposed'
+  | 'view_loading'
+  | 'view_not_loaded'
+  | 'view_blocked'
+  | 'view_disposing'
+  | 'document_destroyed'
+  | 'document_loading'
+  | 'untrusted_document'
 
 export interface MainDiagnosticSink {
   append(line: string): void | Promise<void>
@@ -123,6 +212,8 @@ export interface MainDiagnosticRecord {
     | 'failure'
     | 'retry'
     | 'blocked'
+    | 'started'
+    | 'cancelled'
     | 'enabled'
     | 'disabled'
     | 'invalid'
@@ -130,12 +221,30 @@ export interface MainDiagnosticRecord {
     | 'missing'
     | 'unavailable'
     | 'skipped'
-  readonly code?: RelayDiagnosticCode
+    | 'mismatch'
+    | 'returned'
+  readonly code?: RelayDiagnosticCode | OAuthDiagnosticCode
+  readonly errorCode?: number
+  readonly context?: 'main' | 'popup'
+  readonly hostname?: string
+  readonly route?: 'google_signin' | 'google_oauth' | 'gmail' | 'other'
+  readonly reason?:
+    | GmailProcessGoneReason
+    | 'external_redirect'
+    | 'oauth_endpoint'
+    | 'unsafe_url'
+    | 'mail_access_denied'
+  readonly source?: 'redirect' | 'navigation' | 'popup' | 'external_open_failure'
   readonly kind?: 'baseline' | 'changes'
   readonly expiresAt?: number
   readonly nextAttemptAt?: number | null
   readonly count?: number
   readonly stage?: string
+  readonly operation?: 'startup_read' | 'read' | 'set' | 'readback'
+  readonly requestedEnabled?: boolean
+  readonly openAtLogin?: boolean
+  readonly status?:
+    'enabled' | 'not-registered' | 'requires-approval' | 'not-found' | 'unknown' | 'missing'
 }
 
 export type AccountSnapshot = {

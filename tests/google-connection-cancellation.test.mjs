@@ -149,9 +149,13 @@ test('a stalled Main web-identity lookup is timeout-bounded and promptly cancell
 })
 
 test('starting a newer connection cancels the earlier operation for that account only', async () => {
-  let resolveFirstIdentity
+  let resolveFirstAuthorization
+  let firstAuthCancelled = 0
   const first = makeConnectionDependencies({
-    readWebIdentity: () => new Promise((resolve) => (resolveFirstIdentity = resolve))
+    startAuthorization: () => ({
+      result: new Promise((resolve) => (resolveFirstAuthorization = resolve)),
+      cancel: () => firstAuthCancelled++
+    })
   })
   const firstOperation = connection.startGoogleConnection(
     'account-a',
@@ -166,10 +170,11 @@ test('starting a newer connection cancels the earlier operation for that account
     second.dependencies
   )
   await assert.rejects(firstOperation.result, { code: 'cancelled' })
-  resolveFirstIdentity({ accountExists: true, emailAddress: 'owner@example.com' })
+  resolveFirstAuthorization(code)
   const result = await secondOperation.result
   assert.equal(result.emailAddress, 'owner+tag@example.com')
-  assert.equal(first.calls.auth, 0)
+  assert.equal(firstAuthCancelled, 1)
+  assert.equal(first.calls.exchange, 0)
 })
 
 test('starting a connection for another account does not cancel the first account', async () => {

@@ -20,12 +20,11 @@ function createRuntime(connect) {
   let flushes = 0
   const runtime = createNotificationRecoveryRuntime({
     window: () => null,
-    googleRuntime: () => ({ connect }),
     views: () => ({
       getActiveAccountId: () => 'account',
       getDocumentState: () => ({ ready: true })
     }),
-    accessController: () => null,
+    accessController: () => ({ connect }),
     notificationController: () => ({ flushAlerts: () => (flushes += 1) }),
     accountRemoval: () => null,
     accountStore: () => ({ getState: () => ({ accounts: [{ id: 'account' }] }) }),
@@ -54,11 +53,11 @@ test('cleared recovery completion cannot remove a newer pending request', async 
 
   const currentPromise = runtime.request('account')
   assert.equal(calls, 2)
-  firstConnection.resolve({ status: 'connected' })
+  firstConnection.resolve({ connectionStatus: 'connected' })
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(runtime.hasPending('account'), true)
 
-  secondConnection.resolve({ status: 'connected' })
+  secondConnection.resolve({ connectionStatus: 'connected' })
   await currentPromise
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(runtime.hasPending('account'), false)

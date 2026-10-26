@@ -58,7 +58,8 @@ function App(): React.JSX.Element {
     accessController,
     accountActionsBusy,
     reconnectFromGate,
-    cancelFromGate
+    cancelFromGate,
+    reopenFromGate
   } = connections
   const {
     settings,
@@ -362,6 +363,7 @@ function App(): React.JSX.Element {
           onRetry={() => void accessController.current?.refresh()}
           onCancel={() => void cancelFromGate()}
           onReconnect={() => void reconnectFromGate()}
+          onReopen={() => void reopenFromGate()}
         />
       )}
       {activeIndex < 0 && !accounts && <main className="loading-state">{text.pending}</main>}

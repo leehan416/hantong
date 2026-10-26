@@ -112,124 +112,108 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     return next
   }
 
+  // Gmail may still show its loading title right after the document is ready.
+  async function readWebEmail(
+    accountId: string,
+    signal: AbortSignal,
+    revision: number,
+    expectedAttempt: number
+  ): Promise<string | null> {
+    for (let retry = 0; retry < 10; retry += 1) {
+      if (!current(accountId, revision, expectedAttempt)) return null
+      const identity = await dependencies.views.readWebIdentity(accountId, signal)
+      if (!current(accountId, revision, expectedAttempt) || !identity.accountExists) return null
+      if (identity.emailAddress) {
+        dependencies.onWebIdentity(accountId, identity.emailAddress)
+        return identity.emailAddress
+      }
+      if (retry < 9)
+        await new Promise<void>((resolve) => {
+          const handle = timer(() => {
+            identityTimers.delete(accountId)
+            resolve()
+          }, 1_000)
+          identityTimers.set(accountId, handle)
+          signal.addEventListener(
+            'abort',
+            () => {
+              clear(handle)
+              identityTimers.delete(accountId)
+              resolve()
+            },
+            { once: true }
+          )
+        })
+    }
+    return null
+  }
+
+  // The OAuth grant names the account; the Gmail page is read only to confirm it shows the same one.
   async function validateGrant(
     accountId: string,
-    emailAddress: string,
     revision: number,
     expectedAttempt: number
   ): Promise<boolean> {
-    let validationController: AbortController | null = null
+    const validationController = new AbortController()
     if (!current(accountId, revision, expectedAttempt)) return false
+    controllers.set(accountId, validationController)
     try {
       const stored = await dependencies.connections.getStatus(accountId)
-      if (!current(accountId, revision, expectedAttempt)) return false
-      if (
-        stored.status !== 'connected' ||
-        stored.emailAddress.toLowerCase() !== emailAddress.toLowerCase()
-      )
+      if (!current(accountId, revision, expectedAttempt) || stored.status !== 'connected')
         return false
+      const emailAddress = stored.emailAddress.toLowerCase()
       const accessToken = await dependencies.connections.getAccessToken(
         accountId,
         dependencies.loadConfig()
       )
       if (!current(accountId, revision, expectedAttempt)) return false
-      validationController = new AbortController()
-      controllers.set(accountId, validationController)
       const profileEmail = await dependencies.fetchProfile(accessToken, validationController.signal)
       if (!current(accountId, revision, expectedAttempt)) return false
-      const identity = await dependencies.views.readWebIdentity(
+      if (profileEmail.toLowerCase() !== emailAddress) return false
+      const webEmail = await readWebEmail(
         accountId,
-        validationController.signal
+        validationController.signal,
+        revision,
+        expectedAttempt
       )
-      if (!current(accountId, revision, expectedAttempt)) return false
-      if (
-        !identity.accountExists ||
-        !identity.emailAddress ||
-        identity.emailAddress.toLowerCase() !== emailAddress.toLowerCase() ||
-        profileEmail.toLowerCase() !== emailAddress.toLowerCase()
-      )
-        return false
+      if (!webEmail || webEmail.toLowerCase() !== emailAddress) return false
       return dependencies.views.setMailAccess(accountId, true, revision)
     } catch {
       return false
     } finally {
-      if (validationController && controllers.get(accountId) === validationController)
-        controllers.delete(accountId)
+      if (controllers.get(accountId) === validationController) controllers.delete(accountId)
     }
   }
 
-  async function identifyAndConnect(
+  async function connectAndValidate(
     accountId: string,
     revision: number,
     expectedAttempt: number,
     explicit: boolean
   ): Promise<AccountAccessState> {
-    const controller = new AbortController()
-    controllers.set(accountId, controller)
     try {
-      let identity: Awaited<ReturnType<AccessViews['readWebIdentity']>> = {
-        accountExists: true,
-        emailAddress: null
-      }
-      for (let retry = 0; retry < 10; retry += 1) {
-        if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
-        identity = await dependencies.views.readWebIdentity(accountId, controller.signal)
-        if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
-        if (identity.emailAddress) break
-        if (retry < 9)
-          await new Promise<void>((resolve) => {
-            const handle = timer(() => {
-              identityTimers.delete(accountId)
-              resolve()
-            }, 1_000)
-            identityTimers.set(accountId, handle)
-            controller.signal.addEventListener(
-              'abort',
-              () => {
-                clear(handle)
-                identityTimers.delete(accountId)
-                resolve()
-              },
-              { once: true }
-            )
-          })
-      }
-      if (!identity.accountExists || !identity.emailAddress)
-        return publish(accountId, 'required', 'disconnected')
-      dependencies.onWebIdentity(accountId, identity.emailAddress)
       publish(accountId, 'checking', 'connecting')
       if (!explicit && autoSuppressed.has(accountId))
         return publish(accountId, 'required', 'disconnected')
       const stored = await dependencies.connections.getStatus(accountId)
       if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
-      if (
-        stored.status === 'connected' &&
-        stored.emailAddress.toLowerCase() === identity.emailAddress.toLowerCase()
-      ) {
-        const valid = await validateGrant(
-          accountId,
-          identity.emailAddress,
-          revision,
-          expectedAttempt
-        )
+      if (stored.status === 'connected') {
+        const valid = await validateGrant(accountId, revision, expectedAttempt)
         if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
         if (valid) return publish(accountId, 'ready', 'connected')
-        if (!explicit && current(accountId, revision, expectedAttempt))
-          return publish(accountId, 'error', 'reconnect_required')
+        if (!explicit) return publish(accountId, 'error', 'reconnect_required')
       }
-      const key = `${accountId}:${identity.emailAddress.toLowerCase()}`
-      if (!explicit && autoStarted.has(key))
+      if (!explicit && autoStarted.has(accountId))
         return publish(
           accountId,
           'required',
           stored.status === 'reconnect_required' ? 'reconnect_required' : 'disconnected'
         )
-      autoStarted.add(key)
-      if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
+      autoStarted.add(accountId)
       const connected = await dependencies.runtime.connect(accountId)
       if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
       if (connected.status !== 'connected') return publish(accountId, 'required', connected.status)
-      const valid = await validateGrant(accountId, identity.emailAddress, revision, expectedAttempt)
+      const valid = await validateGrant(accountId, revision, expectedAttempt)
       if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
       return valid
         ? publish(accountId, 'ready', 'connected')
@@ -237,9 +221,25 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     } catch {
       if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
       return publish(accountId, explicit ? 'error' : 'required', 'error')
-    } finally {
-      if (controllers.get(accountId) === controller) controllers.delete(accountId)
     }
+  }
+
+  // Only the active account may hold a pending OAuth; a stale one would keep account switching locked.
+  function releasePrevious(accountId: string): void {
+    if (lastActiveAccountId && lastActiveAccountId !== accountId) {
+      const previousAccountId = lastActiveAccountId
+      const previous = getState(previousAccountId)
+      revoke(previousAccountId)
+      handledRevisions.delete(previousAccountId)
+      if (previous.connectionStatus === 'connecting')
+        void dependencies.runtime.cancel(previousAccountId)
+      publish(
+        previousAccountId,
+        'required',
+        previous.connectionStatus === 'connecting' ? 'disconnected' : previous.connectionStatus
+      )
+    }
+    lastActiveAccountId = accountId
   }
 
   function getState(accountId: string): AccountAccessState {
@@ -257,20 +257,7 @@ export function createAccountAccessController(dependencies: AccessDependencies):
         dependencies.views.getActiveAccountId() !== accountId
       )
         return
-      if (lastActiveAccountId && lastActiveAccountId !== accountId) {
-        const previousAccountId = lastActiveAccountId
-        const previous = getState(previousAccountId)
-        revoke(previousAccountId)
-        handledRevisions.delete(previousAccountId)
-        if (previous.connectionStatus === 'connecting')
-          void dependencies.runtime.cancel(previousAccountId)
-        publish(
-          previousAccountId,
-          'required',
-          previous.connectionStatus === 'connecting' ? 'disconnected' : previous.connectionStatus
-        )
-      }
-      lastActiveAccountId = accountId
+      releasePrevious(accountId)
       const document = dependencies.views.getDocumentState(accountId)
       if (document.kind === 'mail' && !document.ready) {
         revoke(accountId)
@@ -295,7 +282,7 @@ export function createAccountAccessController(dependencies: AccessDependencies):
       handledRevisions.set(accountId, document.revision)
       const expectedAttempt = revoke(accountId)
       publish(accountId, 'checking')
-      void identifyAndConnect(accountId, document.revision, expectedAttempt, false)
+      void connectAndValidate(accountId, document.revision, expectedAttempt, false)
     },
     async connect(accountId) {
       if (
@@ -306,10 +293,12 @@ export function createAccountAccessController(dependencies: AccessDependencies):
       const document = dependencies.views.getDocumentState(accountId)
       if (document.kind !== 'mail' || !document.ready)
         return publish(accountId, 'sign_in', 'disconnected')
+      releasePrevious(accountId)
+      handledRevisions.set(accountId, document.revision)
       autoSuppressed.delete(accountId)
       const expectedAttempt = revoke(accountId)
       publish(accountId, 'checking', 'connecting')
-      return identifyAndConnect(accountId, document.revision, expectedAttempt, true)
+      return connectAndValidate(accountId, document.revision, expectedAttempt, true)
     },
     async cancel(accountId) {
       autoSuppressed.add(accountId)

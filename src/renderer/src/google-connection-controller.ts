@@ -13,7 +13,7 @@ export interface GoogleConnectionUiState {
   status: GoogleConnectionStatus['status'] | null
   loading: boolean
   readFailed: boolean
-  operation: 'connecting' | 'cancelling' | 'disconnecting' | null
+  operation: 'connecting' | 'cancelling' | 'restarting' | 'disconnecting' | null
   operationFailed: boolean
 }
 
@@ -34,6 +34,7 @@ export class GoogleConnectionController {
   private state = emptyState
   private revision = 0
   private disposed = false
+  private restartInProgress = false
 
   constructor(
     private readonly api: GoogleConnectionApi,
@@ -124,7 +125,12 @@ export class GoogleConnectionController {
 
   async cancel(): Promise<void> {
     const { accountId, status, operation } = this.state
-    if (this.disposed || !accountId || status !== 'connecting' || operation === 'cancelling') {
+    if (
+      this.disposed ||
+      !accountId ||
+      status !== 'connecting' ||
+      (operation !== null && operation !== 'connecting')
+    ) {
       return
     }
     const revision = ++this.revision
@@ -145,6 +151,53 @@ export class GoogleConnectionController {
     } catch {
       if (!this.isCurrent(revision, accountId)) return
       this.update({ status: null, operation: null, loading: false, readFailed: true })
+    }
+  }
+
+  async restart(isStillCurrent: () => boolean): Promise<void> {
+    const { accountId, status, operation } = this.state
+    if (
+      this.disposed ||
+      this.restartInProgress ||
+      !accountId ||
+      status !== 'connecting' ||
+      (operation !== null && operation !== 'connecting')
+    )
+      return
+
+    this.restartInProgress = true
+    let unlockRestart = true
+    const revision = ++this.revision
+    this.update({
+      loading: false,
+      readFailed: false,
+      operation: 'restarting',
+      operationFailed: false
+    })
+    try {
+      const result = await this.api.cancelGoogleConnection(accountId)
+      if (!this.isCurrent(revision, accountId)) return
+      if (result.accountId !== accountId || result.status === 'error') {
+        this.update({ status: null, operation: null, loading: false, readFailed: true })
+        return
+      }
+      if (!isStillCurrent()) {
+        this.update({ status: result.status, operation: null, loading: false })
+        return
+      }
+      if (result.status === 'connecting') {
+        this.update({ status: null, operation: null, loading: false, readFailed: true })
+        return
+      }
+      this.update({ status: result.status, operation: null, loading: false })
+      this.restartInProgress = false
+      unlockRestart = false
+      await this.connect(true)
+    } catch {
+      if (!this.isCurrent(revision, accountId)) return
+      this.update({ status: null, operation: null, loading: false, readFailed: true })
+    } finally {
+      if (unlockRestart) this.restartInProgress = false
     }
   }
 
@@ -254,10 +307,13 @@ export class AccountAccessController {
   ) {
     try {
       this.unsubscribe = api.onAccountAccessState((state) => {
-        if (this.disposed || state.accountId !== this.state.accountId) return
+        if (this.disposed) return
+        // Main releases a previous account's OAuth after the selection moved; its connection status
+        // must still update, or that stale "connecting" state keeps account switching locked.
+        this.onConnectionStatus(state)
+        if (state.accountId !== this.state.accountId) return
         this.revision += 1
         this.state = { accountId: state.accountId, state, loading: false, readFailed: false }
-        this.onConnectionStatus(state)
         this.publish()
       })
     } catch {
