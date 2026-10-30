@@ -11,6 +11,8 @@ import { isTrustedRendererUrl } from './security-policy'
 import { optimizer } from '@electron-toolkit/utils'
 import { ACCOUNT_ACCESS_STATE_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
+import type { AccountRemovalOutcome } from '../shared/ipc'
+import type { LogoutFlowDiagnostic } from './account-view-manager'
 import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import type { GmailViewLoadDiagnostic } from './account-view-lifecycle'
 import type { NavigationDiagnostic } from './navigation-diagnostic'
@@ -54,6 +56,11 @@ export interface MainWindowRuntimeDependencies {
     diagnostic: GmailViewLoadDiagnostic
   ) => void
   readonly reportNavigationDiagnostic: (accountId: string, diagnostic: NavigationDiagnostic) => void
+  readonly removeExplicitLogout: (
+    accountId: string,
+    views: ViewManager,
+    owner: BrowserWindow
+  ) => AccountRemovalOutcome | 'skipped' | Promise<AccountRemovalOutcome | 'skipped'>
 }
 
 export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependencies): {
@@ -155,7 +162,12 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       30_000,
       dependencies.reportIdentityDiagnostic,
       dependencies.reportViewLoadDiagnostic,
-      dependencies.reportNavigationDiagnostic
+      dependencies.reportNavigationDiagnostic,
+      (accountId) => dependencies.removeExplicitLogout(accountId, windowViewManager, window),
+      (accountId) => windowAccessController?.invalidate(accountId),
+      (diagnostic: LogoutFlowDiagnostic) => {
+        if (!app.isPackaged) console.info('[gmail-logout-flow]', diagnostic)
+      }
     )
     dependencies.setViews(windowViewManager, windowViewManager)
     const savedSettings = dependencies.settings()?.get()

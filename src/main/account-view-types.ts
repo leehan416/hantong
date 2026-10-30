@@ -23,10 +23,25 @@ export interface ViewEntry {
   mainFrameDocumentLoaded: boolean
   mailAccessGranted: boolean
   committedUrl: string
+  accessEverGranted: boolean
+  logoutRequestId: number | null
+  logoutCompleted: boolean
+  logoutSignInReady: boolean
+  logoutConfirmed: boolean
+  logoutLocked: boolean
+  logoutFlowRequestId: number | null
+  logoutNavigationStarted: boolean
+  logoutExpectedNavigationRevision: number | null
+  logoutReadyRevision: number | null
+  logoutTerminalRedirect: boolean
+  logoutFailed: boolean
+  logoutRecoveryPending: boolean
 }
 
 export interface GmailDocumentState {
   revision: number
   kind: 'sign_in' | 'mail' | 'unknown'
   ready: boolean
+  logoutFailed?: boolean
+  loaded?: boolean
 }

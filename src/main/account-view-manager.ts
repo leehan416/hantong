@@ -1,5 +1,6 @@
 import type { BrowserWindow, WebContentsView } from 'electron'
 import type { AccountState } from '../shared/accounts'
+import type { AccountRemovalOutcome } from '../shared/ipc'
 import type { AccountSelectorPosition } from '../shared/settings'
 import type { AccountViewSnapshot, AccountViewStatus } from '../shared/ipc'
 import { getAccountSession } from './account-session'
@@ -10,6 +11,48 @@ import type { GmailDocumentState, ViewEntry, ViewHandle } from './account-view-t
 import { createAccountViewLifecycle } from './account-view-lifecycle'
 import type { GmailViewLoadDiagnostic } from './account-view-lifecycle'
 import type { NavigationDiagnostic } from './navigation-diagnostic'
+import type { LogoutRequestStartDecision, LogoutRequestSuccessDecision } from './gmail-view'
+
+export type LogoutFlowDiagnostic =
+  | {
+      stage: 'readiness'
+      outcome:
+        | 'ready'
+        | 'not_locked'
+        | 'navigation_not_started'
+        | 'navigation_revision_mismatch'
+        | 'not_sign_in_document'
+        | 'document_not_loaded'
+        | 'document_loading'
+      requestId?: number
+      source: 'dom_ready' | 'frame_finish' | 'stop_loading'
+      documentKind: 'sign_in' | 'mail' | 'unknown'
+      navigationRevision: number
+      expectedNavigationRevision: number | null
+      accessRevision: number
+      readyRevision: number | null
+      loading: boolean
+    }
+  | {
+      stage: 'confirmation'
+      outcome:
+        | 'waiting_for_http_success'
+        | 'waiting_for_ready_sign_in'
+        | 'navigation_revision_mismatch'
+        | 'access_revision_mismatch'
+        | 'confirmed'
+        | 'stale_view'
+      requestId?: number
+      navigationRevision: number
+      expectedNavigationRevision: number | null
+      accessRevision: number
+      readyRevision: number | null
+    }
+  | {
+      stage: 'removal'
+      outcome: 'started' | AccountRemovalOutcome | 'skipped'
+      requestId?: number
+    }
 
 interface AccountStore {
   getState: () => AccountState
@@ -25,7 +68,12 @@ export function createAccountViewManager(
   loadTimeoutMs = 30_000,
   reportIdentityFailure?: Parameters<typeof createGoogleWebIdentityReader>[1],
   reportLoadDiagnostic?: (id: string, diagnostic: GmailViewLoadDiagnostic) => void,
-  reportNavigationDiagnostic?: (id: string, diagnostic: NavigationDiagnostic) => void
+  reportNavigationDiagnostic?: (id: string, diagnostic: NavigationDiagnostic) => void,
+  onExplicitLogout?: (
+    id: string
+  ) => AccountRemovalOutcome | 'skipped' | Promise<AccountRemovalOutcome | 'skipped'>,
+  onAccessInvalidated?: (id: string) => void,
+  reportLogoutFlow?: (diagnostic: LogoutFlowDiagnostic) => void
 ): {
   activate: (id: string) => void
   retry: () => void
@@ -36,6 +84,8 @@ export function createAccountViewManager(
   ) => Promise<{ accountExists: boolean; emailAddress: string | null }>
   getDocumentState: (id: string) => GmailDocumentState
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
+  clearLogoutLock: (id: string, recoveryPending?: boolean) => boolean
+  forgetLogoutLock: (id: string) => boolean
   getActiveAccountId: () => string | null
   setCovered: (covered: boolean) => Promise<AccountViewSnapshot | null>
   setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
@@ -43,6 +93,7 @@ export function createAccountViewManager(
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
+  const logoutLocks = new Map<string, 'pending' | 'failed' | 'recovering' | 'confirmed'>()
   const identityReader = createGoogleWebIdentityReader((id) => {
     const entry = views.get(id)
     return entry
@@ -58,6 +109,7 @@ export function createAccountViewManager(
           },
           eligible: () =>
             !disposed &&
+            !entry.logoutLocked &&
             !entry.loading &&
             entry.loaded &&
             !entry.blocked &&
@@ -79,7 +131,33 @@ export function createAccountViewManager(
   }
 
   function publish(accountId: string, status: AccountViewStatus['status']): void {
+    const entry = views.get(accountId)
+    if (entry?.logoutRecoveryPending) {
+      if (status === 'ready' && entry.loaded && !entry.loading && !entry.blocked) {
+        entry.logoutRecoveryPending = false
+        entry.logoutFailed = false
+        entry.logoutLocked = false
+        logoutLocks.delete(accountId)
+        reconcileVisibility(accountId, entry)
+      } else if (status === 'blocked' || status === 'error') {
+        entry.logoutRecoveryPending = false
+        entry.logoutFailed = true
+        entry.logoutLocked = true
+        entry.mailAccessGranted = false
+        entry.handle.revokeMailAccess()
+        logoutLocks.set(accountId, 'failed')
+        reconcileVisibility(accountId, entry)
+      }
+    }
     if (alive() && activeAccountId === accountId) report({ accountId, status })
+  }
+
+  function emitLogoutDiagnostic(diagnostic: LogoutFlowDiagnostic): void {
+    try {
+      reportLogoutFlow?.(diagnostic)
+    } catch {
+      // Development diagnostics must not affect logout or navigation.
+    }
   }
 
   function setBounds(view: WebContentsView): void {
@@ -102,7 +180,7 @@ export function createAccountViewManager(
       !covered &&
       activeAccountId === id &&
       !entry.disposePromise &&
-      (signInDocument ||
+      ((!entry.logoutFailed && signInDocument) ||
         (!entry.loading && !entry.mainFrameNavigationPending && entry.mailAccessGranted))
     if (shouldAttach && !entry.attached) {
       window.contentView.addChildView(entry.handle.view)
@@ -121,6 +199,7 @@ export function createAccountViewManager(
     isActive: (id) => activeAccountId === id,
     publish,
     reconcileVisibility,
+    onAccessInvalidated,
     reportLoadDiagnostic
   })
 
@@ -145,6 +224,7 @@ export function createAccountViewManager(
     let entry = views.get(id)
     if (!entry) {
       let handle: ViewHandle
+      let ownEntry: ViewEntry | null = null
       try {
         handle = createGmailView(getAccountSession(id), {
           openExternal,
@@ -194,7 +274,96 @@ export function createAccountViewManager(
               current.attached = false
             }
           },
-          isMailAccessAllowed: () => views.get(id)?.mailAccessGranted ?? false
+          isMailAccessAllowed: () => views.get(id)?.mailAccessGranted ?? false,
+          onLogoutRequestStart: (requestId): LogoutRequestStartDecision => {
+            const current = views.get(id)
+            if (!ownEntry || current !== ownEntry) return 'stale_view'
+            if (current.disposePromise) return 'disposed'
+            if (current.logoutConfirmed) return 'already_confirmed'
+            if (current.logoutFailed || current.logoutRecoveryPending) return 'request_pending'
+            if (current.logoutRequestId !== null) return 'request_pending'
+            if (!accountStore.getState().accounts.some((account) => account.id === id))
+              return 'account_missing'
+            if (!current.accessEverGranted) return 'not_established'
+            current.logoutRequestId = requestId
+            current.logoutFlowRequestId = requestId
+            current.logoutCompleted = false
+            current.logoutSignInReady = false
+            current.logoutConfirmed = false
+            current.logoutLocked = true
+            logoutLocks.set(id, 'pending')
+            const signInNavigationPending =
+              current.mainFrameNavigationPending && current.pendingMainFrameKind === 'sign_in'
+            current.logoutExpectedNavigationRevision =
+              current.navigationRevision + (signInNavigationPending ? 0 : 1)
+            current.logoutNavigationStarted = signInNavigationPending
+            current.logoutReadyRevision = null
+            current.logoutTerminalRedirect = false
+            current.logoutFailed = false
+            current.logoutRecoveryPending = false
+            current.accessRevision += 1
+            current.mailAccessGranted = false
+            current.handle.revokeMailAccess()
+            reconcileVisibility(id, current)
+            publish(id, 'loading')
+            try {
+              onAccessInvalidated?.(id)
+            } catch {
+              // Logout locking must proceed even if cache invalidation fails.
+            }
+            return 'accepted'
+          },
+          onLogoutRequestSuccess: (requestId): LogoutRequestSuccessDecision => {
+            const current = views.get(id)
+            if (
+              !ownEntry ||
+              !alive() ||
+              current !== ownEntry ||
+              current.disposePromise ||
+              current.logoutRequestId !== requestId
+            )
+              return 'stale_request'
+            current.logoutRequestId = null
+            current.logoutCompleted = true
+            return confirmLogout(id, current) ? 'confirmed' : 'awaiting_ready_sign_in'
+          },
+          onLogoutRequestFailure: (requestId) => {
+            const current = views.get(id)
+            if (
+              !ownEntry ||
+              current !== ownEntry ||
+              current.disposePromise ||
+              current.logoutRequestId !== requestId
+            )
+              return
+            current.logoutRequestId = null
+            current.logoutCompleted = false
+            current.logoutSignInReady = false
+            current.logoutTerminalRedirect = false
+            current.logoutFlowRequestId = null
+            current.logoutFailed = true
+            current.logoutRecoveryPending = false
+            logoutLocks.set(id, 'failed')
+            reconcileVisibility(id, current)
+            publish(id, 'error')
+          },
+          onLogoutTerminalRedirect: (): boolean => {
+            const current = views.get(id)
+            if (
+              !ownEntry ||
+              !alive() ||
+              current !== ownEntry ||
+              current.disposePromise ||
+              !current.logoutLocked ||
+              current.logoutFlowRequestId === null ||
+              current.logoutConfirmed ||
+              !accountStore.getState().accounts.some((account) => account.id === id)
+            )
+              return false
+            current.logoutTerminalRedirect = true
+            confirmLogout(id, current)
+            return true
+          }
         })
       } catch {
         publish(id, 'error')
@@ -215,11 +384,84 @@ export function createAccountViewManager(
         pendingMainFrameKind: null,
         mainFrameDocumentLoaded: false,
         mailAccessGranted: false,
-        committedUrl: handle.view.webContents.getURL()
+        committedUrl: handle.view.webContents.getURL(),
+        accessEverGranted: false,
+        logoutRequestId: null,
+        logoutCompleted: false,
+        logoutSignInReady: false,
+        logoutConfirmed: logoutLocks.get(id) === 'confirmed',
+        logoutLocked: logoutLocks.has(id) && logoutLocks.get(id) !== 'recovering',
+        logoutFlowRequestId: null,
+        logoutNavigationStarted: false,
+        logoutExpectedNavigationRevision: null,
+        logoutReadyRevision: null,
+        logoutTerminalRedirect: false,
+        logoutFailed: logoutLocks.get(id) === 'failed',
+        logoutRecoveryPending: logoutLocks.get(id) === 'recovering'
       }
+      ownEntry = createdEntry
       entry = createdEntry
       views.set(id, createdEntry)
       lifecycle.register(id, createdEntry)
+      const recordLogoutSignInReady = (
+        source: 'dom_ready' | 'frame_finish' | 'stop_loading'
+      ): void => {
+        if (createdEntry.logoutFlowRequestId === null) return
+        const contents = handle.view.webContents
+        if (
+          !alive() ||
+          views.get(id) !== createdEntry ||
+          createdEntry.disposePromise ||
+          contents.isDestroyed()
+        )
+          return
+        const documentKind = lifecycle.documentKind(handle.view.webContents.getURL())
+        const nativeLoading = contents.isLoadingMainFrame()
+        const outcome = !createdEntry.logoutLocked
+          ? 'not_locked'
+          : !createdEntry.logoutNavigationStarted
+            ? 'navigation_not_started'
+            : createdEntry.logoutExpectedNavigationRevision !== createdEntry.navigationRevision
+              ? 'navigation_revision_mismatch'
+              : documentKind !== 'sign_in'
+                ? 'not_sign_in_document'
+                : nativeLoading
+                  ? 'document_loading'
+                  : !createdEntry.loaded || createdEntry.loading
+                    ? 'document_not_loaded'
+                    : 'ready'
+        emitLogoutDiagnostic({
+          stage: 'readiness',
+          outcome,
+          requestId: createdEntry.logoutFlowRequestId,
+          source,
+          documentKind,
+          navigationRevision: createdEntry.navigationRevision,
+          expectedNavigationRevision: createdEntry.logoutExpectedNavigationRevision,
+          accessRevision: createdEntry.accessRevision,
+          readyRevision: createdEntry.logoutReadyRevision,
+          loading: nativeLoading || createdEntry.loading
+        })
+        if (outcome !== 'ready') return
+        createdEntry.logoutSignInReady = true
+        createdEntry.logoutReadyRevision = createdEntry.accessRevision
+        confirmLogout(id, createdEntry)
+      }
+      handle.view.webContents.on('did-start-navigation', (details) => {
+        if (!details.isMainFrame || views.get(id) !== createdEntry) return
+        createdEntry.logoutSignInReady = false
+        createdEntry.logoutReadyRevision = null
+        if (
+          createdEntry.logoutLocked &&
+          createdEntry.navigationRevision === createdEntry.logoutExpectedNavigationRevision
+        )
+          createdEntry.logoutNavigationStarted = true
+      })
+      handle.view.webContents.on('dom-ready', () => recordLogoutSignInReady('dom_ready'))
+      handle.view.webContents.on('did-frame-finish-load', (_event, isMainFrame) => {
+        if (isMainFrame) recordLogoutSignInReady('frame_finish')
+      })
+      handle.view.webContents.on('did-stop-loading', () => recordLogoutSignInReady('stop_loading'))
     }
     reconcileVisibility(id, entry)
     if (entry.loaded) {
@@ -243,6 +485,76 @@ export function createAccountViewManager(
     const entry = views.get(id)
     if (entry) lifecycle.retry(id, entry)
     else activate(id)
+  }
+
+  function confirmLogout(id: string, entry: ViewEntry): boolean {
+    if (entry.logoutFlowRequestId === null || entry.logoutConfirmed) return entry.logoutConfirmed
+    let outcome: Extract<LogoutFlowDiagnostic, { stage: 'confirmation' }>['outcome'] | null = null
+    if (!entry.logoutCompleted) outcome = 'waiting_for_http_success'
+    else if (!entry.logoutSignInReady && !entry.logoutTerminalRedirect)
+      outcome = 'waiting_for_ready_sign_in'
+    else if (
+      !entry.logoutTerminalRedirect &&
+      entry.logoutExpectedNavigationRevision !== entry.navigationRevision
+    )
+      outcome = 'navigation_revision_mismatch'
+    else if (!entry.logoutTerminalRedirect && entry.logoutReadyRevision !== entry.accessRevision)
+      outcome = 'access_revision_mismatch'
+    else if (!alive() || entry.disposePromise || views.get(id) !== entry) outcome = 'stale_view'
+    if (outcome) {
+      emitLogoutDiagnostic({
+        stage: 'confirmation',
+        outcome,
+        requestId: entry.logoutFlowRequestId,
+        navigationRevision: entry.navigationRevision,
+        expectedNavigationRevision: entry.logoutExpectedNavigationRevision,
+        accessRevision: entry.accessRevision,
+        readyRevision: entry.logoutReadyRevision
+      })
+      return false
+    }
+    entry.logoutConfirmed = true
+    logoutLocks.set(id, 'confirmed')
+    entry.logoutRequestId = null
+    emitLogoutDiagnostic({
+      stage: 'confirmation',
+      outcome: 'confirmed',
+      requestId: entry.logoutFlowRequestId,
+      navigationRevision: entry.navigationRevision,
+      expectedNavigationRevision: entry.logoutExpectedNavigationRevision,
+      accessRevision: entry.accessRevision,
+      readyRevision: entry.logoutReadyRevision
+    })
+    emitLogoutDiagnostic({
+      stage: 'removal',
+      outcome: 'started',
+      requestId: entry.logoutFlowRequestId
+    })
+    try {
+      const result = onExplicitLogout?.(id)
+      void Promise.resolve(result ?? 'skipped').then(
+        (removalOutcome) =>
+          emitLogoutDiagnostic({
+            stage: 'removal',
+            outcome: removalOutcome,
+            requestId: entry.logoutFlowRequestId ?? undefined
+          }),
+        () =>
+          emitLogoutDiagnostic({
+            stage: 'removal',
+            outcome: 'failed',
+            requestId: entry.logoutFlowRequestId ?? undefined
+          })
+      )
+    } catch {
+      // The lock remains in place when account cleanup cannot start.
+      emitLogoutDiagnostic({
+        stage: 'removal',
+        outcome: 'failed',
+        requestId: entry.logoutFlowRequestId
+      })
+    }
+    return true
   }
 
   function disposeAccount(id: string): Promise<void> {
@@ -326,7 +638,18 @@ export function createAccountViewManager(
       return {
         revision: entry.accessRevision,
         kind: lifecycle.documentKind(entry.committedUrl),
-        ready: entry.loaded && !entry.loading && !entry.blocked && !entry.disposePromise
+        ready:
+          !entry.logoutLocked &&
+          entry.loaded &&
+          !entry.loading &&
+          !entry.blocked &&
+          !entry.disposePromise,
+        ...(entry.logoutFailed
+          ? {
+              logoutFailed: true,
+              loaded: entry.loaded && !entry.loading && !entry.blocked && !entry.disposePromise
+            }
+          : {})
       }
     },
     setMailAccess(id, allowed, expectedRevision) {
@@ -339,7 +662,8 @@ export function createAccountViewManager(
         return false
       if (
         allowed &&
-        (expectedRevision === undefined ||
+        (entry.logoutLocked ||
+          expectedRevision === undefined ||
           entry.accessRevision !== expectedRevision ||
           !entry.loaded ||
           entry.loading ||
@@ -349,8 +673,56 @@ export function createAccountViewManager(
       )
         return false
       entry.mailAccessGranted = allowed
+      if (allowed) entry.accessEverGranted = true
       if (!allowed) entry.handle.revokeMailAccess()
       reconcileVisibility(id, entry)
+      return true
+    },
+    clearLogoutLock(id, recoveryPending = false) {
+      const entry = views.get(id)
+      if (entry?.logoutRequestId !== null && entry?.logoutRequestId !== undefined) return false
+      if (
+        logoutLocks.get(id) === 'confirmed' ||
+        logoutLocks.get(id) === 'pending' ||
+        logoutLocks.get(id) === 'recovering' ||
+        entry?.logoutConfirmed ||
+        (entry?.logoutLocked && !entry.logoutFailed)
+      )
+        return false
+      if (logoutLocks.get(id) === 'failed' && recoveryPending) {
+        logoutLocks.set(id, 'recovering')
+        if (!entry) return true
+        entry.logoutLocked = false
+        entry.logoutCompleted = false
+        entry.logoutSignInReady = false
+        entry.logoutFlowRequestId = null
+        entry.logoutNavigationStarted = false
+        entry.logoutExpectedNavigationRevision = null
+        entry.logoutReadyRevision = null
+        entry.logoutTerminalRedirect = false
+        entry.logoutFailed = false
+        entry.logoutRecoveryPending = true
+        reconcileVisibility(id, entry)
+        return true
+      }
+      logoutLocks.delete(id)
+      if (!entry) return true
+      entry.logoutLocked = false
+      entry.logoutCompleted = false
+      entry.logoutSignInReady = false
+      entry.logoutFlowRequestId = null
+      entry.logoutNavigationStarted = false
+      entry.logoutExpectedNavigationRevision = null
+      entry.logoutReadyRevision = null
+      entry.logoutTerminalRedirect = false
+      entry.logoutFailed = false
+      entry.logoutRecoveryPending = false
+      reconcileVisibility(id, entry)
+      return true
+    },
+    forgetLogoutLock(id) {
+      if (accountStore.getState().accounts.some((account) => account.id === id)) return false
+      logoutLocks.delete(id)
       return true
     },
     getActiveAccountId() {

@@ -17,6 +17,7 @@ interface AccountViewLifecycleOptions {
   isActive: (id: string) => boolean
   publish: (id: string, status: 'loading' | 'ready' | 'blocked' | 'error') => void
   reconcileVisibility: (id: string, entry: ViewEntry) => void
+  onAccessInvalidated?: (id: string) => void
   reportLoadDiagnostic?: (id: string, diagnostic: GmailViewLoadDiagnostic) => void
 }
 
@@ -27,6 +28,7 @@ export function createAccountViewLifecycle({
   isActive,
   publish,
   reconcileVisibility,
+  onAccessInvalidated,
   reportLoadDiagnostic
 }: AccountViewLifecycleOptions): {
   documentKind: (value: string) => DocumentKind
@@ -52,6 +54,14 @@ export function createAccountViewLifecycle({
       type: 'load_failure',
       ...(errorCode !== undefined ? { errorCode } : {})
     })
+  }
+
+  function invalidateAccess(id: string): void {
+    try {
+      onAccessInvalidated?.(id)
+    } catch {
+      // Cache invalidation must not interrupt Gmail navigation lifecycle.
+    }
   }
 
   function documentKind(value: string): DocumentKind {
@@ -86,6 +96,7 @@ export function createAccountViewLifecycle({
       entry.pendingMainFrameKind = null
       entry.mainFrameDocumentLoaded = false
       entry.accessRevision += 1
+      invalidateAccess(id)
       entry.mailAccessGranted = false
       entry.handle.revokeMailAccess()
       reconcileVisibility(id, entry)
@@ -174,6 +185,7 @@ export function createAccountViewLifecycle({
           if (currentSlot && nextSlot && currentSlot !== nextSlot) {
             accountSlotChanged = true
             entry.accessRevision += 1
+            invalidateAccess(id)
             entry.mailAccessGranted = false
             entry.handle.revokeMailAccess()
             reconcileVisibility(id, entry)
@@ -181,6 +193,7 @@ export function createAccountViewLifecycle({
           entry.committedUrl = details.url
         } catch {
           entry.accessRevision += 1
+          invalidateAccess(id)
           entry.mailAccessGranted = false
           entry.handle.revokeMailAccess()
           reconcileVisibility(id, entry)
@@ -189,6 +202,7 @@ export function createAccountViewLifecycle({
         return
       }
       entry.accessRevision += 1
+      invalidateAccess(id)
       entry.mailAccessGranted = false
       entry.handle.revokeMailAccess()
       entry.loadNumber += 1
@@ -262,6 +276,7 @@ export function createAccountViewLifecycle({
       entry.mainFrameDocumentLoaded = false
       entry.navigationRevision += 1
       entry.accessRevision += 1
+      invalidateAccess(id)
       entry.mailAccessGranted = false
       entry.handle.revokeMailAccess()
       reconcileVisibility(id, entry)
@@ -299,6 +314,7 @@ export function createAccountViewLifecycle({
         entry.pendingMainFrameKind = null
         entry.mainFrameDocumentLoaded = false
         entry.accessRevision += 1
+        invalidateAccess(id)
         entry.mailAccessGranted = false
         entry.handle.revokeMailAccess()
         reconcileVisibility(id, entry)
