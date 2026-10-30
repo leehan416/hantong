@@ -87,6 +87,80 @@ test('connection lifecycle hook runs only after accepted connection and disconne
   assert.deepEqual(hooks[1], ['disconnected', accountId])
 })
 
+test('valid authorization reveals once while token exchange is still pending', async () => {
+  const exchange = deferred()
+  const revealed = []
+  const f = fixture({
+    exchangeCode: () => exchange.promise,
+    onAuthorizationReceived: (id) => revealed.push(id)
+  })
+  let settled = false
+  const pending = f.runtime.connect(accountId).then((result) => {
+    settled = true
+    return result
+  })
+  for (let i = 0; i < 10 && revealed.length === 0; i++) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.deepEqual(revealed, [accountId])
+  assert.equal(settled, false)
+  exchange.resolve(tokens)
+  assert.equal((await pending).status, 'connected')
+  assert.deepEqual(revealed, [accountId])
+})
+
+test('authorization reveal observer failure does not fail OAuth', async () => {
+  const f = fixture({
+    onAuthorizationReceived: () => {
+      throw new Error('reveal failed')
+    }
+  })
+  assert.equal((await f.runtime.connect(accountId)).status, 'connected')
+})
+
+test('rejected authorization state never reveals the app', async () => {
+  const revealed = []
+  const f = fixture({
+    startAuthorization: () => ({
+      result: Promise.reject({ code: 'invalid_state' }),
+      cancel: () => undefined
+    }),
+    onAuthorizationReceived: (id) => revealed.push(id)
+  })
+  assert.equal((await f.runtime.connect(accountId)).status, 'error')
+  assert.deepEqual(revealed, [])
+})
+
+test('cancelled and removed account operations do not reveal after authorization resolves', async () => {
+  const authorization = deferred()
+  const revealed = []
+  let exists = true
+  const f = fixture({
+    accountExists: () => exists,
+    startAuthorization: () => ({ result: authorization.promise, cancel: () => undefined }),
+    onAuthorizationReceived: (id) => revealed.push(id)
+  })
+  const cancelled = f.runtime.connect(accountId)
+  await new Promise((resolve) => setImmediate(resolve))
+  await f.runtime.cancel(accountId)
+  authorization.resolve(code)
+  await cancelled
+  assert.deepEqual(revealed, [])
+
+  const pendingAuthorization = deferred()
+  const removed = fixture({
+    accountExists: () => exists,
+    startAuthorization: () => ({ result: pendingAuthorization.promise, cancel: () => undefined }),
+    onAuthorizationReceived: (id) => revealed.push(id)
+  })
+  const connecting = removed.runtime.connect(accountId)
+  await new Promise((resolve) => setImmediate(resolve))
+  exists = false
+  pendingAuthorization.resolve(code)
+  await connecting
+  assert.deepEqual(revealed, [])
+})
+
 test('OAuth progress diagnostics report safe stages through credential persistence', async () => {
   const progress = []
   const f = fixture({

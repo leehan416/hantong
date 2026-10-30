@@ -13,6 +13,8 @@ interface AccessViews {
     emailAddress: string | null
   }>
   setMailAccess(accountId: string, allowed: boolean, expectedRevision?: number): boolean
+  clearLogoutLock?(accountId: string, recoveryPending?: boolean): boolean
+  retry?(): void
 }
 
 interface AccessRuntime {
@@ -31,6 +33,17 @@ interface AccessConnections {
     | { status: 'reconnect_required'; emailAddress: string }
   >
   getAccessToken(accountId: string, config: GoogleOAuthConfig): Promise<string>
+  getGeneration(accountId: string): number
+}
+
+const VERIFICATION_TTL_MS = 300_000
+
+interface VerificationCacheEntry {
+  readonly emailAddress: string
+  readonly revision: number
+  readonly generation: number
+  readonly verifiedAt: number
+  readonly expiresAt: number
 }
 
 interface AccessDependencies {
@@ -44,6 +57,7 @@ interface AccessDependencies {
   publish: (state: AccountAccessState) => void
   setTimeout?: typeof setTimeout
   clearTimeout?: typeof clearTimeout
+  now?: () => number
 }
 
 export function createAccountAccessController(dependencies: AccessDependencies): {
@@ -52,14 +66,19 @@ export function createAccountAccessController(dependencies: AccessDependencies):
   connect(accountId: string): Promise<AccountAccessState>
   cancel(accountId: string): Promise<AccountAccessState>
   disconnect(accountId: string): Promise<AccountAccessState>
+  invalidate(accountId: string): void
+  forget(accountId: string): void
   dispose(): void
 } {
   const states = new Map<string, AccountAccessState>()
   const attempts = new Map<string, number>()
   const autoStarted = new Set<string>()
   const handledRevisions = new Map<string, number>()
+  const verifiedGrants = new Set<string>()
   const autoSuppressed = new Set<string>()
   const controllers = new Map<string, AbortController>()
+  const verificationCache = new Map<string, VerificationCacheEntry>()
+  const now = dependencies.now ?? Date.now
   const timer = dependencies.setTimeout ?? setTimeout
   const clear = dependencies.clearTimeout ?? clearTimeout
   const identityTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -87,7 +106,19 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     return next
   }
 
-  function current(accountId: string, revision: number, expectedAttempt: number): boolean {
+  function current(
+    accountId: string,
+    revision: number,
+    expectedAttempt: number,
+    expectedGeneration?: number
+  ): boolean {
+    return (
+      currentDocument(accountId, revision, expectedAttempt) &&
+      (expectedGeneration === undefined || safeGeneration(accountId) === expectedGeneration)
+    )
+  }
+
+  function currentDocument(accountId: string, revision: number, expectedAttempt: number): boolean {
     const document = dependencies.views.getDocumentState(accountId)
     return (
       !disposed &&
@@ -98,6 +129,23 @@ export function createAccountAccessController(dependencies: AccessDependencies):
       document.ready &&
       (attempts.get(accountId) ?? 0) === expectedAttempt
     )
+  }
+
+  function safeGeneration(accountId: string): number | null {
+    try {
+      return dependencies.connections.getGeneration(accountId)
+    } catch {
+      return null
+    }
+  }
+
+  function safeNow(): number | null {
+    try {
+      const value = now()
+      return Number.isFinite(value) ? value : null
+    } catch {
+      return null
+    }
   }
 
   function revoke(accountId: string): number {
@@ -156,19 +204,24 @@ export function createAccountAccessController(dependencies: AccessDependencies):
   ): Promise<boolean> {
     const validationController = new AbortController()
     if (!current(accountId, revision, expectedAttempt)) return false
+    const expectedGeneration = safeGeneration(accountId)
+    if (expectedGeneration === null) return false
     controllers.set(accountId, validationController)
     try {
       const stored = await dependencies.connections.getStatus(accountId)
-      if (!current(accountId, revision, expectedAttempt) || stored.status !== 'connected')
+      if (
+        !current(accountId, revision, expectedAttempt, expectedGeneration) ||
+        stored.status !== 'connected'
+      )
         return false
       const emailAddress = stored.emailAddress.toLowerCase()
       const accessToken = await dependencies.connections.getAccessToken(
         accountId,
         dependencies.loadConfig()
       )
-      if (!current(accountId, revision, expectedAttempt)) return false
+      if (!current(accountId, revision, expectedAttempt, expectedGeneration)) return false
       const profileEmail = await dependencies.fetchProfile(accessToken, validationController.signal)
-      if (!current(accountId, revision, expectedAttempt)) return false
+      if (!current(accountId, revision, expectedAttempt, expectedGeneration)) return false
       if (profileEmail.toLowerCase() !== emailAddress) return false
       const webEmail = await readWebEmail(
         accountId,
@@ -176,8 +229,30 @@ export function createAccountAccessController(dependencies: AccessDependencies):
         revision,
         expectedAttempt
       )
-      if (!webEmail || webEmail.toLowerCase() !== emailAddress) return false
-      return dependencies.views.setMailAccess(accountId, true, revision)
+      if (
+        !webEmail ||
+        webEmail.toLowerCase() !== emailAddress ||
+        !current(accountId, revision, expectedAttempt, expectedGeneration)
+      )
+        return false
+      const checkedAt = safeNow()
+      if (checkedAt === null || checkedAt < 0 || !Number.isFinite(checkedAt + VERIFICATION_TTL_MS))
+        return false
+      const granted = dependencies.views.setMailAccess(accountId, true, revision)
+      if (!granted) return false
+      if (!current(accountId, revision, expectedAttempt, expectedGeneration)) {
+        dependencies.views.setMailAccess(accountId, false)
+        return false
+      }
+      verificationCache.set(accountId, {
+        emailAddress,
+        revision,
+        generation: expectedGeneration,
+        verifiedAt: checkedAt,
+        expiresAt: checkedAt + VERIFICATION_TTL_MS
+      })
+      verifiedGrants.add(accountId)
+      return true
     } catch {
       return false
     } finally {
@@ -192,9 +267,101 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     explicit: boolean
   ): Promise<AccountAccessState> {
     try {
-      publish(accountId, 'checking', 'connecting')
+      publish(accountId, 'checking', getState(accountId).connectionStatus)
       if (!explicit && autoSuppressed.has(accountId))
         return publish(accountId, 'required', 'disconnected')
+      const cached = verificationCache.get(accountId)
+      const cacheTime = cached ? safeNow() : null
+      const generation = safeGeneration(accountId)
+      if (
+        cached &&
+        cacheTime !== null &&
+        cacheTime >= 0 &&
+        cacheTime >= cached.verifiedAt &&
+        cacheTime < cached.expiresAt &&
+        cached.revision === revision &&
+        cached.generation === generation
+      ) {
+        const stored = await dependencies.connections.getStatus(accountId)
+        if (!currentDocument(accountId, revision, expectedAttempt)) return getState(accountId)
+        if (stored.status !== 'connected') {
+          verificationCache.delete(accountId)
+          return stored.status === 'reconnect_required'
+            ? publish(accountId, 'error', 'reconnect_required')
+            : publish(accountId, 'required', 'disconnected')
+        }
+        if (
+          safeGeneration(accountId) !== cached.generation ||
+          stored.emailAddress.toLowerCase() !== cached.emailAddress
+        ) {
+          verificationCache.delete(accountId)
+        } else {
+          const identityController = new AbortController()
+          controllers.set(accountId, identityController)
+          let identity: string | null
+          try {
+            identity = await readWebEmail(
+              accountId,
+              identityController.signal,
+              revision,
+              expectedAttempt
+            )
+          } catch {
+            identity = null
+          } finally {
+            if (controllers.get(accountId) === identityController) controllers.delete(accountId)
+          }
+          if (!currentDocument(accountId, revision, expectedAttempt)) return getState(accountId)
+          if (!identity || identity.toLowerCase() !== cached.emailAddress) {
+            verificationCache.delete(accountId)
+            return publish(accountId, 'error', 'reconnect_required')
+          }
+          let grantAfterIdentity: Awaited<ReturnType<AccessConnections['getStatus']>>
+          try {
+            grantAfterIdentity = await dependencies.connections.getStatus(accountId)
+          } catch {
+            verificationCache.delete(accountId)
+            return publish(accountId, 'error', 'error')
+          }
+          if (!currentDocument(accountId, revision, expectedAttempt)) return getState(accountId)
+          if (grantAfterIdentity.status !== 'connected') {
+            verificationCache.delete(accountId)
+            return grantAfterIdentity.status === 'reconnect_required'
+              ? publish(accountId, 'error', 'reconnect_required')
+              : publish(accountId, 'required', 'disconnected')
+          }
+          if (grantAfterIdentity.emailAddress.toLowerCase() !== cached.emailAddress) {
+            verificationCache.delete(accountId)
+          } else {
+            const hitTime = safeNow()
+            if (
+              safeGeneration(accountId) !== cached.generation ||
+              hitTime === null ||
+              hitTime < cached.verifiedAt ||
+              hitTime >= cached.expiresAt
+            ) {
+              verificationCache.delete(accountId)
+            } else {
+              const granted = dependencies.views.setMailAccess(accountId, true, revision)
+              if (!granted) return getState(accountId)
+              if (!currentDocument(accountId, revision, expectedAttempt)) {
+                dependencies.views.setMailAccess(accountId, false)
+                verificationCache.delete(accountId)
+                return getState(accountId)
+              }
+              if (safeGeneration(accountId) !== cached.generation) {
+                dependencies.views.setMailAccess(accountId, false)
+                verificationCache.delete(accountId)
+              } else {
+                verifiedGrants.add(accountId)
+                return publish(accountId, 'ready', 'connected')
+              }
+            }
+          }
+        }
+      } else if (cached) {
+        verificationCache.delete(accountId)
+      }
       const stored = await dependencies.connections.getStatus(accountId)
       if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
       if (stored.status === 'connected') {
@@ -203,6 +370,12 @@ export function createAccountAccessController(dependencies: AccessDependencies):
         if (valid) return publish(accountId, 'ready', 'connected')
         if (!explicit) return publish(accountId, 'error', 'reconnect_required')
       }
+      if (!explicit && verifiedGrants.has(accountId))
+        return stored.status === 'reconnect_required'
+          ? publish(accountId, 'error', 'reconnect_required')
+          : publish(accountId, 'required', 'disconnected')
+      if (!explicit && stored.status === 'reconnect_required')
+        return publish(accountId, 'required', 'reconnect_required')
       if (!explicit && autoStarted.has(accountId))
         return publish(
           accountId,
@@ -210,6 +383,7 @@ export function createAccountAccessController(dependencies: AccessDependencies):
           stored.status === 'reconnect_required' ? 'reconnect_required' : 'disconnected'
         )
       autoStarted.add(accountId)
+      publish(accountId, 'checking', 'connecting')
       const connected = await dependencies.runtime.connect(accountId)
       if (!current(accountId, revision, expectedAttempt)) return getState(accountId)
       if (connected.status !== 'connected') return publish(accountId, 'required', connected.status)
@@ -229,14 +403,20 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     if (lastActiveAccountId && lastActiveAccountId !== accountId) {
       const previousAccountId = lastActiveAccountId
       const previous = getState(previousAccountId)
+      const logoutFailed =
+        dependencies.views.getDocumentState(previousAccountId).logoutFailed === true
       revoke(previousAccountId)
       handledRevisions.delete(previousAccountId)
       if (previous.connectionStatus === 'connecting')
         void dependencies.runtime.cancel(previousAccountId)
       publish(
         previousAccountId,
-        'required',
-        previous.connectionStatus === 'connecting' ? 'disconnected' : previous.connectionStatus
+        logoutFailed ? 'error' : 'required',
+        logoutFailed
+          ? 'reconnect_required'
+          : previous.connectionStatus === 'connecting'
+            ? 'disconnected'
+            : previous.connectionStatus
       )
     }
     lastActiveAccountId = accountId
@@ -259,6 +439,11 @@ export function createAccountAccessController(dependencies: AccessDependencies):
         return
       releasePrevious(accountId)
       const document = dependencies.views.getDocumentState(accountId)
+      if (document.logoutFailed) {
+        revoke(accountId)
+        publish(accountId, 'error', 'reconnect_required')
+        return
+      }
       if (document.kind === 'mail' && !document.ready) {
         revoke(accountId)
         if (getState(accountId).connectionStatus === 'connecting')
@@ -290,14 +475,35 @@ export function createAccountAccessController(dependencies: AccessDependencies):
         dependencies.views.getActiveAccountId() !== accountId
       )
         return publish(accountId, 'error', 'error')
+      const previousDocument = dependencies.views.getDocumentState(accountId)
+      if (previousDocument.logoutFailed) {
+        const retryDocument =
+          previousDocument.loaded === false || previousDocument.kind === 'unknown'
+        if (dependencies.views.clearLogoutLock?.(accountId, retryDocument) === false)
+          return publish(accountId, 'error', 'reconnect_required')
+        autoSuppressed.delete(accountId)
+        verificationCache.delete(accountId)
+        releasePrevious(accountId)
+        if (retryDocument) {
+          revoke(accountId)
+          handledRevisions.delete(accountId)
+          publish(accountId, 'checking', getState(accountId).connectionStatus)
+          if (!dependencies.views.retry) return publish(accountId, 'error', 'reconnect_required')
+          dependencies.views.retry()
+          return getState(accountId)
+        }
+      } else if (dependencies.views.clearLogoutLock?.(accountId) === false) {
+        return publish(accountId, 'error', 'reconnect_required')
+      }
       const document = dependencies.views.getDocumentState(accountId)
       if (document.kind !== 'mail' || !document.ready)
         return publish(accountId, 'sign_in', 'disconnected')
       releasePrevious(accountId)
       handledRevisions.set(accountId, document.revision)
       autoSuppressed.delete(accountId)
+      verificationCache.delete(accountId)
       const expectedAttempt = revoke(accountId)
-      publish(accountId, 'checking', 'connecting')
+      publish(accountId, 'checking', getState(accountId).connectionStatus)
       return connectAndValidate(accountId, document.revision, expectedAttempt, true)
     },
     async cancel(accountId) {
@@ -311,6 +517,8 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     },
     async disconnect(accountId) {
       autoSuppressed.add(accountId)
+      verificationCache.delete(accountId)
+      verifiedGrants.delete(accountId)
       revoke(accountId)
       publish(accountId, 'required', 'disconnected')
       const expectedAttempt = attempts.get(accountId) ?? 0
@@ -318,9 +526,24 @@ export function createAccountAccessController(dependencies: AccessDependencies):
       if (disposed || attempts.get(accountId) !== expectedAttempt) return getState(accountId)
       return publish(accountId, 'required', result.status)
     },
+    invalidate(accountId) {
+      verificationCache.delete(accountId)
+      revoke(accountId)
+    },
+    forget(accountId) {
+      verificationCache.delete(accountId)
+      revoke(accountId)
+      states.delete(accountId)
+      handledRevisions.delete(accountId)
+      autoStarted.delete(accountId)
+      verifiedGrants.delete(accountId)
+      autoSuppressed.delete(accountId)
+      if (lastActiveAccountId === accountId) lastActiveAccountId = null
+    },
     dispose() {
       disposed = true
       for (const accountId of attempts.keys()) revoke(accountId)
+      verificationCache.clear()
       for (const handle of identityTimers.values()) clear(handle)
       identityTimers.clear()
     }

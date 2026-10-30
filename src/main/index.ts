@@ -29,6 +29,7 @@ import { createWindowStateStore } from './window-state'
 import { createGmailCleanupRuntime } from './gmail-cleanup-runtime'
 import { createAppUpdateRuntime } from './app-update-runtime'
 import type { AccountState } from '../shared/accounts'
+import type { AccountRemovalOutcome } from '../shared/ipc'
 import { createGmailRelaySync } from './gmail-relay-sync'
 import { createNotificationConnectionController } from './notification-connection-controller'
 import { createMainDiagnostics, createRotatingDiagnosticsSink } from './main-diagnostics'
@@ -346,6 +347,47 @@ function publishAccountState(owner: BrowserWindow, state: AccountState): void {
   }
 }
 
+function removeAccountAfterGmailLogout(
+  accountId: string,
+  views: ReturnType<typeof createAccountViewManager>,
+  owner: BrowserWindow
+): Promise<AccountRemovalOutcome | 'skipped'> {
+  return (async (): Promise<AccountRemovalOutcome | 'skipped'> => {
+    const store = accountStore
+    const removal = accountRemoval
+    if (
+      appQuitting ||
+      !store ||
+      !removal ||
+      !store.getState().accounts.some((account) => account.id === accountId)
+    )
+      return 'skipped'
+    const ownerIsAlive = (): boolean => !appQuitting
+    const result = await removal.removeWhenIdle(accountId, {
+      ownerIsAlive,
+      confirm: async () => true,
+      disposeView: (id) => views.disposeAccount(id),
+      activate: (id) => {
+        if (!owner.isDestroyed()) views.activate(id)
+      }
+    })
+    if (result.outcome === 'removed') {
+      views.forgetLogoutLock(accountId)
+      accountAccessController?.forget(accountId)
+      notificationRecoveryRuntime.clearPending(accountId)
+      notificationConnectionController?.disconnect(accountId)
+      publishAccountState(owner, result.state)
+    } else if (result.outcome === 'failed' && !owner.isDestroyed()) {
+      owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId, status: 'error' })
+    }
+    return result.outcome
+  })().catch(() => {
+    if (!owner.isDestroyed())
+      owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId, status: 'error' })
+    return 'failed'
+  })
+}
+
 function activateAccountView(accountId: string): void {
   try {
     accountViewManager?.activate(accountId)
@@ -434,7 +476,8 @@ const mainWindowRuntime = createMainWindowRuntime({
       route: diagnostic.route,
       reason: diagnostic.reason
     })
-  }
+  },
+  removeExplicitLogout: removeAccountAfterGmailLogout
 })
 
 void app
@@ -504,7 +547,11 @@ void app
       notify: showMailNotification,
       notificationPause: () => pauseController.snapshot(),
       refreshNotificationPause: () => pauseController.refresh(),
-      bundledEnvironment: __HANTONG_BUNDLED_ENV__
+      bundledEnvironment: __HANTONG_BUNDLED_ENV__,
+      revealForAuthorization: () => {
+        loginLaunchStartup.requestReveal()
+        app.focus({ steal: true })
+      }
     })
     googleConnectionManager = mailRuntime.connectionManager
     relayRuntime = mailRuntime.relayRuntime

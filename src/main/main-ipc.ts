@@ -474,6 +474,8 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       }
     })
     if (result.outcome === 'removed' && typeof accountId === 'string') {
+      viewManager.forgetLogoutLock(accountId)
+      dependencies.access()?.forget(accountId)
       dependencies.recovery.clearPending(accountId)
       dependencies.notifications()?.disconnect(accountId)
     }

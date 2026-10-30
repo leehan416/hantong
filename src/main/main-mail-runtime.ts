@@ -67,6 +67,7 @@ export interface MainMailRuntimeDependencies {
   readonly notificationPause: () => NotificationPauseSnapshot
   readonly refreshNotificationPause: () => void
   readonly bundledEnvironment: Record<string, string | undefined>
+  readonly revealForAuthorization: () => void
 }
 
 export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies): {
@@ -316,6 +317,9 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
         idToken: result.tokens.idToken,
         nonce: result.relayNonce
       })
+    },
+    onAuthorizationReceived: () => {
+      dependencies.revealForAuthorization()
     },
     onDisconnected: (accountId) => {
       notificationConnectionController?.event({

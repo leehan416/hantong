@@ -22,30 +22,40 @@ export function AccountAccessGate({
   onReconnect: () => void
   onReopen: () => void
 }): React.JSX.Element {
+  const checking = accessState.loading || access?.status === 'checking'
+  const actualConnecting = access?.connectionStatus === 'connecting'
+  const readFailed = accessState.readFailed && !checking
+
   return (
     <main className="access-gate" aria-labelledby="access-gate-title">
-      <section className="access-gate-content" aria-live="polite" aria-busy={accessState.loading}>
+      <section className="access-gate-content" aria-live="polite" aria-busy={checking}>
         <h1 id="access-gate-title">
-          {accessState.readFailed
-            ? text.accessErrorTitle
-            : access?.status === 'required'
-              ? text.accessRequiredTitle
-              : access?.status === 'error'
-                ? text.accessErrorTitle
-                : text.accessCheckingTitle}
+          {checking
+            ? text.accessCheckingTitle
+            : readFailed
+              ? text.accessErrorTitle
+              : access?.status === 'required'
+                ? text.accessRequiredTitle
+                : access?.status === 'error'
+                  ? text.accessErrorTitle
+                  : text.accessCheckingTitle}
         </h1>
         <p role="status">
-          {accessState.readFailed
-            ? text.apiCheckError
-            : access?.connectionStatus === 'connecting'
+          {checking
+            ? actualConnecting
               ? text.accessConnecting
-              : access?.status === 'required'
-                ? text.accessRequired
-                : access?.status === 'error'
-                  ? text.accessError
-                  : text.accessChecking}
+              : text.accessChecking
+            : readFailed
+              ? text.apiCheckError
+              : access?.connectionStatus === 'connecting'
+                ? text.accessConnecting
+                : access?.status === 'required'
+                  ? text.accessRequired
+                  : access?.status === 'error'
+                    ? text.accessError
+                    : text.accessChecking}
         </p>
-        {accessState.readFailed ? (
+        {checking && !actualConnecting ? null : readFailed ? (
           <button
             className="access-gate-action"
             type="button"
@@ -54,7 +64,7 @@ export function AccountAccessGate({
           >
             {text.accessRetry}
           </button>
-        ) : access?.connectionStatus === 'connecting' ? (
+        ) : actualConnecting ? (
           <div className="access-gate-actions">
             <button
               className="access-gate-action"
