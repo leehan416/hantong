@@ -165,6 +165,32 @@ test('while confirmation is pending, account operations are rejected', async () 
   assert.equal(fixtureData.controller.isBusy(), false)
 })
 
+test('logout removals coalesce duplicate accounts and wait behind manual removal', async () => {
+  const fixtureData = fixture()
+  let finishManual
+  fixtureData.context.confirm = () => new Promise((resolve) => (finishManual = resolve))
+  const manual = fixtureData.controller.remove(firstId, fixtureData.context)
+  fixtureData.context.confirm = async () => true
+  const firstLogout = fixtureData.controller.removeWhenIdle(firstId, fixtureData.context)
+  const duplicate = fixtureData.controller.removeWhenIdle(firstId, fixtureData.context)
+  const secondLogout = fixtureData.controller.removeWhenIdle(secondId, fixtureData.context)
+  assert.equal(firstLogout, duplicate)
+  finishManual(false)
+  assert.equal((await manual).outcome, 'cancelled')
+  assert.equal((await firstLogout).outcome, 'removed')
+  assert.equal((await secondLogout).outcome, 'removed')
+  assert.deepEqual(fixtureData.getState().accounts, [])
+  assert.equal(fixtureData.controller.isBusy(), false)
+})
+
+test('queued logout cleanup failure leaves the account for an explicit retry', async () => {
+  const fixtureData = fixture({ failCleanup: true })
+  const result = await fixtureData.controller.removeWhenIdle(firstId, fixtureData.context)
+  assert.equal(result.outcome, 'failed')
+  assert.deepEqual(fixtureData.getState().accounts, [{ id: firstId }, { id: secondId }])
+  assert.equal(fixtureData.controller.isBusy(), false)
+})
+
 test('session cleanup waits for target view destruction before clearing its partition', async () => {
   const fixtureData = fixture()
   let finishDisposal
