@@ -56,6 +56,7 @@ export interface GoogleConnectionDependencies {
     signal: AbortSignal
   ) => Promise<GoogleOAuthTokens>
   readonly fetchProfile: (accessToken: string, signal: AbortSignal) => Promise<string>
+  readonly onAuthorizationReceived?: () => void
   readonly reportProgress?: (
     stage: Exclude<OAuthDiagnosticStage, 'config' | 'connection' | 'persistence'>,
     outcome: OAuthDiagnosticOutcome,
@@ -291,6 +292,11 @@ export function startGoogleConnection(
     reportProgress('authorization', 'success')
     currentStage = null
     assertCurrent()
+    try {
+      dependencies.onAuthorizationReceived?.()
+    } catch {
+      // Revealing the app must not interrupt an otherwise valid OAuth flow.
+    }
 
     let tokens: GoogleOAuthTokens
     beginStage('token_exchange')

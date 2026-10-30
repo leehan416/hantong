@@ -504,7 +504,11 @@ void app
       notify: showMailNotification,
       notificationPause: () => pauseController.snapshot(),
       refreshNotificationPause: () => pauseController.refresh(),
-      bundledEnvironment: __HANTONG_BUNDLED_ENV__
+      bundledEnvironment: __HANTONG_BUNDLED_ENV__,
+      revealForAuthorization: () => {
+        loginLaunchStartup.requestReveal()
+        app.focus({ steal: true })
+      }
     })
     googleConnectionManager = mailRuntime.connectionManager
     relayRuntime = mailRuntime.relayRuntime
