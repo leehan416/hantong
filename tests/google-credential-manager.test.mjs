@@ -93,6 +93,35 @@ test('protected-store failure prevents a connection from being reported connecte
   }
 })
 
+test('grant generation advances on accepted replacement and disconnect', async () => {
+  const f = await fixture()
+  try {
+    assert.equal(f.manager.getGeneration(accountId), 0)
+    await f.manager.acceptConnection(accountId, {
+      emailAddress: 'owner@example.com',
+      tokens: {
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        expiresAt: now + 3_600_000
+      }
+    })
+    assert.equal(f.manager.getGeneration(accountId), 1)
+    await f.manager.acceptConnection(accountId, {
+      emailAddress: 'owner@example.com',
+      tokens: {
+        accessToken: 'replacement-access',
+        refreshToken: 'replacement-refresh',
+        expiresAt: now + 3_600_000
+      }
+    })
+    assert.equal(f.manager.getGeneration(accountId), 2)
+    await f.manager.disconnect(accountId)
+    assert.equal(f.manager.getGeneration(accountId), 3)
+  } finally {
+    await cleanup(f.directory)
+  }
+})
+
 test('verified connection persists before connected and refreshes expired access tokens once per account', async () => {
   const f = await fixture()
   try {
@@ -280,9 +309,11 @@ test('invalid_grant requires reconnect and does not retry or erase the protected
       emailAddress: 'owner@example.com',
       tokens: { accessToken: 'old', refreshToken: 'refresh-secret', expiresAt: now }
     })
+    const generationBeforeRefresh = f.manager.getGeneration(accountId)
     await assert.rejects(f.manager.getAccessToken(accountId, config), {
       code: 'reconnect_required'
     })
+    assert.equal(f.manager.getGeneration(accountId), generationBeforeRefresh + 1)
     assert.equal(
       JSON.stringify(await f.manager.getStatus(accountId)),
       JSON.stringify({ status: 'reconnect_required', emailAddress: 'owner@example.com' })
