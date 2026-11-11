@@ -40,6 +40,13 @@ const base = {
   rendererUrl: renderer
 }
 const plain = (value) => JSON.parse(JSON.stringify(value))
+function deferred() {
+  let resolve
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
 
 async function setup(t, behavior, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'hantong-ai-mail-service-'))
@@ -78,14 +85,16 @@ async function setup(t, behavior, options = {}) {
     appDataDirectory,
     resourcesDirectory,
     requestTimeoutMs: 1000,
-    loginTimeoutMs: 1000,
+    loginTimeoutMs: options.loginTimeoutMs ?? 1000,
     spawnProcess: (executable, args, options) => {
       const child = new EventEmitter()
       child.stdout = new PassThrough()
       child.stdin = new PassThrough()
       child.exitCode = null
       child.signalCode = null
+      child.killSignals = []
       child.kill = (signal) => {
+        child.killSignals.push(signal)
         child.signalCode = signal
         child.exitCode = signal === 'SIGKILL' ? null : 0
         child.emit('exit', child.exitCode, signal)
@@ -169,6 +178,145 @@ test('repeated connect during the same pending ChatGPT login owns one flow', asy
     spawned[0].writes.filter((packet) => packet.method === 'account/login/cancel').length,
     1
   )
+})
+
+test('login timeout serializes reconnect and allows retry only after its runtime stops', async (t) => {
+  let loginStarts = 0
+  let timeoutCancel
+  const cancelSeen = deferred()
+  const { service, spawned } = await setup(
+    t,
+    ({ child, packet }) => {
+      let result = {}
+      if (packet.method === 'account/read') result = { account: null }
+      if (packet.method === 'account/login/start') {
+        loginStarts += 1
+        result = {
+          type: 'chatgpt',
+          authUrl: 'https://auth.openai.com/authorize',
+          loginId: `login_${loginStarts}`
+        }
+      }
+      if (packet.method === 'account/login/cancel' && !timeoutCancel) {
+        timeoutCancel = { child, packet }
+        cancelSeen.resolve()
+        return
+      }
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+    },
+    { loginTimeoutMs: 10 }
+  )
+  try {
+    await service.connect()
+    await cancelSeen.promise
+    let reconnectSettled = false
+    const reconnect = service.connect().then((result) => {
+      reconnectSettled = true
+      return result
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(reconnectSettled, false)
+    assert.equal(loginStarts, 1)
+    assert.equal(spawned.length, 1)
+    timeoutCancel.child.stdout.write(
+      `${JSON.stringify({ id: timeoutCancel.packet.id, result: {} })}\n`
+    )
+    assert.deepEqual(plain(await reconnect), { state: 'error', reason: 'login_timed_out' })
+    assert.equal(spawned.length, 1)
+    assert.equal(spawned[0].child.killSignals.filter((signal) => signal === 'SIGTERM').length, 1)
+    assert.deepEqual(plain(await service.connect()), {
+      state: 'connecting',
+      reason: 'awaiting_chatgpt_login'
+    })
+    assert.equal(loginStarts, 2)
+    assert.equal(spawned.length, 2)
+  } finally {
+    await service.dispose()
+  }
+})
+
+test('disconnect during timeout cleanup stays disconnected after late cancel completion', async (t) => {
+  let timeoutCancel
+  const cancelSeen = deferred()
+  const { service, spawned } = await setup(
+    t,
+    ({ child, packet }) => {
+      let result = {}
+      if (packet.method === 'account/read') result = { account: null }
+      if (packet.method === 'account/login/start')
+        result = {
+          type: 'chatgpt',
+          authUrl: 'https://auth.openai.com/authorize',
+          loginId: 'login_1'
+        }
+      if (packet.method === 'account/login/cancel' && !timeoutCancel) {
+        timeoutCancel = { child, packet }
+        cancelSeen.resolve()
+        return
+      }
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+    },
+    { loginTimeoutMs: 10 }
+  )
+  try {
+    await service.connect()
+    await cancelSeen.promise
+    const retryDuringCleanup = service.connect()
+    const disconnected = service.disconnect()
+    assert.deepEqual(plain(await disconnected), { state: 'disconnected' })
+    timeoutCancel.child.stdout.write(
+      `${JSON.stringify({ id: timeoutCancel.packet.id, result: {} })}\n`
+    )
+    await retryDuringCleanup
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.deepEqual(plain(service.getStatus()), { state: 'disconnected' })
+    assert.equal(spawned.length, 1)
+    assert.equal(spawned[0].child.killSignals.filter((signal) => signal === 'SIGTERM').length, 1)
+  } finally {
+    await service.dispose()
+  }
+})
+
+test('dispose during timeout cleanup ignores a late RPC response and keeps disposed state', async (t) => {
+  let timeoutCancel
+  const cancelSeen = deferred()
+  const { service, spawned } = await setup(
+    t,
+    ({ child, packet }) => {
+      let result = {}
+      if (packet.method === 'account/read') result = { account: null }
+      if (packet.method === 'account/login/start')
+        result = {
+          type: 'chatgpt',
+          authUrl: 'https://auth.openai.com/authorize',
+          loginId: 'login_1'
+        }
+      if (packet.method === 'account/login/cancel' && !timeoutCancel) {
+        timeoutCancel = { child, packet }
+        cancelSeen.resolve()
+        return
+      }
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+    },
+    { loginTimeoutMs: 10 }
+  )
+  try {
+    await service.connect()
+    await cancelSeen.promise
+    const waitingConnect = service.connect()
+    await service.dispose()
+    timeoutCancel.child.stdout.write(
+      `${JSON.stringify({ id: timeoutCancel.packet.id, result: {} })}\n`
+    )
+    await waitingConnect
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.deepEqual(plain(service.getStatus()), { state: 'disconnected' })
+    assert.deepEqual(plain(await service.connect()), { state: 'error', reason: 'service_disposed' })
+    assert.equal(spawned.length, 1)
+    assert.equal(spawned[0].child.killSignals.filter((signal) => signal === 'SIGTERM').length, 1)
+  } finally {
+    await service.dispose()
+  }
 })
 
 test('a packaged runtime whose digest differs from the build pin is never spawned', async (t) => {

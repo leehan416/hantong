@@ -72,6 +72,7 @@ type CodexProcess = {
   home: string
   workspace: string
   generation: number
+  stopPromise?: Promise<void>
 }
 type ServiceOptions = {
   resourcesDirectory?: string
@@ -382,29 +383,34 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     return promise
   }
 
-  async function stopProcess(processState: CodexProcess): Promise<void> {
-    processState.closed = true
-    failPending(processState, 'app_server_closed')
-    processState.lines.close()
-    processState.child.stdin?.end()
-    if (processState.child.exitCode === null && processState.child.signalCode === null) {
-      const exited = new Promise<void>((resolvePromise) =>
-        processState.child.once('exit', () => resolvePromise())
-      )
-      const timeout = setTimeout(() => processState.child.kill('SIGTERM'), 300)
-      let hardTimeout: NodeJS.Timeout | undefined
-      await Promise.race([
-        exited,
-        new Promise<void>((resolvePromise) => {
-          hardTimeout = setTimeout(resolvePromise, 700)
-        })
-      ])
-      clearTimeout(timeout)
-      if (hardTimeout) clearTimeout(hardTimeout)
-      if (processState.child.exitCode === null && processState.child.signalCode === null)
-        processState.child.kill('SIGKILL')
-    }
-    if (runtime === processState) runtime = null
+  function stopProcess(processState: CodexProcess): Promise<void> {
+    if (processState.stopPromise) return processState.stopPromise
+    const stopping = (async () => {
+      processState.closed = true
+      failPending(processState, 'app_server_closed')
+      processState.lines.close()
+      processState.child.stdin?.end()
+      if (processState.child.exitCode === null && processState.child.signalCode === null) {
+        const exited = new Promise<void>((resolvePromise) =>
+          processState.child.once('exit', () => resolvePromise())
+        )
+        const timeout = setTimeout(() => processState.child.kill('SIGTERM'), 300)
+        let hardTimeout: NodeJS.Timeout | undefined
+        await Promise.race([
+          exited,
+          new Promise<void>((resolvePromise) => {
+            hardTimeout = setTimeout(resolvePromise, 700)
+          })
+        ])
+        clearTimeout(timeout)
+        if (hardTimeout) clearTimeout(hardTimeout)
+        if (processState.child.exitCode === null && processState.child.signalCode === null)
+          processState.child.kill('SIGKILL')
+      }
+      if (runtime === processState) runtime = null
+    })()
+    processState.stopPromise = stopping
+    return stopping
   }
 
   async function startProcess(generation: number): Promise<CodexProcess> {
@@ -666,12 +672,19 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         const timer = setTimeout(() => {
           const flow = flowHolder.value
           if (!flow || login !== flow || !isCurrent(generation)) return
+          const cleanupGeneration = ++lifecycleGeneration
           cleanLogin()
-          void (async () => {
+          const cleanup = (async () => {
             await rpc(processState, 'account/login/cancel', { loginId }).catch(() => undefined)
-            await stopProcess(processState)
-            if (isCurrent(generation)) setStatus({ state: 'error', reason: 'login_timed_out' })
+            if (runtime === processState) await stopProcess(processState)
+            if (isCurrent(cleanupGeneration))
+              setStatus({ state: 'error', reason: 'login_timed_out' })
+            return status
           })()
+          const trackedCleanup = cleanup.finally(() => {
+            if (lifecycle === trackedCleanup) lifecycle = null
+          })
+          lifecycle = trackedCleanup
         }, loginTimeoutMs)
         const poll = setInterval(() => {
           const flow = flowHolder.value
