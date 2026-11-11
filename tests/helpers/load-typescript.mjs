@@ -19,9 +19,12 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     AbortController,
     TextDecoder,
     TextEncoder,
+    process,
     Uint8Array,
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
     require(name) {
       if (Object.hasOwn(overrides, name)) return overrides[name]
       if (name.startsWith('.')) {

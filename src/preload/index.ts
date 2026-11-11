@@ -33,6 +33,7 @@ import {
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_CODEX_STATUS_EVENT,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
@@ -73,6 +74,14 @@ const api: HantongApi = Object.freeze({
   generateAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_CODEX_GENERATE_CHANNEL, request),
   cancelAiMailGeneration: (requestId) =>
     ipcRenderer.invoke(AI_MAIL_CODEX_CANCEL_CHANNEL, requestId),
+  onAiMailCodexStatus: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      status: import('../shared/ipc').CodexConnectionStatus
+    ): void => listener(status)
+    ipcRenderer.on(AI_MAIL_CODEX_STATUS_EVENT, handler)
+    return () => ipcRenderer.removeListener(AI_MAIL_CODEX_STATUS_EVENT, handler)
+  },
   getLoginLaunchState: () => ipcRenderer.invoke(LOGIN_LAUNCH_GET_CHANNEL),
   setLoginLaunchEnabled: (enabled) => ipcRenderer.invoke(LOGIN_LAUNCH_SET_CHANNEL, enabled),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),

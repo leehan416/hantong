@@ -37,6 +37,7 @@ export const AI_MAIL_CODEX_CONNECT_CHANNEL = 'hantong:ai-mail-codex-connect'
 export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnect'
 export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
 export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
+export const AI_MAIL_CODEX_STATUS_EVENT = 'hantong:ai-mail-codex-status-change'
 export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-target-status'
 export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
 export const AI_MAIL_COMPOSE_APPLY_CHANNEL = 'hantong:ai-mail-compose-apply'
@@ -192,6 +193,7 @@ export interface HantongApi {
   disconnectAiMailCodex: () => Promise<CodexConnectionStatus>
   generateAiMailDraft: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
   cancelAiMailGeneration: (requestId: string) => Promise<{ cancelled: boolean; reason?: string }>
+  onAiMailCodexStatus: (listener: (status: CodexConnectionStatus) => void) => () => void
   getLoginLaunchState: () => Promise<LoginLaunchState>
   setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>

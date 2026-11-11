@@ -37,7 +37,12 @@ import { createNativeMailNotifications } from './native-mail-notifications'
 import { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
 import { createMainMailRuntime } from './main-mail-runtime'
 import { is } from '@electron-toolkit/utils'
-import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
+import {
+  ACCOUNT_STATE_EVENT,
+  SETTINGS_OPEN_EVENT,
+  ACCOUNT_VIEW_STATUS_EVENT,
+  AI_MAIL_CODEX_STATUS_EVENT
+} from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
 import { createNotificationPauseStore } from './notification-pause-store'
 import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
@@ -110,7 +115,17 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   locale: uiLocale,
   showAccount
 })
-const aiMailCodex = createAiMailCodexService()
+const aiMailCodex = createAiMailCodexService({
+  executablePath: process.env['HANTONG_CODEX_EXECUTABLE'],
+  appDataDirectory: app.getPath('userData'),
+  openExternal: async (url) => {
+    await shell.openExternal(url)
+  },
+  onStatus: (status) => {
+    const window = mainWindow
+    if (window && !window.isDestroyed()) window.webContents.send(AI_MAIL_CODEX_STATUS_EVENT, status)
+  }
+})
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
