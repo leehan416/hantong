@@ -4,10 +4,17 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { assertPrivateDirectoryStat, ensureNoLocalIoProfile, prepareHome } from './harness.mjs'
+import {
+  assertPrivateDirectoryStat,
+  ensureCanaryFile,
+  ensureNoLocalIoProfile,
+  prepareHome
+} from './harness.mjs'
 
 const HOME_MARKER = '.hantong-codex-isolation'
 const HOME_MARKER_CONTENT = 'hantong-codex-isolation-v1\n'
+const CANARY_FILE_NAME = 'read-denial-canary.txt'
+const CANARY_FILE_CONTENT = 'HANTONG_OWNED_CANARY'
 const LEGACY_CONFIG = `default_permissions = "hantong-no-local-io"
 
 [permissions.hantong-no-local-io.filesystem]
@@ -132,4 +139,45 @@ test('does not rewrite a recognized older config in an existing home', async (t)
 
   await assert.rejects(ensureNoLocalIoProfile(codeHome), /unrelated settings/i)
   assert.equal(await readFile(configPath, 'utf8'), LEGACY_CONFIG)
+})
+
+test('creates and safely reuses the expected synthetic canary', async (t) => {
+  const root = await makeTestRoot(t)
+  const codeHome = await prepareHome({ baseDir: root, override: null })
+  const canaryPath = await ensureCanaryFile(codeHome)
+  const before = await lstat(canaryPath)
+
+  assert.equal(canaryPath, join(codeHome, CANARY_FILE_NAME))
+  assert.equal(before.mode & 0o777, 0o600)
+  assert.equal(await readFile(canaryPath, 'utf8'), CANARY_FILE_CONTENT)
+  assert.equal(await ensureCanaryFile(codeHome), canaryPath)
+  assert.equal((await lstat(canaryPath)).ino, before.ino)
+})
+
+test('rejects a canary symlink without modifying its target', async (t) => {
+  const root = await makeTestRoot(t)
+  const codeHome = await prepareHome({ baseDir: root, override: null })
+  const target = join(root, 'canary-target')
+  await writeFile(target, 'preserve-target\n', { mode: 0o600 })
+  await symlink(target, join(codeHome, CANARY_FILE_NAME))
+
+  await assert.rejects(ensureCanaryFile(codeHome), /regular file/i)
+  assert.equal(await readFile(target, 'utf8'), 'preserve-target\n')
+})
+
+test('rejects unsafe canary content and permissions without replacing the file', async (t) => {
+  const root = await makeTestRoot(t)
+  const codeHome = await prepareHome({ baseDir: root, override: null })
+  const canaryPath = join(codeHome, CANARY_FILE_NAME)
+  await writeFile(canaryPath, 'preserve-existing-content\n', { mode: 0o600 })
+
+  await assert.rejects(ensureCanaryFile(codeHome), /content is invalid/i)
+  assert.equal(await readFile(canaryPath, 'utf8'), 'preserve-existing-content\n')
+  await rm(canaryPath)
+  await writeFile(canaryPath, CANARY_FILE_CONTENT, { mode: 0o600 })
+  await chmod(canaryPath, 0o644)
+
+  await assert.rejects(ensureCanaryFile(codeHome), /permissions are unsafe/i)
+  assert.equal((await lstat(canaryPath)).mode & 0o777, 0o644)
+  assert.equal(await readFile(canaryPath, 'utf8'), CANARY_FILE_CONTENT)
 })

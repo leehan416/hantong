@@ -2,8 +2,8 @@
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node executes this protocol harness as JavaScript. */
 // Temporary Codex app-server feasibility harness. Never logs protocol payloads.
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { lstat, mkdir, readFile, writeFile, readdir } from 'node:fs/promises'
+import { constants, existsSync } from 'node:fs'
+import { lstat, mkdir, open, writeFile, readdir } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -19,6 +19,8 @@ const EFFORT = 'low'
 const CODEX_HOME_NAME = 'hantong-codex-isolated-v1'
 const CODEX_HOME_MARKER = '.hantong-codex-isolation'
 const CODEX_HOME_MARKER_CONTENT = 'hantong-codex-isolation-v1\n'
+const CANARY_FILE_NAME = 'read-denial-canary.txt'
+const CANARY_FILE_CONTENT = 'HANTONG_OWNED_CANARY'
 const NO_LOCAL_IO_PROFILE = 'hantong-no-local-io'
 const CANARY_READ_PROFILE = 'hantong-canary-read-control'
 const RESTRICTED_FEATURES = [
@@ -400,20 +402,48 @@ function assertPrivateFileStat(stat, expectedUid) {
   }
 }
 
+async function readPrivateFile(filePath, expectedUid) {
+  const noFollow = constants.O_NOFOLLOW
+  if (!Number.isInteger(noFollow)) throw new Error('safe file access is unavailable')
+  assertPrivateFileStat(await lstat(filePath), expectedUid)
+  const handle = await open(filePath, constants.O_RDONLY | noFollow)
+  try {
+    assertPrivateFileStat(await handle.stat(), expectedUid)
+    return await handle.readFile('utf8')
+  } finally {
+    await handle.close()
+  }
+}
+
+export async function ensureCanaryFile(codeHome) {
+  const expectedUid = process.getuid?.()
+  if (!Number.isInteger(expectedUid)) throw new Error('canary owner cannot be verified')
+  assertPrivateDirectoryStat(await lstat(codeHome), expectedUid)
+  await verifyHomeMarker(codeHome, expectedUid)
+  const canaryPath = join(codeHome, CANARY_FILE_NAME)
+  try {
+    await writeFile(canaryPath, CANARY_FILE_CONTENT, { mode: 0o600, flag: 'wx' })
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+  }
+
+  if ((await readPrivateFile(canaryPath, expectedUid)) !== CANARY_FILE_CONTENT) {
+    throw new Error('canary file content is invalid')
+  }
+  return canaryPath
+}
+
 async function verifyHomeMarker(codeHome, expectedUid) {
   const markerPath = join(codeHome, CODEX_HOME_MARKER)
-  let markerStat
   try {
-    markerStat = await lstat(markerPath)
+    if ((await readPrivateFile(markerPath, expectedUid)) !== CODEX_HOME_MARKER_CONTENT) {
+      throw new Error('isolated home marker is invalid')
+    }
   } catch (error) {
     if (error?.code === 'ENOENT') {
       throw new Error('isolated home marker is missing', { cause: error })
     }
     throw error
-  }
-  assertPrivateFileStat(markerStat, expectedUid)
-  if ((await readFile(markerPath, 'utf8')) !== CODEX_HOME_MARKER_CONTENT) {
-    throw new Error('isolated home marker is invalid')
   }
 }
 
@@ -493,8 +523,7 @@ enabled = false
   const configPath = join(codeHome, 'config.toml')
   let current
   try {
-    assertPrivateFileStat(await lstat(configPath), expectedUid)
-    current = await readFile(configPath, 'utf8')
+    current = await readPrivateFile(configPath, expectedUid)
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
   }
@@ -746,8 +775,7 @@ async function main() {
     if (action === 'profile-test') {
       const profiles = await server.request('permissionProfile/list', { cwd: emptyCwd, limit: 100 })
       const selected = (profiles?.data ?? []).find((profile) => profile.id === NO_LOCAL_IO_PROFILE)
-      const canaryPath = join(codeHome, 'read-denial-canary.txt')
-      await writeFile(canaryPath, 'HANTONG_OWNED_CANARY', { mode: 0o600 })
+      const canaryPath = await ensureCanaryFile(codeHome)
       const control = (profiles?.data ?? []).find((profile) => profile.id === CANARY_READ_PROFILE)
       emit('permission_profile', {
         noLocalIoAllowed: selected?.allowed === true,
@@ -1154,8 +1182,7 @@ async function main() {
         emit('generation_gate', { allowed: false, reason: 'tool_restriction_not_verified' })
         return
       }
-      const canaryPath = join(codeHome, 'read-denial-canary.txt')
-      await writeFile(canaryPath, 'HANTONG_OWNED_CANARY', { mode: 0o600 })
+      const canaryPath = await ensureCanaryFile(codeHome)
       const thread = await server.request('thread/start', {
         model: MODEL,
         cwd: emptyCwd,
