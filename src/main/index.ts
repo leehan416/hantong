@@ -47,6 +47,14 @@ import {
   createNotificationPauseController,
   createNotificationPauseMenuActions
 } from './notification-pause'
+import { configureIsolatedGmailComposeProbeProfile } from './gmail-compose-probe'
+
+configureIsolatedGmailComposeProbeProfile({
+  app,
+  argv: process.argv,
+  isPackaged: app.isPackaged,
+  onProcessExit: (listener) => process.once('exit', listener)
+})
 
 app.setName('Hantong')
 

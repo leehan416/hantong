@@ -70,7 +70,7 @@ function createRuntimeFixture(options = {}) {
     access: { getState: () => ({ status: accessStatus }) },
     accountExists: () => true,
     isPackaged: false,
-    argv: ['--gmail-compose-probe'],
+    argv: ['--gmail-compose-probe', '--gmail-compose-probe-isolated'],
     terminal
   })
   return {
@@ -165,7 +165,7 @@ test('runtime refuses packaged builds even when the probe flag is present', () =
       access: {},
       accountExists: () => true,
       isPackaged: true,
-      argv: ['--gmail-compose-probe'],
+      argv: ['--gmail-compose-probe', '--gmail-compose-probe-isolated'],
       terminal: {}
     })
   )

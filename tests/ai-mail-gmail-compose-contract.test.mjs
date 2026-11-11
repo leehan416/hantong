@@ -1,9 +1,13 @@
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node test fixtures are plain JavaScript. */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { existsSync, readdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const {
+  configureIsolatedGmailComposeProbeProfile,
   createGmailComposeProbeController,
   gmailComposeProbeLimits,
   gmailComposeProbeStatusMessage,
@@ -102,8 +106,72 @@ function createFixture() {
 
 test('probe is only available through an explicit unpackaged CLI flag', () => {
   assert.equal(isGmailComposeProbeOptedIn([], false), false)
-  assert.equal(isGmailComposeProbeOptedIn(['--gmail-compose-probe'], false), true)
-  assert.equal(isGmailComposeProbeOptedIn(['--gmail-compose-probe'], true), false)
+  assert.equal(isGmailComposeProbeOptedIn(['--gmail-compose-probe'], false), false)
+  assert.equal(
+    isGmailComposeProbeOptedIn(['--gmail-compose-probe', '--gmail-compose-probe-isolated'], false),
+    true
+  )
+  assert.equal(
+    isGmailComposeProbeOptedIn(['--gmail-compose-probe', '--gmail-compose-probe-isolated'], true),
+    false
+  )
+})
+
+test('isolated probe profile is newly created and redirects both persistent path roots', () => {
+  const setPaths = []
+  const exitHandlers = []
+  const profile = configureIsolatedGmailComposeProbeProfile({
+    app: { setPath: (name, path) => setPaths.push({ name, path }) },
+    argv: ['--gmail-compose-probe', '--gmail-compose-probe-isolated'],
+    isPackaged: false,
+    onProcessExit: (listener) => exitHandlers.push(listener)
+  })
+  assert.ok(profile)
+  assert.ok(profile.userDataPath.startsWith(tmpdir()))
+  assert.ok(existsSync(profile.userDataPath))
+  assert.ok(existsSync(profile.sessionDataPath))
+  assert.deepEqual(readdirSync(profile.userDataPath), ['session-data'])
+  assert.deepEqual(setPaths, [
+    { name: 'userData', path: profile.userDataPath },
+    { name: 'sessionData', path: profile.sessionDataPath }
+  ])
+  assert.equal(exitHandlers.length, 1)
+  exitHandlers[0]()
+  assert.equal(existsSync(profile.userDataPath), false)
+})
+
+test('probe profile flags fail closed unless both are explicit and unpackaged', () => {
+  const app = {
+    setPath() {
+      assert.fail('profile paths must not be changed')
+    }
+  }
+  assert.equal(
+    configureIsolatedGmailComposeProbeProfile({ app, argv: [], isPackaged: false }),
+    null
+  )
+  assert.throws(() =>
+    configureIsolatedGmailComposeProbeProfile({
+      app,
+      argv: ['--gmail-compose-probe'],
+      isPackaged: false
+    })
+  )
+  assert.throws(() =>
+    configureIsolatedGmailComposeProbeProfile({
+      app,
+      argv: ['--gmail-compose-probe', '--gmail-compose-probe-isolated'],
+      isPackaged: true
+    })
+  )
+})
+
+test('isolated profile hook runs before Electron lock and ready-time storage setup', () => {
+  const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+  const profileSetup = source.indexOf('configureIsolatedGmailComposeProbeProfile({')
+  assert.ok(profileSetup >= 0)
+  assert.ok(profileSetup < source.indexOf('app.requestSingleInstanceLock()'))
+  assert.ok(profileSetup < source.indexOf('void app\n  .whenReady()'))
 })
 
 test('probe result logging drops subjects, bodies and unexpected status data', () => {

@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline'
 import type { BrowserWindow, WebContents } from 'electron'
 import type { AccountAccessState } from '../shared/ipc'
@@ -13,6 +16,38 @@ export const gmailComposeProbeLimits = Object.freeze({
   maxBodyLength: MAX_BODY_LENGTH,
   snapshotTtlMs: SNAPSHOT_TTL_MS
 })
+
+export function configureIsolatedGmailComposeProbeProfile(options: {
+  readonly app: { setPath(name: 'userData' | 'sessionData', path: string): void }
+  readonly argv: readonly string[]
+  readonly isPackaged: boolean
+  readonly onProcessExit: (listener: () => void) => void
+}): { readonly userDataPath: string; readonly sessionDataPath: string } | null {
+  const probeRequested = options.argv.includes('--gmail-compose-probe')
+  const isolationRequested = options.argv.includes('--gmail-compose-probe-isolated')
+  if (!probeRequested && !isolationRequested) return null
+  if (options.isPackaged || !probeRequested || !isolationRequested)
+    throw new Error('The Gmail compose probe requires an unpackaged isolated-profile opt-in')
+
+  const userDataPath = mkdtempSync(join(tmpdir(), 'hantong-gmail-compose-probe-'))
+  const sessionDataPath = join(userDataPath, 'session-data')
+  try {
+    mkdirSync(sessionDataPath)
+    options.app.setPath('userData', userDataPath)
+    options.app.setPath('sessionData', sessionDataPath)
+  } catch {
+    rmSync(userDataPath, { recursive: true, force: true })
+    throw new Error('Unable to prepare the isolated Gmail compose probe profile')
+  }
+  options.onProcessExit(() => {
+    try {
+      rmSync(userDataPath, { recursive: true, force: true })
+    } catch {
+      // The path is uniquely created for this probe and only removed after process exit.
+    }
+  })
+  return { userDataPath, sessionDataPath }
+}
 const SAFE_PROBE_STATUSES = new Set([
   'ready',
   'conflict',
@@ -444,7 +479,11 @@ function executeInProbeWorld(
 }
 
 export function isGmailComposeProbeOptedIn(argv: readonly string[], isPackaged: boolean): boolean {
-  return !isPackaged && argv.includes('--gmail-compose-probe')
+  return (
+    !isPackaged &&
+    argv.includes('--gmail-compose-probe') &&
+    argv.includes('--gmail-compose-probe-isolated')
+  )
 }
 
 export function createGmailComposeProbeRuntime(options: {
