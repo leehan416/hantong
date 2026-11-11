@@ -3,11 +3,12 @@
 // Temporary Codex app-server feasibility harness. Never logs protocol payloads.
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, chmod, readFile, writeFile, readdir } from 'node:fs/promises'
+import { lstat, mkdir, readFile, writeFile, readdir } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
+import { pathToFileURL } from 'node:url'
 import { classifyThreadItem, matchesThreadTurn } from './item-classifier.mjs'
 
 const REQUEST_TIMEOUT_MS = 30_000
@@ -15,26 +16,11 @@ const APP_NAME = 'hantong_codex_feasibility_spike'
 const APP_TITLE = 'Hantong Codex Feasibility Spike'
 const MODEL = 'gpt-6-luna'
 const EFFORT = 'low'
+const CODEX_HOME_NAME = 'hantong-codex-isolated-v1'
+const CODEX_HOME_MARKER = '.hantong-codex-isolation'
+const CODEX_HOME_MARKER_CONTENT = 'hantong-codex-isolation-v1\n'
 const NO_LOCAL_IO_PROFILE = 'hantong-no-local-io'
 const CANARY_READ_PROFILE = 'hantong-canary-read-control'
-const PREVIOUS_PROFILE_CONFIG = `default_permissions = "${NO_LOCAL_IO_PROFILE}"
-
-[permissions.${NO_LOCAL_IO_PROFILE}.filesystem]
-":root" = "deny"
-":minimal" = "deny"
-
-[permissions.${NO_LOCAL_IO_PROFILE}.network]
-enabled = false
-`
-const PREVIOUS_PROFILE_CONFIG_WITH_MINIMAL_READ = `default_permissions = "${NO_LOCAL_IO_PROFILE}"
-
-[permissions.${NO_LOCAL_IO_PROFILE}.filesystem]
-":root" = "deny"
-":minimal" = "read"
-
-[permissions.${NO_LOCAL_IO_PROFILE}.network]
-enabled = false
-`
 const RESTRICTED_FEATURES = [
   'shell_tool',
   'unified_exec',
@@ -390,18 +376,87 @@ async function observeTurn(
   }
 }
 
-async function prepareHome() {
-  const codeHome = resolve(
-    process.env.HANTONG_CODEX_HOME ?? join(tmpdir(), 'hantong-codex-isolated')
-  )
-  await mkdir(codeHome, { recursive: true, mode: 0o700 })
-  await chmod(codeHome, 0o700)
+export function assertPrivateDirectoryStat(stat, expectedUid) {
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('isolated home is not a directory')
+  }
+  if (!Number.isInteger(expectedUid) || stat.uid !== expectedUid) {
+    throw new Error('isolated home owner does not match')
+  }
+  if ((stat.mode & 0o7777) !== 0o700) {
+    throw new Error('isolated home permissions are unsafe')
+  }
+}
+
+function assertPrivateFileStat(stat, expectedUid) {
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('isolated file is not a regular file')
+  }
+  if (!Number.isInteger(expectedUid) || stat.uid !== expectedUid) {
+    throw new Error('isolated file owner does not match')
+  }
+  if ((stat.mode & 0o7777) !== 0o600) {
+    throw new Error('isolated file permissions are unsafe')
+  }
+}
+
+async function verifyHomeMarker(codeHome, expectedUid) {
+  const markerPath = join(codeHome, CODEX_HOME_MARKER)
+  let markerStat
+  try {
+    markerStat = await lstat(markerPath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error('isolated home marker is missing', { cause: error })
+    }
+    throw error
+  }
+  assertPrivateFileStat(markerStat, expectedUid)
+  if ((await readFile(markerPath, 'utf8')) !== CODEX_HOME_MARKER_CONTENT) {
+    throw new Error('isolated home marker is invalid')
+  }
+}
+
+export async function prepareHome({
+  baseDir = tmpdir(),
+  override = process.env.HANTONG_CODEX_HOME
+} = {}) {
+  if (override != null) throw new Error('external HANTONG_CODEX_HOME override is not supported')
+  const expectedUid = process.getuid?.()
+  if (!Number.isInteger(expectedUid)) throw new Error('isolated home owner cannot be verified')
+  assertPrivateDirectoryStat(await lstat(baseDir), expectedUid)
+
+  const codeHome = join(baseDir, CODEX_HOME_NAME)
+  let created = false
+  try {
+    await mkdir(codeHome, { mode: 0o700 })
+    created = true
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+  }
+
+  assertPrivateDirectoryStat(await lstat(codeHome), expectedUid)
+  if (created) {
+    await writeFile(join(codeHome, CODEX_HOME_MARKER), CODEX_HOME_MARKER_CONTENT, {
+      mode: 0o600,
+      flag: 'wx'
+    })
+  }
+  await verifyHomeMarker(codeHome, expectedUid)
   return codeHome
 }
 
-async function ensureNoLocalIoProfile(codeHome) {
+export async function ensureNoLocalIoProfile(codeHome) {
+  const expectedUid = process.getuid?.()
+  assertPrivateDirectoryStat(await lstat(codeHome), expectedUid)
+  await verifyHomeMarker(codeHome, expectedUid)
   const cwd = join(codeHome, 'empty-workspace')
-  await mkdir(cwd, { recursive: true, mode: 0o700 })
+  try {
+    await mkdir(cwd, { mode: 0o700 })
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+  }
+  assertPrivateDirectoryStat(await lstat(cwd), expectedUid)
   const entries = await readdir(cwd)
   if (entries.length) throw new Error('isolated workspace is not empty')
   const profileConfig = `project_root_markers = []
@@ -421,11 +476,6 @@ ${JSON.stringify(cwd)} = true
 [permissions.${NO_LOCAL_IO_PROFILE}.network]
 enabled = false
 `
-  const previousProfileConfig = profileConfig.replace(
-    'project_root_markers = []\nproject_doc_max_bytes = 0\n',
-    ''
-  )
-  const previousRootMarkerConfig = profileConfig.replace('project_doc_max_bytes = 0\n', '')
   const canaryProfileConfig = `
 [permissions.${CANARY_READ_PROFILE}.workspace_roots]
 ${JSON.stringify(codeHome)} = true
@@ -443,30 +493,16 @@ enabled = false
   const configPath = join(codeHome, 'config.toml')
   let current
   try {
+    assertPrivateFileStat(await lstat(configPath), expectedUid)
     current = await readFile(configPath, 'utf8')
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
   }
   const completeConfig = `${profileConfig}
 ${canaryProfileConfig}`
-  const previousCompleteConfig = `${previousProfileConfig}
-${canaryProfileConfig}`
-  const previousRootMarkerCompleteConfig = `${previousRootMarkerConfig}
-${canaryProfileConfig}`
   if (current === undefined)
     await writeFile(configPath, completeConfig, { mode: 0o600, flag: 'wx' })
-  else if (
-    [
-      PREVIOUS_PROFILE_CONFIG,
-      PREVIOUS_PROFILE_CONFIG_WITH_MINIMAL_READ,
-      previousProfileConfig,
-      previousCompleteConfig,
-      previousRootMarkerConfig,
-      previousRootMarkerCompleteConfig
-    ].includes(current)
-  ) {
-    await writeFile(configPath, completeConfig, { mode: 0o600, flag: 'w' })
-  } else if (current !== completeConfig)
+  else if (current !== completeConfig)
     throw new Error('isolated config already contains unrelated settings')
   return cwd
 }
@@ -1280,7 +1316,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  emit('harness_failed', { code: safeError(error) })
-  process.exitCode = 1
-})
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    emit('harness_failed', { code: safeError(error) })
+    process.exitCode = 1
+  })
+}
