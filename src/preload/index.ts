@@ -35,6 +35,8 @@ import {
   AI_MAIL_CODEX_CANCEL_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_APPLY_CHANNEL,
+  AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT,
   NOTIFICATION_CONNECTIONS_CHANNEL,
   NOTIFICATION_CONNECTIONS_EVENT,
@@ -57,6 +59,8 @@ if (!process.contextIsolated) throw new Error('Context isolation is required')
 const api: HantongApi = Object.freeze({
   getAiMailComposeTargetStatus: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL),
   getAiMailComposeSnapshot: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL),
+  applyAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_APPLY_CHANNEL, request),
+  undoAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_UNDO_CHANNEL, request),
   onAiMailComposeTarget: (listener) => {
     const handler = (_event: IpcRendererEvent, status: ComposeTargetStatus): void =>
       listener(status)

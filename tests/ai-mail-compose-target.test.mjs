@@ -22,6 +22,7 @@ function fixture(options = {}) {
   let destroyed = false
   let targetId = 'target-7'
   let documentRevision = '4:9'
+  let body = 'Synthetic body'
   const listeners = new Map()
   const contents = {
     id: 25,
@@ -36,6 +37,30 @@ function fixture(options = {}) {
     },
     async executeJavaScriptInIsolatedWorld(_world, scripts) {
       const code = scripts[0].code
+      if (code.includes('__hantongComposeTarget.replace(')) {
+        if (options.deferReplace) await options.deferReplace()
+        const match = code.match(
+          /\.replace\(("(?:\\.|[^"])*"), ("(?:\\.|[^"])*"), ("(?:\\.|[^"])*")\)/
+        )
+        if (!match) return null
+        const expected = JSON.parse(match[2])
+        const replacement = JSON.parse(match[3])
+        if (body !== expected) return { status: 'conflict', body }
+        body = replacement
+        return { status: 'applied' }
+      }
+      if (code.includes('__hantongComposeTarget.readTarget(')) {
+        if (options.deferReadBeforeReplace) await options.deferReadBeforeReplace()
+        return {
+          targetId,
+          snapshot: {
+            subject: 'Synthetic subject',
+            recipients: ['recipient@example.test'],
+            body,
+            supported: options.supported !== false
+          }
+        }
+      }
       if (code.includes('globalThis.__hantongComposeTarget?.documentId ===')) {
         if (options.deferRead) await options.deferRead()
         return {
@@ -43,8 +68,8 @@ function fixture(options = {}) {
           snapshot: {
             subject: 'Synthetic subject',
             recipients: ['recipient@example.test'],
-            body: 'Synthetic body',
-            supported: true
+            body,
+            supported: options.supported !== false
           }
         }
       }
@@ -85,6 +110,12 @@ function fixture(options = {}) {
     },
     setTarget(value) {
       targetId = value
+    },
+    setBody(value) {
+      body = value
+    },
+    getBody() {
+      return body
     },
     destroy() {
       destroyed = true
@@ -141,6 +172,158 @@ test('active account or document changes fence an in-flight snapshot', async () 
   f.service.dispose()
 })
 
+test('explicit apply and undo mutate only the captured synthetic compose body', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  const applied = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  assert.equal(applied.status, 'applied')
+  assert.equal(f.getBody(), 'Synthetic revised body')
+  if (applied.status !== 'applied') assert.fail('synthetic apply should return an apply id')
+  assert.deepEqual(
+    plain(
+      await f.service.undoDraft({
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        applyId: applied.applyId
+      })
+    ),
+    { status: 'undone' }
+  )
+  assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
+test('apply and undo conflicts require a fresh explicit current-version confirmation', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  f.setBody('Synthetic direct edit')
+  const conflict = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  assert.equal(conflict.status, 'conflict')
+  assert.equal(f.getBody(), 'Synthetic direct edit')
+  if (conflict.status !== 'conflict') assert.fail('expected conflict confirmation token')
+  const applied = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body',
+    confirmedCurrentVersion: conflict.currentVersion
+  })
+  assert.equal(applied.status, 'applied')
+  if (applied.status !== 'applied') assert.fail('expected apply id')
+  f.setBody('Synthetic edit before undo')
+  const undoConflict = await f.service.undoDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    applyId: applied.applyId
+  })
+  assert.equal(undoConflict.status, 'conflict')
+  assert.equal(f.getBody(), 'Synthetic edit before undo')
+  if (undoConflict.status !== 'conflict') assert.fail('expected undo confirmation token')
+  assert.deepEqual(
+    plain(
+      await f.service.undoDraft({
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        applyId: applied.applyId,
+        confirmedCurrentVersion: undoConflict.currentVersion
+      })
+    ),
+    { status: 'undone' }
+  )
+  assert.equal(f.getBody(), 'Synthetic direct edit')
+  f.service.dispose()
+})
+
+test('an account switch after an explicit apply request fences its late result', async () => {
+  let resume
+  let started
+  const startedPromise = new Promise((resolve) => {
+    started = resolve
+  })
+  const f = fixture({
+    deferReadBeforeReplace: async () => {
+      started()
+      await new Promise((resolve) => {
+        resume = resolve
+      })
+    }
+  })
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  const applying = f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  await startedPromise
+  f.setAccount('account-b')
+  resume()
+  assert.deepEqual(plain(await applying), { status: 'stale_target' })
+  assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
+test('duplicate explicit apply clicks are serialized while the first mutation is pending', async () => {
+  let resume
+  let started
+  const startedPromise = new Promise((resolve) => {
+    started = resolve
+  })
+  const f = fixture({
+    deferReadBeforeReplace: async () => {
+      started()
+      await new Promise((resolve) => {
+        resume = resolve
+      })
+    }
+  })
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  const request = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  }
+  const first = f.service.applyDraft(request)
+  await startedPromise
+  assert.deepEqual(plain(await f.service.applyDraft(request)), { status: 'busy' })
+  resume()
+  assert.equal((await first).status, 'applied')
+  f.service.dispose()
+})
+
+test('unsupported compose body formats fail closed before apply', async () => {
+  const f = fixture({ supported: false })
+  assert.deepEqual(plain(await f.service.getSnapshot()), {
+    status: 'unsupported',
+    code: 'unsupported_content'
+  })
+  assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
 test('compose-target IPC accepts no arguments from only the trusted renderer main frame', () => {
   const base = {
     ownerAlive: true,
@@ -168,6 +351,13 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
       this.innerText = text
       this.isConnected = true
       this.attributes = new Map()
+      this.childNodes = text ? [{ nodeType: 3, textContent: text }] : []
+    }
+    replaceChildren(...nodes) {
+      this.childNodes = nodes
+      this.innerText = nodes
+        .map((node) => (node.nodeName === 'BR' ? '\n' : node.textContent))
+        .join('')
     }
     matches(selector) {
       return this.selector === selector
@@ -193,6 +383,10 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
     getAttribute(name) {
       return this.attributes.get(name) ?? null
     }
+    dispatchEvent(event) {
+      this.lastEvent = event
+      return true
+    }
   }
   const root = new SyntheticElement('[role="dialog"]')
   const composeBranch = new SyntheticElement('div', root)
@@ -206,12 +400,20 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
   const listeners = new Map()
   const document = {
     addEventListener: (name, listener) => listeners.set(name, listener),
-    removeEventListener: (name) => listeners.delete(name)
+    removeEventListener: (name) => listeners.delete(name),
+    createElement: (name) => ({ nodeType: 1, nodeName: name.toUpperCase() }),
+    createTextNode: (textContent) => ({ nodeType: 3, textContent })
   }
   const context = {
     document,
     Element: SyntheticElement,
-    HTMLInputElement: class extends SyntheticElement {}
+    HTMLInputElement: class extends SyntheticElement {},
+    Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
+    Event: class Event {
+      constructor(_type, options) {
+        this.bubbles = options?.bubbles === true
+      }
+    }
   }
   const source = gmailComposeTargetPageSource('synthetic-document-version')
   runInNewContext(source, context)
@@ -221,6 +423,108 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
   assert.equal(result.snapshot.subject, '')
   assert.equal(result.snapshot.body, 'Reply fixture body')
   assert.equal(result.snapshot.supported, true)
+  const replaced = context.__hantongComposeTarget.replace(
+    'target-1',
+    'Reply fixture body',
+    'Synthetic replacement'
+  )
+  assert.equal(replaced.status, 'applied')
+  assert.equal(editor.innerText, 'Synthetic replacement')
+  assert.equal(editor.lastEvent.bubbles, true)
+  context.__hantongComposeTarget.revoke()
+})
+
+test('plain-text apply leaves synthetic subject, recipient and attachment nodes untouched', () => {
+  class SyntheticElement {
+    constructor(selector = '', parentElement = null, text = '') {
+      this.selector = selector
+      this.parentElement = parentElement
+      this.innerText = text
+      this.isConnected = true
+      this.attributes = new Map()
+      this.childNodes = text ? [{ nodeType: 3, textContent: text }] : []
+      this.children = []
+      this.value = ''
+    }
+    replaceChildren(...nodes) {
+      this.childNodes = nodes
+      this.innerText = nodes
+        .map((node) => (node.nodeName === 'BR' ? '\n' : node.textContent))
+        .join('')
+    }
+    append(child) {
+      child.parentElement = this
+      this.children.push(child)
+      return child
+    }
+    matches(selector) {
+      return this.selector === selector
+    }
+    closest(selector) {
+      return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null)
+    }
+    contains(node) {
+      for (let item = node; item; item = item.parentElement) if (item === this) return true
+      return false
+    }
+    querySelectorAll(selector) {
+      if (selector === '[contenteditable="true"]') return [editor]
+      if (selector === 'input[name="subjectbox"]') return [subject]
+      if (selector === '[email], input[name="to"]') return [recipient]
+      return []
+    }
+    querySelector() {
+      return null
+    }
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null
+    }
+    dispatchEvent(event) {
+      this.lastEvent = event
+      return true
+    }
+  }
+  class SyntheticInput extends SyntheticElement {}
+  const root = new SyntheticElement('compose-root')
+  const editor = root.append(
+    new SyntheticElement('[contenteditable="true"]', null, 'Original body')
+  )
+  const subject = root.append(new SyntheticInput('input[name="subjectbox"]'))
+  subject.value = 'Preserved subject'
+  const recipient = root.append(new SyntheticElement('[email]'))
+  recipient.attributes.set('email', 'person@example.test')
+  const attachment = root.append(new SyntheticElement('attachment'))
+  const listeners = new Map()
+  const context = {
+    document: {
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      removeEventListener: (name) => listeners.delete(name),
+      createElement: (name) => ({ nodeType: 1, nodeName: name.toUpperCase() }),
+      createTextNode: (textContent) => ({ nodeType: 3, textContent })
+    },
+    Element: SyntheticElement,
+    HTMLInputElement: SyntheticInput,
+    Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
+    Event: class Event {
+      constructor(_type, options) {
+        this.bubbles = options?.bubbles === true
+      }
+    }
+  }
+  runInNewContext(gmailComposeTargetPageSource('synthetic-preservation-document'), context)
+  listeners.get('click')({ target: editor })
+  const read = context.__hantongComposeTarget.read()
+  assert.equal(read.snapshot.subject, 'Preserved subject')
+  assert.deepEqual(plain(read.snapshot.recipients), ['person@example.test'])
+  assert.equal(
+    context.__hantongComposeTarget.replace('target-1', 'Original body', 'Replacement body').status,
+    'applied'
+  )
+  assert.equal(editor.innerText, 'Replacement body')
+  assert.equal(subject.value, 'Preserved subject')
+  assert.equal(recipient.getAttribute('email'), 'person@example.test')
+  assert.equal(attachment.isConnected, true)
+  assert.equal(root.children.includes(attachment), true)
   context.__hantongComposeTarget.revoke()
 })
 

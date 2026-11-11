@@ -47,6 +47,8 @@ import {
   AI_MAIL_CODEX_CANCEL_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_APPLY_CHANNEL,
+  AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT
 } from '../shared/ipc'
 import {
@@ -58,7 +60,8 @@ import {
   isTrustedRendererUrl,
   isAllowedLoginLaunchRequest,
   isAllowedAiMailCodexRequest,
-  isAllowedAiMailComposeTargetRequest
+  isAllowedAiMailComposeTargetRequest,
+  isAllowedAiMailComposeMutationRequest
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
 import type { createAiMailCodexService } from './ai-mail-codex-service'
@@ -141,6 +144,48 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
               subject: result.subject
             }
       owner.webContents.send(AI_MAIL_COMPOSE_TARGET_EVENT, targetStatus)
+      return result
+    })
+  }
+  for (const [channel, operation] of [
+    [AI_MAIL_COMPOSE_APPLY_CHANNEL, 'apply'],
+    [AI_MAIL_COMPOSE_UNDO_CHANNEL, 'undo']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      const request = {
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        operation,
+        args
+      }
+      if (!isAllowedAiMailComposeMutationRequest(request)) throw new Error('Request rejected')
+      if (!owner) throw new Error('Request rejected')
+      const service = dependencies.composeTarget()
+      if (!service) return { status: 'stale_target' }
+      const result =
+        operation === 'apply'
+          ? await service.applyDraft(args[0] as import('../shared/ipc').AiMailComposeApplyRequest)
+          : await service.undoDraft(args[0] as import('../shared/ipc').AiMailComposeUndoRequest)
+      const currentOwner = dependencies.window()
+      if (
+        currentOwner !== owner ||
+        owner.isDestroyed() ||
+        !isAllowedAiMailComposeMutationRequest({
+          ...request,
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? ''
+        })
+      )
+        throw new Error('Request rejected')
       return result
     })
   }

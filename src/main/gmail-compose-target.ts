@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { BrowserWindow, WebContents } from 'electron'
-import type { AccountAccessState, ComposeSnapshotResult, ComposeTargetStatus } from '../shared/ipc'
+import type {
+  AccountAccessState,
+  AiMailComposeApplyRequest,
+  AiMailComposeMutationResult,
+  AiMailComposeUndoRequest,
+  ComposeSnapshotResult,
+  ComposeTargetStatus
+} from '../shared/ipc'
 import type { createAccountAccessController } from './account-access-controller'
 import type { createAccountViewManager } from './account-view-manager'
 
@@ -30,6 +37,22 @@ interface PageResult {
     body: string
     supported: boolean
   } | null
+}
+
+interface PageReplaceResult {
+  status: 'applied' | 'conflict' | 'unsupported' | 'stale_target'
+  body?: string
+}
+
+interface ComposeLease {
+  generation: number
+  accountId: string
+  composeId: string
+  targetId: string
+  contents: WebContents
+  lifecycleVersion: string
+  documentVersion: string
+  probeDocumentId: string
 }
 
 export function gmailComposeTargetPageSource(documentId: string): string {
@@ -94,7 +117,7 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         const value = node.getAttribute('email') || node.value || '';
         if (value && recipients.length < ${MAX_RECIPIENTS} && value.length <= ${MAX_RECIPIENT_LENGTH} && !recipients.includes(value)) recipients.push(value);
       }
-      const unsupported = item.editor.querySelector('.gmail_signature, .gmail_quote, blockquote') !== null || item.editor.querySelector('img, table') !== null;
+      const unsupported = item.editor.querySelector('.gmail_signature, .gmail_quote, blockquote, img, table') !== null || Array.from(item.editor.childNodes).some((node) => node.nodeType !== Node.TEXT_NODE && !(node.nodeType === Node.ELEMENT_NODE && node.nodeName === 'BR'));
       return { subject: (item.subject?.value || '').slice(0, ${MAX_SUBJECT_LENGTH}), recipients, body, supported: !unsupported && body.length <= ${MAX_BODY_LENGTH} };
     };
     let active = true;
@@ -106,6 +129,31 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         if (selected === 'unsupported') return { targetId: 'unsupported', unsupported: true, snapshot: null };
         const snapshot = selected ? inspect(selected) : null;
         return { targetId: snapshot ? selected : null, snapshot };
+      },
+      readTarget(targetId) {
+        if (!active) return null;
+        const snapshot = inspect(targetId);
+        return snapshot ? { targetId, snapshot } : null;
+      },
+      replace(targetId, expectedBody, replacement) {
+        if (!active) return { status: 'stale_target' };
+        const item = targets.get(targetId);
+        const snapshot = inspect(targetId);
+        if (!snapshot || !item) return { status: 'stale_target' };
+        if (!snapshot.supported) return { status: 'unsupported' };
+        if (snapshot.body !== expectedBody) return { status: 'conflict', body: snapshot.body };
+        const lines = replacement.split('\\n');
+        const nodes = [];
+        for (let index = 0; index < lines.length; index += 1) {
+          if (index > 0) nodes.push(document.createElement('br'));
+          if (lines[index]) nodes.push(document.createTextNode(lines[index]));
+        }
+        item.editor.replaceChildren(...nodes);
+        item.editor.dispatchEvent(new Event('input', { bubbles: true }));
+        const after = inspect(targetId);
+        if (!after || !after.supported) return { status: 'unsupported' };
+        if (after.body !== replacement) return { status: 'conflict', body: after.body };
+        return { status: 'applied' };
       }
     };
     return true;
@@ -143,6 +191,16 @@ function validPageResult(value: unknown): value is PageResult {
   )
 }
 
+function validPageReplaceResult(value: unknown): value is PageReplaceResult {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Record<string, unknown>
+  return (
+    ['applied', 'conflict', 'unsupported', 'stale_target'].includes(String(result.status)) &&
+    (result.body === undefined ||
+      (typeof result.body === 'string' && result.body.length <= MAX_BODY_LENGTH))
+  )
+}
+
 export function createGmailComposeTargetService(options: {
   window: BrowserWindow
   views: Views
@@ -151,6 +209,8 @@ export function createGmailComposeTargetService(options: {
 }): {
   getStatus(): Promise<ComposeTargetStatus>
   getSnapshot(): Promise<ComposeSnapshotResult>
+  applyDraft(request: AiMailComposeApplyRequest): Promise<AiMailComposeMutationResult>
+  undoDraft(request: AiMailComposeUndoRequest): Promise<AiMailComposeMutationResult>
   isResultTargetCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): Promise<boolean>
   isResultCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): boolean
   onAccessState(state: AccountAccessState): void
@@ -167,18 +227,14 @@ export function createGmailComposeTargetService(options: {
     ((event: Electron.Event, url: string, inPlace: boolean, mainFrame: boolean) => void) | null =
     null
   let destroyedListener: (() => void) | null = null
-  const resultLeases = new WeakMap<
-    object,
-    {
-      generation: number
-      accountId: string
-      composeId: string
-      targetId: string
-      contents: WebContents
-      lifecycleVersion: string
-      documentVersion: string
-    }
+  const resultLeases = new WeakMap<object, ComposeLease>()
+  const snapshotLeases = new Map<string, { lease: ComposeLease; body: string }>()
+  const applyRecords = new Map<
+    string,
+    { lease: ComposeLease; originalBody: string; appliedBody: string }
   >()
+  const confirmedBodies = new Map<string, { leaseId: string; body: string }>()
+  let mutationInFlight = false
 
   function clear(): void {
     generation += 1
@@ -197,6 +253,9 @@ export function createGmailComposeTargetService(options: {
     documentId = null
     selectedId = null
     selectedDomId = null
+    snapshotLeases.clear()
+    applyRecords.clear()
+    confirmedBodies.clear()
     navListener = null
     destroyedListener = null
   }
@@ -362,7 +421,8 @@ export function createGmailComposeTargetService(options: {
       targetId: selectedDomId ?? '',
       contents: capturedContext.contents,
       lifecycleVersion: capturedContext.lifecycleVersion,
-      documentVersion: capturedContext.documentVersion
+      documentVersion: capturedContext.documentVersion,
+      probeDocumentId: documentId ?? ''
     }
     if (!snapshot) {
       const status = { status: 'ready' as const, ...metadata }
@@ -375,12 +435,191 @@ export function createGmailComposeTargetService(options: {
       composeId: metadata.composeId,
       accountLabel: metadata.accountLabel,
       documentVersion: capturedContext.documentVersion,
+      snapshotId: randomUUID(),
       recipients: metadata.recipients,
       subject: metadata.subject,
       body: capturedResult.snapshot.body
     }
     resultLeases.set(snapshotResult, lease)
+    snapshotLeases.set(snapshotResult.snapshotId, {
+      lease,
+      body: capturedResult.snapshot.body
+    })
+    if (snapshotLeases.size > 32) {
+      const oldest = snapshotLeases.keys().next().value
+      if (oldest) snapshotLeases.delete(oldest)
+    }
     return snapshotResult
+  }
+
+  function leaseIsCurrent(lease: ComposeLease): boolean {
+    const latest = current()
+    return Boolean(
+      !disposed &&
+      generation === lease.generation &&
+      context?.contents === lease.contents &&
+      documentId === lease.probeDocumentId &&
+      context.documentVersion === lease.documentVersion &&
+      context.lifecycleVersion === lease.lifecycleVersion &&
+      latest?.accountId === lease.accountId &&
+      latest.contents === lease.contents &&
+      latest.lifecycleVersion === lease.lifecycleVersion
+    )
+  }
+
+  async function replace(
+    lease: ComposeLease,
+    expectedBody: string,
+    replacement: string
+  ): Promise<PageReplaceResult | null> {
+    if (!leaseIsCurrent(lease)) return null
+    try {
+      const value = await execute(
+        lease.contents,
+        `globalThis.__hantongComposeTarget?.documentId === ${JSON.stringify(lease.probeDocumentId)} ? globalThis.__hantongComposeTarget.replace(${JSON.stringify(lease.targetId)}, ${JSON.stringify(expectedBody)}, ${JSON.stringify(replacement)}) : null`
+      )
+      return leaseIsCurrent(lease) && validPageReplaceResult(value) ? value : null
+    } catch {
+      return null
+    }
+  }
+
+  async function readTarget(lease: ComposeLease): Promise<PageResult | null> {
+    if (!leaseIsCurrent(lease)) return null
+    try {
+      const value = await execute(
+        lease.contents,
+        `globalThis.__hantongComposeTarget?.documentId === ${JSON.stringify(lease.probeDocumentId)} ? globalThis.__hantongComposeTarget.readTarget(${JSON.stringify(lease.targetId)}) : null`
+      )
+      return leaseIsCurrent(lease) && validPageResult(value) ? value : null
+    } catch {
+      return null
+    }
+  }
+
+  async function compareAndReplace(
+    lease: ComposeLease,
+    leaseId: string,
+    expectedBody: string,
+    replacement: string
+  ): Promise<AiMailComposeMutationResult | PageReplaceResult> {
+    const latest = await readTarget(lease)
+    if (!latest || !leaseIsCurrent(lease)) return { status: 'stale_target' }
+    if (!latest.snapshot?.supported) return { status: 'unsupported' }
+    if (latest.snapshot.body !== expectedBody)
+      return {
+        status: 'conflict',
+        currentVersion: rememberConflict(leaseId, latest.snapshot.body),
+        currentBody: latest.snapshot.body
+      }
+    if (!leaseIsCurrent(lease)) return { status: 'stale_target' }
+    const result = await replace(lease, expectedBody, replacement)
+    return result ?? { status: 'stale_target' }
+  }
+
+  function rememberConflict(leaseId: string, body: string): string {
+    const currentVersion = randomUUID()
+    confirmedBodies.set(currentVersion, { leaseId, body })
+    if (confirmedBodies.size > 32) {
+      const oldest = confirmedBodies.keys().next().value
+      if (oldest) confirmedBodies.delete(oldest)
+    }
+    return currentVersion
+  }
+
+  async function mutate(
+    request: AiMailComposeApplyRequest | AiMailComposeUndoRequest,
+    operation: 'apply' | 'undo'
+  ): Promise<AiMailComposeMutationResult> {
+    if (mutationInFlight) return { status: 'busy' }
+    mutationInFlight = true
+    try {
+      if ((operation === 'apply') !== 'snapshotId' in request) return { status: 'stale_target' }
+      if ('snapshotId' in request) {
+        const snapshot = snapshotLeases.get(request.snapshotId)
+        const lease = snapshot?.lease
+        if (
+          !snapshot ||
+          !lease ||
+          request.accountId !== lease.accountId ||
+          request.composeId !== lease.composeId ||
+          request.documentVersion !== lease.documentVersion ||
+          !leaseIsCurrent(lease)
+        )
+          return { status: 'stale_target' }
+        const confirmedVersion = request.confirmedCurrentVersion
+        const confirmed = confirmedVersion ? confirmedBodies.get(confirmedVersion) : undefined
+        if (confirmedVersion && (!confirmed || confirmed.leaseId !== request.snapshotId))
+          return { status: 'stale_target' }
+        const replacement = request.replacement.replace(/\r\n?/g, '\n')
+        const result = await compareAndReplace(
+          lease,
+          request.snapshotId,
+          confirmed?.body ?? snapshot.body,
+          replacement
+        )
+        if (result.status === 'conflict') {
+          if ('currentVersion' in result) return result
+          if (typeof result.body === 'string')
+            return {
+              status: 'conflict',
+              currentVersion: rememberConflict(request.snapshotId, result.body),
+              currentBody: result.body
+            }
+          return { status: 'stale_target' }
+        }
+        if (result.status !== 'applied')
+          return { status: result.status === 'unsupported' ? 'unsupported' : 'stale_target' }
+        if (confirmedVersion) confirmedBodies.delete(confirmedVersion)
+        const applyId = randomUUID()
+        applyRecords.clear()
+        applyRecords.set(applyId, {
+          lease,
+          originalBody: confirmed?.body ?? snapshot.body,
+          appliedBody: replacement
+        })
+        snapshotLeases.delete(request.snapshotId)
+        return { status: 'applied', applyId }
+      }
+      const record = applyRecords.get(request.applyId)
+      const lease = record?.lease
+      if (
+        !record ||
+        !lease ||
+        request.accountId !== lease.accountId ||
+        request.composeId !== lease.composeId ||
+        request.documentVersion !== lease.documentVersion ||
+        !leaseIsCurrent(lease)
+      )
+        return { status: 'stale_target' }
+      const confirmedVersion = request.confirmedCurrentVersion
+      const confirmed = confirmedVersion ? confirmedBodies.get(confirmedVersion) : undefined
+      if (confirmedVersion && (!confirmed || confirmed.leaseId !== request.applyId))
+        return { status: 'stale_target' }
+      const result = await compareAndReplace(
+        lease,
+        request.applyId,
+        confirmed?.body ?? record.appliedBody,
+        record.originalBody
+      )
+      if (result.status === 'conflict') {
+        if ('currentVersion' in result) return result
+        if (typeof result.body === 'string')
+          return {
+            status: 'conflict',
+            currentVersion: rememberConflict(request.applyId, result.body),
+            currentBody: result.body
+          }
+        return { status: 'stale_target' }
+      }
+      if (result.status !== 'applied')
+        return { status: result.status === 'unsupported' ? 'unsupported' : 'stale_target' }
+      if (confirmedVersion) confirmedBodies.delete(confirmedVersion)
+      applyRecords.delete(request.applyId)
+      return { status: 'undone' }
+    } finally {
+      mutationInFlight = false
+    }
   }
 
   function isResultCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): boolean {
@@ -408,6 +647,12 @@ export function createGmailComposeTargetService(options: {
     },
     async getSnapshot() {
       return (await result(true)) as ComposeSnapshotResult
+    },
+    applyDraft(request) {
+      return mutate(request, 'apply')
+    },
+    undoDraft(request) {
+      return mutate(request, 'undo')
     },
     async isResultTargetCurrent(value) {
       if (!value || typeof value !== 'object' || value.status !== 'ready') return true

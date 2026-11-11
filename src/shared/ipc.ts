@@ -39,6 +39,8 @@ export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
 export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
 export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-target-status'
 export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
+export const AI_MAIL_COMPOSE_APPLY_CHANNEL = 'hantong:ai-mail-compose-apply'
+export const AI_MAIL_COMPOSE_UNDO_CHANNEL = 'hantong:ai-mail-compose-undo'
 export const AI_MAIL_COMPOSE_TARGET_EVENT = 'hantong:ai-mail-compose-target-change'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
@@ -109,10 +111,36 @@ export type ComposeSnapshotResult =
       composeId: string
       accountLabel: string
       documentVersion: string
+      snapshotId: string
       subject: string
       recipients: string[]
       body: string
     }
+
+export interface AiMailComposeApplyRequest {
+  accountId: string
+  composeId: string
+  documentVersion: string
+  snapshotId: string
+  replacement: string
+  /** Send only after the user explicitly approves the `currentBody` returned by a conflict. */
+  confirmedCurrentVersion?: string
+}
+
+export interface AiMailComposeUndoRequest {
+  accountId: string
+  composeId: string
+  documentVersion: string
+  applyId: string
+  /** Send only after the user explicitly approves the `currentBody` returned by a conflict. */
+  confirmedCurrentVersion?: string
+}
+
+export type AiMailComposeMutationResult =
+  | { status: 'applied'; applyId: string }
+  | { status: 'undone' }
+  | { status: 'conflict'; currentVersion: string; currentBody: string }
+  | { status: 'unsupported' | 'stale_target' | 'busy' | 'failed' }
 
 /** Explicit plain-text fixture only; the caller must never pass Gmail content. */
 export interface CodexGenerationRequest {
@@ -156,6 +184,8 @@ export type NotificationConnectionStates = Record<string, NotificationConnection
 export interface HantongApi {
   getAiMailComposeTargetStatus: () => Promise<ComposeTargetStatus>
   getAiMailComposeSnapshot: () => Promise<ComposeSnapshotResult>
+  applyAiMailDraft: (request: AiMailComposeApplyRequest) => Promise<AiMailComposeMutationResult>
+  undoAiMailDraft: (request: AiMailComposeUndoRequest) => Promise<AiMailComposeMutationResult>
   onAiMailComposeTarget: (listener: (status: ComposeTargetStatus) => void) => () => void
   getAiMailCodexStatus: () => Promise<CodexConnectionStatus>
   connectAiMailCodex: () => Promise<CodexConnectionStatus>

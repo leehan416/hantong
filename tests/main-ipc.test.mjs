@@ -175,6 +175,39 @@ test('Google status completion is rejected after its owning window changes', asy
   await assert.rejects(operation, /Request rejected/)
 })
 
+test('compose apply IPC validates payloads and rechecks the owner after awaiting Main', async () => {
+  const pending = deferred()
+  const firstWindow = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  const secondWindow = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  let currentWindow = firstWindow
+  let calls = 0
+  fixture({
+    window: () => currentWindow,
+    composeTarget: () => ({
+      applyDraft: (request) => {
+        calls += 1
+        assert.equal(request.replacement, 'Synthetic replacement')
+        return pending.promise
+      }
+    })
+  })
+  const apply = handlers.get('hantong:ai-mail-compose-apply')
+  const event = invokeEvent(firstWindow)
+  await assert.rejects(apply(event, { accountId: '../wrong' }), /Request rejected/)
+  assert.equal(calls, 0)
+  const operation = apply(event, {
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    documentVersion: 'document-a',
+    snapshotId: 'snapshot-a',
+    replacement: 'Synthetic replacement'
+  })
+  assert.equal(calls, 1)
+  currentWindow = secondWindow
+  pending.resolve({ status: 'applied', applyId: 'apply-a' })
+  await assert.rejects(operation, /Request rejected/)
+})
+
 test('Google status completion returns when its original owner remains current', async () => {
   const pending = deferred()
   const owner = { webContents: { send: () => undefined }, isDestroyed: () => false }

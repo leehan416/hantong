@@ -90,6 +90,59 @@ export function isAllowedAiMailComposeTargetRequest(request: AppInfoRequest): bo
   )
 }
 
+interface AiMailComposeMutationRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: 'apply' | 'undo'
+  args: unknown[]
+}
+
+export function isAllowedAiMailComposeMutationRequest(
+  request: AiMailComposeMutationRequest
+): boolean {
+  if (
+    !request.ownerAlive ||
+    !request.senderMatches ||
+    !request.mainFrameMatches ||
+    !isTrustedRendererUrl(request.senderUrl, request.rendererUrl) ||
+    request.args.length !== 1 ||
+    !request.args[0] ||
+    typeof request.args[0] !== 'object' ||
+    Array.isArray(request.args[0])
+  )
+    return false
+  const value = request.args[0] as Record<string, unknown>
+  const common =
+    isBoundedId(value.accountId) &&
+    isBoundedId(value.composeId) &&
+    isBoundedId(value.documentVersion) &&
+    (value.confirmedCurrentVersion === undefined || isBoundedId(value.confirmedCurrentVersion))
+  if (request.operation === 'apply')
+    return (
+      common &&
+      isBoundedId(value.snapshotId) &&
+      typeof value.replacement === 'string' &&
+      value.replacement.length <= 20_000 &&
+      Object.keys(value).every((key) =>
+        [
+          'accountId',
+          'composeId',
+          'documentVersion',
+          'snapshotId',
+          'replacement',
+          'confirmedCurrentVersion'
+        ].includes(key)
+      )
+    )
+  return (
+    common &&
+    isBoundedId(value.applyId) &&
+    Object.keys(value).every((key) =>
+      ['accountId', 'composeId', 'documentVersion', 'applyId', 'confirmedCurrentVersion'].includes(
+        key
+      )
+    )
+  )
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)
