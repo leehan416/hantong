@@ -3,19 +3,41 @@ import assert from 'node:assert/strict'
 import { classifyThreadItem, matchesThreadTurn } from './item-classifier.mjs'
 
 test('protocol content items are not mistaken for tool calls', () => {
-  for (const type of ['userMessage', 'hookPrompt', 'agentMessage', 'plan', 'reasoning', 'contextCompaction']) {
+  for (const type of [
+    'userMessage',
+    'hookPrompt',
+    'agentMessage',
+    'plan',
+    'reasoning',
+    'contextCompaction'
+  ]) {
     assert.deepEqual(classifyThreadItem({ type }), { classification: 'non_tool', type })
   }
 })
 
 test('privileged tool item variants are detected', () => {
-  for (const type of ['commandExecution', 'fileChange', 'functionCallOutput', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'subAgentActivity', 'webSearch', 'imageView', 'imageGeneration', 'sleep']) {
+  for (const type of [
+    'commandExecution',
+    'fileChange',
+    'functionCallOutput',
+    'mcpToolCall',
+    'dynamicToolCall',
+    'collabAgentToolCall',
+    'subAgentActivity',
+    'webSearch',
+    'imageView',
+    'imageGeneration',
+    'sleep'
+  ]) {
     assert.deepEqual(classifyThreadItem({ type }), { classification: 'tool', type })
   }
 })
 
 test('unknown or malformed item types fail closed without echoing payload data', () => {
-  assert.deepEqual(classifyThreadItem({ type: 'unexpected', text: 'private content' }), { classification: 'unknown', type: null })
+  assert.deepEqual(classifyThreadItem({ type: 'unexpected', text: 'private content' }), {
+    classification: 'unknown',
+    type: null
+  })
   assert.deepEqual(classifyThreadItem(null), { classification: 'unknown', type: null })
 })
 
