@@ -159,6 +159,14 @@ test('read-only runtime page source exposes no DOM mutation operation', async ()
   const source = fixture.executed[0].code
   assert.ok(source.includes('revoke()'))
   assert.match(source, /3:7:0:[0-9a-f-]{36}/)
+  assert.ok(source.includes('[contenteditable="true"]'))
+  assert.ok(source.includes("document.addEventListener('click', remember, true)"))
+  assert.ok(
+    source.includes("document.addEventListener('selectionchange', rememberSelection, true)")
+  )
+  assert.ok(
+    source.includes("document.removeEventListener('selectionchange', rememberSelection, true)")
+  )
   assert.ok(!source.includes('execCommand'))
   assert.ok(!source.includes('insertText'))
   assert.ok(!source.includes('replace(id'))

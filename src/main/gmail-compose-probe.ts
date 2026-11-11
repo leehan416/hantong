@@ -389,12 +389,22 @@ function composePageSource(documentId: string): string {
     let lastTargetId = null;
     const findCandidate = (target) => {
       if (!(target instanceof Element)) return null;
-      const composeRoot = target.closest('[role="dialog"]');
-      const subject = composeRoot?.querySelector('input[name="subjectbox"]');
-      if (!composeRoot || !(subject instanceof HTMLInputElement)) return null;
-      const bodySelector = 'div[contenteditable="true"][aria-label="Message Body"]';
-      const editor = target.closest(bodySelector) ?? composeRoot.querySelector(bodySelector);
-      return editor ? { editor, composeRoot, subject } : null;
+      const bodySelector = '[contenteditable="true"]';
+      const subjectSelector = 'input[name="subjectbox"]';
+      const editor = target.matches(bodySelector) ? target : target.closest(bodySelector);
+      const roots = [];
+      let ancestor = editor ?? target;
+      for (let depth = 0; ancestor && depth < 12; depth += 1, ancestor = ancestor.parentElement) {
+        roots.push(ancestor);
+        if (ancestor.matches('[role="dialog"]')) break;
+      }
+      for (const root of roots) {
+        const subject = root.querySelector(subjectSelector);
+        const body = editor ?? root.querySelector(bodySelector);
+        if (subject instanceof HTMLInputElement && body)
+          return { editor: body, composeRoot: root, subject };
+      }
+      return null;
     };
     const remember = (event) => {
       const candidate = findCandidate(event.target);
@@ -408,8 +418,15 @@ function composePageSource(documentId: string): string {
       lastTargetId = id;
     };
     document.addEventListener('focusin', remember, true);
+    document.addEventListener('click', remember, true);
     document.addEventListener('pointerdown', remember, true);
     document.addEventListener('input', remember, true);
+    const rememberSelection = () => {
+      const selection = document.getSelection();
+      const node = selection?.anchorNode;
+      remember({ target: node instanceof Element ? node : node?.parentElement });
+    };
+    document.addEventListener('selectionchange', rememberSelection, true);
     const inspect = (id) => {
       const candidate = editors.get(id);
       if (!candidate?.editor.isConnected || !candidate.composeRoot.isConnected) return null;
@@ -450,8 +467,10 @@ function composePageSource(documentId: string): string {
       revoke() {
         active = false;
         document.removeEventListener('focusin', remember, true);
+        document.removeEventListener('click', remember, true);
         document.removeEventListener('pointerdown', remember, true);
         document.removeEventListener('input', remember, true);
+        document.removeEventListener('selectionchange', rememberSelection, true);
         globalThis[key] = null;
       },
       lastTarget() {
