@@ -399,9 +399,16 @@ function composePageSource(documentId: string): string {
         if (ancestor.matches('[role="dialog"]')) break;
       }
       for (const root of roots) {
-        const subject = root.querySelector(subjectSelector);
-        const body = editor ?? root.querySelector(bodySelector);
-        if (subject instanceof HTMLInputElement && body)
+        const subjects = root.querySelectorAll(subjectSelector);
+        const bodies = root.querySelectorAll(bodySelector);
+        if (subjects.length !== 1 || bodies.length !== 1) continue;
+        const subject = subjects[0];
+        const body = bodies[0];
+        if (
+          subject instanceof HTMLInputElement &&
+          body instanceof Element &&
+          (!editor || editor === body)
+        )
           return { editor: body, composeRoot: root, subject };
       }
       return null;
@@ -423,8 +430,20 @@ function composePageSource(documentId: string): string {
     document.addEventListener('input', remember, true);
     const rememberSelection = () => {
       const selection = document.getSelection();
-      const node = selection?.anchorNode;
-      remember({ target: node instanceof Element ? node : node?.parentElement });
+      if (!selection || selection.rangeCount === 0 || !lastTargetId) return;
+      const candidate = editors.get(lastTargetId);
+      if (!candidate?.editor.isConnected || !candidate.composeRoot.isConnected) return;
+      const editor = candidate.editor;
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        const range = selection.getRangeAt(index);
+        if (
+          !editor.contains(range.startContainer) ||
+          !editor.contains(range.endContainer)
+        )
+          return;
+      }
+      const activeElement = document.activeElement;
+      if (activeElement !== editor && !editor.contains(activeElement)) return;
     };
     document.addEventListener('selectionchange', rememberSelection, true);
     const inspect = (id) => {

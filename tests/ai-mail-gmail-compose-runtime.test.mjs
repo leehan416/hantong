@@ -1,6 +1,7 @@
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node test doubles are plain JavaScript. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 import {
   firstId,
@@ -98,6 +99,133 @@ function createRuntimeFixture(options = {}) {
   }
 }
 
+class SyntheticElement {
+  constructor(tagName, attributes = {}, innerText = '') {
+    this.tagName = tagName.toUpperCase()
+    this.attributes = Object.entries(attributes).map(([name, value]) => ({ name, value }))
+    this.parentElement = null
+    this.children = []
+    this.isConnected = true
+    this.innerText = innerText
+    this.value = ''
+  }
+
+  append(child) {
+    child.parentElement = this
+    this.children.push(child)
+    return child
+  }
+
+  matches(selector) {
+    if (selector === '[contenteditable="true"]')
+      return this.attributes.some(
+        (attribute) => attribute.name === 'contenteditable' && attribute.value === 'true'
+      )
+    if (selector === 'input[name="subjectbox"]')
+      return (
+        this.tagName === 'INPUT' &&
+        this.attributes.some(
+          (attribute) => attribute.name === 'name' && attribute.value === 'subjectbox'
+        )
+      )
+    if (selector === '[role="dialog"]')
+      return this.attributes.some(
+        (attribute) => attribute.name === 'role' && attribute.value === 'dialog'
+      )
+    return false
+  }
+
+  closest(selector) {
+    if (this.matches(selector)) return this
+    return this.parentElement?.closest(selector) ?? null
+  }
+
+  querySelectorAll(selector) {
+    const matches = []
+    const visit = (node) => {
+      for (const child of node.children) {
+        if (child.matches(selector)) matches.push(child)
+        visit(child)
+      }
+    }
+    visit(this)
+    return matches
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null
+  }
+
+  contains(node) {
+    for (let current = node; current; current = current.parentElement)
+      if (current === this) return true
+    return false
+  }
+}
+
+class SyntheticInput extends SyntheticElement {}
+
+function createSyntheticProbe(
+  source,
+  { composeCount = 2, sharedDialog = true, scopedComposes = true } = {}
+) {
+  const dialog = new SyntheticElement('div', sharedDialog ? { role: 'dialog' } : {})
+  const composes = []
+  for (let index = 1; index <= composeCount; index += 1) {
+    const scope = scopedComposes ? dialog.append(new SyntheticElement('section')) : dialog
+    const subject = scope.append(new SyntheticInput('input', { name: 'subjectbox' }))
+    subject.value = `synthetic-subject-${index}`
+    const editor = scope.append(
+      new SyntheticElement('div', { contenteditable: 'true' }, `synthetic-body-${index}`)
+    )
+    editor.append(new SyntheticElement('span'))
+    composes.push({ subject, editor, scope })
+  }
+  const listeners = new Map()
+  let selection = null
+  const document = {
+    activeElement: null,
+    addEventListener(name, listener) {
+      listeners.set(name, listener)
+    },
+    removeEventListener(name) {
+      listeners.delete(name)
+    },
+    getSelection: () => selection,
+    createTreeWalker: () => ({ nextNode: () => null })
+  }
+  const context = {
+    document,
+    Element: SyntheticElement,
+    HTMLInputElement: SyntheticInput,
+    NodeFilter: { SHOW_ELEMENT: 1 }
+  }
+  runInNewContext(source, context)
+  const probe = context.__hantongGmailComposeProbe
+  const dispatch = (type, target) => listeners.get(type)?.({ target })
+  return {
+    composes,
+    probe,
+    document,
+    dispatch,
+    setSelection(ranges) {
+      selection = {
+        rangeCount: ranges.length,
+        getRangeAt: (index) => ranges[index]
+      }
+    }
+  }
+}
+
+async function installedProbeSource() {
+  const fixture = createRuntimeFixture()
+  fixture.setAccess('ready', true)
+  await fixture.command('authorize-synthetic-test-account')
+  const source = fixture.executed[0].code
+  fixture.runtime.dispose()
+  return source
+}
+
 test('runtime requires the real Main access state before it installs or uses the probe', async () => {
   const fixture = createRuntimeFixture()
   await fixture.command('authorize-synthetic-test-account')
@@ -171,6 +299,50 @@ test('read-only runtime page source exposes no DOM mutation operation', async ()
   assert.ok(!source.includes('insertText'))
   assert.ok(!source.includes('replace(id'))
   fixture.runtime.dispose()
+})
+
+test('synthetic DOM pairs an editor with its own subject under a shared Gmail dialog', async () => {
+  const probe = createSyntheticProbe(await installedProbeSource())
+  const second = probe.composes[1]
+  probe.document.activeElement = second.editor
+  probe.dispatch('click', second.editor)
+  const targetId = probe.probe.lastTarget()
+  assert.ok(targetId)
+  assert.equal(probe.probe.read(targetId).subject, 'synthetic-subject-2')
+  assert.equal(probe.probe.read(targetId).body, 'synthetic-body-2')
+})
+
+test('synthetic DOM rejects an ambiguous shared wrapper with multiple compose pairs', async () => {
+  const probe = createSyntheticProbe(await installedProbeSource(), { scopedComposes: false })
+  const second = probe.composes[1]
+  probe.document.activeElement = second.editor
+  probe.dispatch('click', second.editor)
+  assert.equal(probe.probe.lastTarget(), null)
+})
+
+test('stale document selection cannot replace the last explicitly focused compose', async () => {
+  const probe = createSyntheticProbe(await installedProbeSource())
+  const [first, second] = probe.composes
+  probe.dispatch('focusin', first.editor)
+  probe.document.activeElement = second.editor
+  probe.dispatch('focusin', second.editor)
+  probe.setSelection([
+    { startContainer: first.editor.children[0], endContainer: first.editor.children[0] }
+  ])
+  probe.dispatch('selectionchange', null)
+  assert.equal(probe.probe.lastTarget(), 'compose-2')
+})
+
+test('cross-editor selection cannot change the focused compose target', async () => {
+  const probe = createSyntheticProbe(await installedProbeSource())
+  const [first, second] = probe.composes
+  probe.document.activeElement = second.editor
+  probe.dispatch('click', second.editor)
+  probe.setSelection([
+    { startContainer: first.editor.children[0], endContainer: second.editor.children[0] }
+  ])
+  probe.dispatch('selectionchange', null)
+  assert.equal(probe.probe.lastTarget(), 'compose-1')
 })
 
 test('deferred read is fenced by the real A-B-A account activation publish sequence', async () => {
