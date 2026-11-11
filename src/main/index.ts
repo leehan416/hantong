@@ -43,6 +43,7 @@ import { createNotificationPauseStore } from './notification-pause-store'
 import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
 import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
+import { createAiMailCodexService } from './ai-mail-codex-service'
 import {
   createNotificationPauseController,
   createNotificationPauseMenuActions
@@ -107,6 +108,7 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   locale: uiLocale,
   showAccount
 })
+const aiMailCodex = createAiMailCodexService()
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
@@ -150,6 +152,7 @@ function prepareApplicationShutdown(): Promise<void> {
   notificationPauseController?.dispose()
   notificationRecoveryRuntime.resolveAll()
   const cleanup = Promise.all([
+    aiMailCodex.dispose(),
     googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
     relayRuntime?.dispose() ?? Promise.resolve()
   ]).then(() => undefined)
@@ -618,7 +621,8 @@ void app
       publishAccountState,
       installAppMenu,
       createWindow,
-      loginLaunch
+      loginLaunch,
+      aiMailCodex
     })
     loginLaunchStartup.start(wasOpenedAtLogin)
     app.on('before-quit', (event) => {

@@ -28,6 +28,11 @@ import {
   GOOGLE_CONNECTION_CONNECT_CHANNEL,
   GOOGLE_CONNECTION_DISCONNECT_CHANNEL,
   GOOGLE_CONNECTION_STATUS_CHANNEL,
+  AI_MAIL_CODEX_STATUS_CHANNEL,
+  AI_MAIL_CODEX_CONNECT_CHANNEL,
+  AI_MAIL_CODEX_DISCONNECT_CHANNEL,
+  AI_MAIL_CODEX_GENERATE_CHANNEL,
+  AI_MAIL_CODEX_CANCEL_CHANNEL,
   NOTIFICATION_CONNECTIONS_CHANNEL,
   NOTIFICATION_CONNECTIONS_EVENT,
   NOTIFICATION_RECOVER_CHANNEL,
@@ -46,6 +51,12 @@ if (!process.contextIsolated) throw new Error('Context isolation is required')
 
 // Expose operations rather than a generic channel sender or Electron objects.
 const api: HantongApi = Object.freeze({
+  getAiMailCodexStatus: () => ipcRenderer.invoke(AI_MAIL_CODEX_STATUS_CHANNEL),
+  connectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_CONNECT_CHANNEL),
+  disconnectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_DISCONNECT_CHANNEL),
+  generateAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_CODEX_GENERATE_CHANNEL, request),
+  cancelAiMailGeneration: (requestId) =>
+    ipcRenderer.invoke(AI_MAIL_CODEX_CANCEL_CHANNEL, requestId),
   getLoginLaunchState: () => ipcRenderer.invoke(LOGIN_LAUNCH_GET_CHANNEL),
   setLoginLaunchEnabled: (enabled) => ipcRenderer.invoke(LOGIN_LAUNCH_SET_CHANNEL, enabled),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),

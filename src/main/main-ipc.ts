@@ -39,7 +39,12 @@ import {
   NOTIFICATION_RETRY_CHANNEL,
   ACCOUNT_ACCESS_STATE_CHANNEL,
   LOGIN_LAUNCH_GET_CHANNEL,
-  LOGIN_LAUNCH_SET_CHANNEL
+  LOGIN_LAUNCH_SET_CHANNEL,
+  AI_MAIL_CODEX_STATUS_CHANNEL,
+  AI_MAIL_CODEX_CONNECT_CHANNEL,
+  AI_MAIL_CODEX_DISCONNECT_CHANNEL,
+  AI_MAIL_CODEX_GENERATE_CHANNEL,
+  AI_MAIL_CODEX_CANCEL_CHANNEL
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
@@ -48,9 +53,11 @@ import {
   isAllowedNotificationRequest,
   isAllowedSettingsRequest,
   isTrustedRendererUrl,
-  isAllowedLoginLaunchRequest
+  isAllowedLoginLaunchRequest,
+  isAllowedAiMailCodexRequest
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
+import type { createAiMailCodexService } from './ai-mail-codex-service'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -72,9 +79,40 @@ export interface MainIpcDependencies {
   readonly installAppMenu: () => void
   readonly createWindow: () => void
   readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
+  readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
 }
 
 export function registerMainIpc(dependencies: MainIpcDependencies): void {
+  const codexRoutes = [
+    [AI_MAIL_CODEX_STATUS_CHANNEL, 'status'],
+    [AI_MAIL_CODEX_CONNECT_CHANNEL, 'connect'],
+    [AI_MAIL_CODEX_DISCONNECT_CHANNEL, 'disconnect'],
+    [AI_MAIL_CODEX_GENERATE_CHANNEL, 'generate'],
+    [AI_MAIL_CODEX_CANCEL_CHANNEL, 'cancel']
+  ] as const
+  for (const [channel, operation] of codexRoutes) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      if (!isAllowedAiMailCodexRequest({
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches: event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        operation,
+        args
+      })) throw new Error('Request rejected')
+      if (operation === 'status') return dependencies.aiMailCodex.getStatus()
+      if (operation === 'connect') return dependencies.aiMailCodex.connect()
+      if (operation === 'disconnect') return dependencies.aiMailCodex.disconnect()
+      if (operation === 'generate')
+        return dependencies.aiMailCodex.generate(
+          args[0] as import('../shared/ipc').CodexGenerationRequest
+        )
+      return dependencies.aiMailCodex.cancel(args[0] as string)
+    })
+  }
   for (const [channel, operation] of [
     [LOGIN_LAUNCH_GET_CHANNEL, 'get'],
     [LOGIN_LAUNCH_SET_CHANNEL, 'set']

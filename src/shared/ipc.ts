@@ -32,6 +32,11 @@ export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-statu
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
 export const GOOGLE_CONNECTION_DISCONNECT_CHANNEL = 'hantong:google-connection-disconnect'
+export const AI_MAIL_CODEX_STATUS_CHANNEL = 'hantong:ai-mail-codex-status'
+export const AI_MAIL_CODEX_CONNECT_CHANNEL = 'hantong:ai-mail-codex-connect'
+export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnect'
+export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
+export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
 export const NOTIFICATION_RECOVER_CHANNEL = 'hantong:notification-recover'
@@ -76,6 +81,24 @@ export type GoogleConnectionStatus = {
   status: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
 }
 
+export type CodexConnectionStatus =
+  | { state: 'unsupported'; reason: 'product_owned_executable_unavailable' }
+  | { state: 'disconnected' | 'connecting' | 'connected' | 'error'; reason?: string }
+
+/** Explicit plain-text fixture only; the caller must never pass Gmail content. */
+export interface CodexGenerationRequest {
+  accountId: string
+  composeId: string
+  requestId: string
+  generation: number
+  prompt: string
+  followUp?: string
+}
+
+export type CodexGenerationResult =
+  | { ok: true; text: string; usage: { inputTokens: number | null; outputTokens: number | null } }
+  | { ok: false; error: 'unsupported' | 'unauthenticated' | 'rate_limited' | 'cancelled' | 'failed'; reason: string }
+
 export type AccountAccessState = {
   accountId: string
   status: 'sign_in' | 'checking' | 'required' | 'ready' | 'error'
@@ -98,6 +121,11 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  getAiMailCodexStatus: () => Promise<CodexConnectionStatus>
+  connectAiMailCodex: () => Promise<CodexConnectionStatus>
+  disconnectAiMailCodex: () => Promise<CodexConnectionStatus>
+  generateAiMailDraft: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
+  cancelAiMailGeneration: (requestId: string) => Promise<{ cancelled: boolean; reason?: string }>
   getLoginLaunchState: () => Promise<LoginLaunchState>
   setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>
