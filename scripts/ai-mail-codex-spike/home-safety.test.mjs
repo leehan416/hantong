@@ -1,6 +1,17 @@
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node executes these safety tests as JavaScript. */
 import assert from 'node:assert/strict'
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -8,7 +19,8 @@ import {
   assertPrivateDirectoryStat,
   ensureCanaryFile,
   ensureNoLocalIoProfile,
-  prepareHome
+  prepareHome,
+  readPrivateFile
 } from './harness.mjs'
 
 const HOME_MARKER = '.hantong-codex-isolation'
@@ -180,4 +192,44 @@ test('rejects unsafe canary content and permissions without replacing the file',
   await assert.rejects(ensureCanaryFile(codeHome), /permissions are unsafe/i)
   assert.equal((await lstat(canaryPath)).mode & 0o777, 0o644)
   assert.equal(await readFile(canaryPath, 'utf8'), CANARY_FILE_CONTENT)
+})
+
+test('rejects a path replaced between lstat and open', async (t) => {
+  const root = await makeTestRoot(t)
+  const codeHome = await prepareHome({ baseDir: root, override: null })
+  const canaryPath = join(codeHome, CANARY_FILE_NAME)
+  const originalPath = join(root, 'original-canary')
+  await writeFile(canaryPath, CANARY_FILE_CONTENT, { mode: 0o600 })
+  let replaced = false
+
+  const replaceAfterStat = async (path) => {
+    const stat = await lstat(path)
+    if (!replaced) {
+      await rename(path, originalPath)
+      await writeFile(path, 'replacement-file\n', { mode: 0o600, flag: 'wx' })
+      replaced = true
+    }
+    return stat
+  }
+
+  await assert.rejects(
+    readPrivateFile(canaryPath, process.getuid(), { lstatPath: replaceAfterStat }),
+    /changed during access/i
+  )
+  assert.equal(await readFile(originalPath, 'utf8'), CANARY_FILE_CONTENT)
+  assert.equal(await readFile(canaryPath, 'utf8'), 'replacement-file\n')
+})
+
+test('rejects a hardlinked canary without changing either link', async (t) => {
+  const root = await makeTestRoot(t)
+  const codeHome = await prepareHome({ baseDir: root, override: null })
+  const targetPath = join(root, 'hardlink-target')
+  const canaryPath = join(codeHome, CANARY_FILE_NAME)
+  await writeFile(targetPath, CANARY_FILE_CONTENT, { mode: 0o600 })
+  await link(targetPath, canaryPath)
+
+  await assert.rejects(ensureCanaryFile(codeHome), /hard links/i)
+  assert.equal((await lstat(targetPath)).nlink, 2)
+  assert.equal((await lstat(canaryPath)).nlink, 2)
+  assert.equal(await readFile(targetPath, 'utf8'), CANARY_FILE_CONTENT)
 })

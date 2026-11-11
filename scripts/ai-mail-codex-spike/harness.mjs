@@ -397,18 +397,24 @@ function assertPrivateFileStat(stat, expectedUid) {
   if (!Number.isInteger(expectedUid) || stat.uid !== expectedUid) {
     throw new Error('isolated file owner does not match')
   }
+  if (stat.nlink !== 1) throw new Error('isolated file must not have hard links')
   if ((stat.mode & 0o7777) !== 0o600) {
     throw new Error('isolated file permissions are unsafe')
   }
 }
 
-async function readPrivateFile(filePath, expectedUid) {
+export async function readPrivateFile(filePath, expectedUid, { lstatPath = lstat } = {}) {
   const noFollow = constants.O_NOFOLLOW
   if (!Number.isInteger(noFollow)) throw new Error('safe file access is unavailable')
-  assertPrivateFileStat(await lstat(filePath), expectedUid)
+  const pathStat = await lstatPath(filePath)
+  assertPrivateFileStat(pathStat, expectedUid)
   const handle = await open(filePath, constants.O_RDONLY | noFollow)
   try {
-    assertPrivateFileStat(await handle.stat(), expectedUid)
+    const openedStat = await handle.stat()
+    assertPrivateFileStat(openedStat, expectedUid)
+    if (pathStat.dev !== openedStat.dev || pathStat.ino !== openedStat.ino) {
+      throw new Error('isolated file changed during access')
+    }
     return await handle.readFile('utf8')
   } finally {
     await handle.close()
