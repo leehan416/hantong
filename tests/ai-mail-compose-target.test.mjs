@@ -252,6 +252,234 @@ test('apply and undo conflicts require a fresh explicit current-version confirma
   f.service.dispose()
 })
 
+test('apply confirmation is consumed when a newer body creates a second conflict', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  f.setBody('Synthetic body B')
+  const firstConflict = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  assert.equal(firstConflict.status, 'conflict')
+  if (firstConflict.status !== 'conflict') assert.fail('expected first apply conflict')
+
+  f.setBody('Synthetic body C')
+  const secondConflict = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body',
+    confirmedCurrentVersion: firstConflict.currentVersion
+  })
+  assert.equal(secondConflict.status, 'conflict')
+  if (secondConflict.status !== 'conflict') assert.fail('expected refreshed apply conflict')
+
+  f.setBody('Synthetic body B')
+  assert.deepEqual(
+    plain(
+      await f.service.applyDraft({
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        snapshotId: snapshot.snapshotId,
+        replacement: 'Synthetic revised body',
+        confirmedCurrentVersion: firstConflict.currentVersion
+      })
+    ),
+    { status: 'stale_target' }
+  )
+  assert.equal(f.getBody(), 'Synthetic body B')
+
+  f.setBody('Synthetic body C')
+  const applied = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body',
+    confirmedCurrentVersion: secondConflict.currentVersion
+  })
+  assert.equal(applied.status, 'applied')
+  assert.equal(f.getBody(), 'Synthetic revised body')
+  f.service.dispose()
+})
+
+test('undo confirmation is consumed when a newer body creates a second conflict', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  const applied = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  assert.equal(applied.status, 'applied')
+  if (applied.status !== 'applied') assert.fail('expected apply id')
+
+  f.setBody('Synthetic undo body B')
+  const firstConflict = await f.service.undoDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    applyId: applied.applyId
+  })
+  assert.equal(firstConflict.status, 'conflict')
+  if (firstConflict.status !== 'conflict') assert.fail('expected first undo conflict')
+
+  f.setBody('Synthetic undo body C')
+  const secondConflict = await f.service.undoDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    applyId: applied.applyId,
+    confirmedCurrentVersion: firstConflict.currentVersion
+  })
+  assert.equal(secondConflict.status, 'conflict')
+  if (secondConflict.status !== 'conflict') assert.fail('expected refreshed undo conflict')
+
+  f.setBody('Synthetic undo body B')
+  assert.deepEqual(
+    plain(
+      await f.service.undoDraft({
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        applyId: applied.applyId,
+        confirmedCurrentVersion: firstConflict.currentVersion
+      })
+    ),
+    { status: 'stale_target' }
+  )
+  assert.equal(f.getBody(), 'Synthetic undo body B')
+
+  f.setBody('Synthetic undo body C')
+  assert.deepEqual(
+    plain(
+      await f.service.undoDraft({
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        applyId: applied.applyId,
+        confirmedCurrentVersion: secondConflict.currentVersion
+      })
+    ),
+    { status: 'undone' }
+  )
+  assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
+test('confirmation tokens cannot be replayed across apply and undo operations', async () => {
+  const f = fixture()
+  const firstSnapshot = await f.service.getSnapshot()
+  assert.equal(firstSnapshot.status, 'ready')
+  const applied = await f.service.applyDraft({
+    accountId: firstSnapshot.accountId,
+    composeId: firstSnapshot.composeId,
+    documentVersion: firstSnapshot.documentVersion,
+    snapshotId: firstSnapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  assert.equal(applied.status, 'applied')
+  if (applied.status !== 'applied') assert.fail('expected apply id')
+
+  const secondSnapshot = await f.service.getSnapshot()
+  assert.equal(secondSnapshot.status, 'ready')
+  f.setBody('Synthetic changed body')
+  const conflict = await f.service.applyDraft({
+    accountId: secondSnapshot.accountId,
+    composeId: secondSnapshot.composeId,
+    documentVersion: secondSnapshot.documentVersion,
+    snapshotId: secondSnapshot.snapshotId,
+    replacement: 'Another synthetic replacement'
+  })
+  assert.equal(conflict.status, 'conflict')
+  if (conflict.status !== 'conflict') assert.fail('expected apply conflict')
+
+  assert.deepEqual(
+    plain(
+      await f.service.undoDraft({
+        accountId: firstSnapshot.accountId,
+        composeId: firstSnapshot.composeId,
+        documentVersion: firstSnapshot.documentVersion,
+        applyId: applied.applyId,
+        confirmedCurrentVersion: conflict.currentVersion
+      })
+    ),
+    { status: 'stale_target' }
+  )
+  assert.deepEqual(
+    plain(
+      await f.service.applyDraft({
+        accountId: secondSnapshot.accountId,
+        composeId: secondSnapshot.composeId,
+        documentVersion: secondSnapshot.documentVersion,
+        snapshotId: secondSnapshot.snapshotId,
+        replacement: 'Another synthetic replacement',
+        confirmedCurrentVersion: conflict.currentVersion
+      })
+    ),
+    { status: 'stale_target' }
+  )
+  assert.equal(f.getBody(), 'Synthetic changed body')
+  f.service.dispose()
+})
+
+test('duplicate use of a confirmation token cannot bypass serialized apply', async () => {
+  let deferReads = false
+  let resume
+  let started
+  const startedPromise = new Promise((resolve) => {
+    started = resolve
+  })
+  const f = fixture({
+    deferReadBeforeReplace: async () => {
+      if (!deferReads) return
+      started()
+      await new Promise((resolve) => {
+        resume = resolve
+      })
+    }
+  })
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  f.setBody('Synthetic changed body')
+  const conflict = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body'
+  })
+  assert.equal(conflict.status, 'conflict')
+  if (conflict.status !== 'conflict') assert.fail('expected apply conflict')
+
+  deferReads = true
+  const request = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'Synthetic revised body',
+    confirmedCurrentVersion: conflict.currentVersion
+  }
+  const first = f.service.applyDraft(request)
+  await startedPromise
+  assert.deepEqual(plain(await f.service.applyDraft(request)), { status: 'busy' })
+  resume()
+  assert.equal((await first).status, 'applied')
+  assert.deepEqual(plain(await f.service.applyDraft(request)), { status: 'stale_target' })
+  assert.equal(f.getBody(), 'Synthetic revised body')
+  f.service.dispose()
+})
+
 test('an account switch after an explicit apply request fences its late result', async () => {
   let resume
   let started

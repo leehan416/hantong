@@ -233,7 +233,10 @@ export function createGmailComposeTargetService(options: {
     string,
     { lease: ComposeLease; originalBody: string; appliedBody: string }
   >()
-  const confirmedBodies = new Map<string, { leaseId: string; body: string }>()
+  const confirmedBodies = new Map<
+    string,
+    { operation: 'apply' | 'undo'; leaseId: string; lease: ComposeLease; body: string }
+  >()
   let mutationInFlight = false
 
   function clear(): void {
@@ -499,6 +502,7 @@ export function createGmailComposeTargetService(options: {
 
   async function compareAndReplace(
     lease: ComposeLease,
+    operation: 'apply' | 'undo',
     leaseId: string,
     expectedBody: string,
     replacement: string
@@ -509,7 +513,7 @@ export function createGmailComposeTargetService(options: {
     if (latest.snapshot.body !== expectedBody)
       return {
         status: 'conflict',
-        currentVersion: rememberConflict(leaseId, latest.snapshot.body),
+        currentVersion: rememberConflict(operation, leaseId, lease, latest.snapshot.body),
         currentBody: latest.snapshot.body
       }
     if (!leaseIsCurrent(lease)) return { status: 'stale_target' }
@@ -517,9 +521,14 @@ export function createGmailComposeTargetService(options: {
     return result ?? { status: 'stale_target' }
   }
 
-  function rememberConflict(leaseId: string, body: string): string {
+  function rememberConflict(
+    operation: 'apply' | 'undo',
+    leaseId: string,
+    lease: ComposeLease,
+    body: string
+  ): string {
     const currentVersion = randomUUID()
-    confirmedBodies.set(currentVersion, { leaseId, body })
+    confirmedBodies.set(currentVersion, { operation, leaseId, lease, body })
     if (confirmedBodies.size > 32) {
       const oldest = confirmedBodies.keys().next().value
       if (oldest) confirmedBodies.delete(oldest)
@@ -531,6 +540,9 @@ export function createGmailComposeTargetService(options: {
     request: AiMailComposeApplyRequest | AiMailComposeUndoRequest,
     operation: 'apply' | 'undo'
   ): Promise<AiMailComposeMutationResult> {
+    const confirmedVersion = request.confirmedCurrentVersion
+    const confirmation = confirmedVersion ? confirmedBodies.get(confirmedVersion) : undefined
+    if (confirmedVersion) confirmedBodies.delete(confirmedVersion)
     if (mutationInFlight) return { status: 'busy' }
     mutationInFlight = true
     try {
@@ -547,15 +559,20 @@ export function createGmailComposeTargetService(options: {
           !leaseIsCurrent(lease)
         )
           return { status: 'stale_target' }
-        const confirmedVersion = request.confirmedCurrentVersion
-        const confirmed = confirmedVersion ? confirmedBodies.get(confirmedVersion) : undefined
-        if (confirmedVersion && (!confirmed || confirmed.leaseId !== request.snapshotId))
+        if (
+          confirmedVersion &&
+          (!confirmation ||
+            confirmation.operation !== 'apply' ||
+            confirmation.leaseId !== request.snapshotId ||
+            confirmation.lease !== lease)
+        )
           return { status: 'stale_target' }
         const replacement = request.replacement.replace(/\r\n?/g, '\n')
         const result = await compareAndReplace(
           lease,
+          'apply',
           request.snapshotId,
-          confirmed?.body ?? snapshot.body,
+          confirmation?.body ?? snapshot.body,
           replacement
         )
         if (result.status === 'conflict') {
@@ -563,19 +580,18 @@ export function createGmailComposeTargetService(options: {
           if (typeof result.body === 'string')
             return {
               status: 'conflict',
-              currentVersion: rememberConflict(request.snapshotId, result.body),
+              currentVersion: rememberConflict('apply', request.snapshotId, lease, result.body),
               currentBody: result.body
             }
           return { status: 'stale_target' }
         }
         if (result.status !== 'applied')
           return { status: result.status === 'unsupported' ? 'unsupported' : 'stale_target' }
-        if (confirmedVersion) confirmedBodies.delete(confirmedVersion)
         const applyId = randomUUID()
         applyRecords.clear()
         applyRecords.set(applyId, {
           lease,
-          originalBody: confirmed?.body ?? snapshot.body,
+          originalBody: confirmation?.body ?? snapshot.body,
           appliedBody: replacement
         })
         snapshotLeases.delete(request.snapshotId)
@@ -592,14 +608,19 @@ export function createGmailComposeTargetService(options: {
         !leaseIsCurrent(lease)
       )
         return { status: 'stale_target' }
-      const confirmedVersion = request.confirmedCurrentVersion
-      const confirmed = confirmedVersion ? confirmedBodies.get(confirmedVersion) : undefined
-      if (confirmedVersion && (!confirmed || confirmed.leaseId !== request.applyId))
+      if (
+        confirmedVersion &&
+        (!confirmation ||
+          confirmation.operation !== 'undo' ||
+          confirmation.leaseId !== request.applyId ||
+          confirmation.lease !== lease)
+      )
         return { status: 'stale_target' }
       const result = await compareAndReplace(
         lease,
+        'undo',
         request.applyId,
-        confirmed?.body ?? record.appliedBody,
+        confirmation?.body ?? record.appliedBody,
         record.originalBody
       )
       if (result.status === 'conflict') {
@@ -607,14 +628,13 @@ export function createGmailComposeTargetService(options: {
         if (typeof result.body === 'string')
           return {
             status: 'conflict',
-            currentVersion: rememberConflict(request.applyId, result.body),
+            currentVersion: rememberConflict('undo', request.applyId, lease, result.body),
             currentBody: result.body
           }
         return { status: 'stale_target' }
       }
       if (result.status !== 'applied')
         return { status: result.status === 'unsupported' ? 'unsupported' : 'stale_target' }
-      if (confirmedVersion) confirmedBodies.delete(confirmedVersion)
       applyRecords.delete(request.applyId)
       return { status: 'undone' }
     } finally {
