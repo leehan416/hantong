@@ -1,6 +1,7 @@
 import { app, BrowserWindow, screen } from 'electron'
 import { createAccountViewManager } from './account-view-manager'
 import { createAccountAccessController } from './account-access-controller'
+import { createGmailComposeProbeRuntime, isGmailComposeProbeOptedIn } from './gmail-compose-probe'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createAccountStore } from './account-store'
@@ -121,6 +122,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       dependencies.notificationController()?.flushAlerts()
     })
     let windowAccessController: AccessController | null = null
+    let gmailComposeProbe: ReturnType<typeof createGmailComposeProbeRuntime> | null = null
     const windowViewManager = createAccountViewManager(
       window,
       dependencies.requireAccountStore(),
@@ -191,6 +193,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
           .getState()
           .accounts.some((account) => account.id === id),
       publish: (state) => {
+        gmailComposeProbe?.onAccessState(state)
         if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
       },
       onWebIdentity: (accountId, emailAddress) => {
@@ -210,6 +213,22 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       }
     })
     dependencies.setAccessController(windowAccessController, windowAccessController)
+    if (process.argv.includes('--gmail-compose-probe') && app.isPackaged)
+      throw new Error('The Gmail compose probe is disabled in packaged builds')
+    if (isGmailComposeProbeOptedIn(process.argv, app.isPackaged) && windowAccessController) {
+      gmailComposeProbe = createGmailComposeProbeRuntime({
+        window,
+        views: windowViewManager,
+        access: windowAccessController,
+        accountExists: (id) =>
+          dependencies
+            .requireAccountStore()
+            .getState()
+            .accounts.some((account) => account.id === id),
+        isPackaged: app.isPackaged,
+        argv: process.argv
+      })
+    }
 
     const contents = window.webContents
     contents.session.setPermissionCheckHandler(() => false)
@@ -232,6 +251,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
 
     window.once('ready-to-show', () => window.show())
     window.once('closed', () => {
+      gmailComposeProbe?.dispose()
       if (!dependencies.isQuitting() && dependencies.settings()?.get().closeAction === 'quit')
         app.quit()
       void dependencies

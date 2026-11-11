@@ -1,4 +1,4 @@
-import type { BrowserWindow, WebContentsView } from 'electron'
+import type { BrowserWindow, WebContents, WebContentsView } from 'electron'
 import type { AccountState } from '../shared/accounts'
 import type { AccountRemovalOutcome } from '../shared/ipc'
 import type { AccountSelectorPosition } from '../shared/settings'
@@ -83,6 +83,11 @@ export function createAccountViewManager(
     signal?: AbortSignal
   ) => Promise<{ accountExists: boolean; emailAddress: string | null }>
   getDocumentState: (id: string) => GmailDocumentState
+  getComposeProbeView: (id: string) => {
+    contents: WebContents
+    navigationRevision: number
+    accessRevision: number
+  } | null
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   clearLogoutLock: (id: string, recoveryPending?: boolean) => boolean
   forgetLogoutLock: (id: string) => boolean
@@ -650,6 +655,31 @@ export function createAccountViewManager(
               loaded: entry.loaded && !entry.loading && !entry.blocked && !entry.disposePromise
             }
           : {})
+      }
+    },
+    getComposeProbeView(id) {
+      const entry = views.get(id)
+      const contents = entry?.handle.view.webContents
+      const document = entry ? lifecycle.documentKind(entry.committedUrl) : 'unknown'
+      if (
+        !entry ||
+        !contents ||
+        id !== activeAccountId ||
+        !entry.mailAccessGranted ||
+        entry.logoutLocked ||
+        entry.loading ||
+        !entry.loaded ||
+        entry.blocked ||
+        entry.disposePromise ||
+        document !== 'mail' ||
+        !isAllowedGmailIdentityUrl(entry.committedUrl) ||
+        contents.isDestroyed()
+      )
+        return null
+      return {
+        contents,
+        navigationRevision: entry.navigationRevision,
+        accessRevision: entry.accessRevision
       }
     },
     setMailAccess(id, allowed, expectedRevision) {
