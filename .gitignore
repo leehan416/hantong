@@ -1,4 +1,5 @@
 node_modules
+resources/codex-runtime/bin/codex
 dist
 out
 .DS_Store
