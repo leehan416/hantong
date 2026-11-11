@@ -9,7 +9,14 @@ import type {
  * product-owned Codex executable or provisioning path. Never resolve `codex`
  * from PATH: that could attach this app to the user's normal installation.
  */
-export function createAiMailCodexService() {
+export function createAiMailCodexService(): {
+  getStatus: () => CodexConnectionStatus
+  connect: () => Promise<CodexConnectionStatus>
+  disconnect: () => Promise<CodexConnectionStatus>
+  generate: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
+  cancel: (requestId: string) => Promise<{ cancelled: false; reason: string }>
+  dispose: () => Promise<void>
+} {
   let status: CodexConnectionStatus = {
     state: 'unsupported',
     reason: 'product_owned_executable_unavailable'
@@ -19,17 +26,18 @@ export function createAiMailCodexService() {
     getStatus: (): CodexConnectionStatus => status,
     connect: async (): Promise<CodexConnectionStatus> => status,
     disconnect: async (): Promise<CodexConnectionStatus> => status,
-    generate: async (
-      _request: CodexGenerationRequest
-    ): Promise<CodexGenerationResult> => ({
-      ok: false,
-      error: 'unsupported',
-      reason: 'product_owned_executable_unavailable'
-    }),
-    cancel: async (_requestId: string): Promise<{ cancelled: false; reason: string }> => ({
-      cancelled: false,
-      reason: 'unsupported'
-    }),
+    generate: async (request: CodexGenerationRequest): Promise<CodexGenerationResult> => {
+      void request
+      return {
+        ok: false,
+        error: 'unsupported',
+        reason: 'product_owned_executable_unavailable'
+      }
+    },
+    cancel: async (requestId: string): Promise<{ cancelled: false; reason: string }> => {
+      void requestId
+      return { cancelled: false, reason: 'unsupported' }
+    },
     dispose: async (): Promise<void> => {
       status = { state: 'disconnected' }
     }

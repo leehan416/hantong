@@ -94,15 +94,19 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       const owner = dependencies.window()
       const ownerAlive = owner !== null && !owner.isDestroyed()
-      if (!isAllowedAiMailCodexRequest({
-        ownerAlive,
-        senderMatches: ownerAlive && event.sender === owner.webContents,
-        mainFrameMatches: event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
-        senderUrl: event.senderFrame?.url ?? '',
-        rendererUrl: dependencies.rendererUrl,
-        operation,
-        args
-      })) throw new Error('Request rejected')
+      if (
+        !isAllowedAiMailCodexRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          operation,
+          args
+        })
+      )
+        throw new Error('Request rejected')
       if (operation === 'status') return dependencies.aiMailCodex.getStatus()
       if (operation === 'connect') return dependencies.aiMailCodex.connect()
       if (operation === 'disconnect') return dependencies.aiMailCodex.disconnect()

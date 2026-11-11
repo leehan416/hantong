@@ -97,7 +97,11 @@ export interface CodexGenerationRequest {
 
 export type CodexGenerationResult =
   | { ok: true; text: string; usage: { inputTokens: number | null; outputTokens: number | null } }
-  | { ok: false; error: 'unsupported' | 'unauthenticated' | 'rate_limited' | 'cancelled' | 'failed'; reason: string }
+  | {
+      ok: false
+      error: 'unsupported' | 'unauthenticated' | 'rate_limited' | 'cancelled' | 'failed'
+      reason: string
+    }
 
 export type AccountAccessState = {
   accountId: string

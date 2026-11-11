@@ -60,13 +60,15 @@ export function isAllowedAiMailCodexRequest(request: AiMailCodexRequest): boolea
   }
   if (request.operation === 'cancel')
     return request.args.length === 1 && isBoundedId(request.args[0])
-  if (request.args.length !== 1 || !request.args[0] || typeof request.args[0] !== 'object') return false
+  if (request.args.length !== 1 || !request.args[0] || typeof request.args[0] !== 'object')
+    return false
   const value = request.args[0] as Record<string, unknown>
   return (
     isBoundedId(value.accountId) &&
     isBoundedId(value.composeId) &&
     isBoundedId(value.requestId) &&
-    Number.isSafeInteger(value.generation) && (value.generation as number) > 0 &&
+    Number.isSafeInteger(value.generation) &&
+    (value.generation as number) > 0 &&
     typeof value.prompt === 'string' &&
     value.prompt.length > 0 &&
     value.prompt.length <= 4000 &&
