@@ -494,6 +494,7 @@ export function createGmailComposeProbeRuntime(options: {
   readonly isPackaged: boolean
   readonly argv: readonly string[]
   readonly terminal?: ReadlineInterface
+  readonly logInfo?: (message: string) => void
 }): { dispose(): void; onAccessState(state: AccountAccessState): void } {
   if (!isGmailComposeProbeOptedIn(options.argv, options.isPackaged))
     throw new Error('Gmail compose probe requires an explicit unpackaged CLI opt-in')
@@ -516,6 +517,7 @@ export function createGmailComposeProbeRuntime(options: {
   let bindingGeneration = 0
   let disposed = false
   let terminalClosed = false
+  const logInfo = options.logInfo ?? ((message: string) => console.info(message))
 
   function verifiedContext(): ProbeContext | null {
     if (disposed || options.window.isDestroyed()) return null
@@ -693,7 +695,7 @@ export function createGmailComposeProbeRuntime(options: {
   async function run(command: string): Promise<void> {
     if (disposed || options.window.isDestroyed()) return
     if (command === 'status') {
-      console.info(
+      logInfo(
         currentContext()
           ? 'Gmail compose probe access is ready.'
           : 'Gmail compose probe access is locked.'
@@ -702,38 +704,38 @@ export function createGmailComposeProbeRuntime(options: {
     }
     if (command === 'authorize-synthetic-test-account') {
       if (!(await activateForCurrentAccount())) {
-        console.info(
+        logInfo(
           'Probe remains locked until the active account passes Main Gmail access verification.'
         )
         return
       }
-      console.info(
+      logInfo(
         'Probe enabled for the currently active Main-verified account; proceed only with the manager-authorized synthetic test account.'
       )
       return
     }
     if (!controller || !contextMatchesBound()) {
       resetBinding()
-      console.info(
+      logInfo(
         'Probe access is locked; select and verify an account, then authorize the synthetic test account.'
       )
       return
     }
     if (command === 'read') {
       if (!(await controller.observeLastUsedTarget())) {
-        console.info('No supported last-used compose target is available.')
+        logInfo('No supported last-used compose target is available.')
         return
       }
       const result = await controller.read()
-      console.info(gmailComposeProbeStatusMessage('read', result))
+      logInfo(gmailComposeProbeStatusMessage('read', result))
       return
     }
     if (command === 'revoke') {
       resetBinding()
-      console.info('Probe snapshots and undo were cleared.')
+      logInfo('Probe snapshots and undo were cleared.')
       return
     }
-    console.info('Commands: status, authorize-synthetic-test-account, read, revoke, quit.')
+    logInfo('Commands: status, authorize-synthetic-test-account, read, revoke, quit.')
   }
 
   function prompt(): void {
@@ -746,7 +748,7 @@ export function createGmailComposeProbeRuntime(options: {
       }
       void run(command)
         .catch(() => {
-          console.info('Probe command failed safely; no content was logged.')
+          logInfo('Probe command failed safely; no content was logged.')
         })
         .finally(prompt)
     })
