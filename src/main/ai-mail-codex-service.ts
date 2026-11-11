@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
+import { CODEX_RUNTIME_PIN, type CodexRuntimePin } from './codex-runtime-pin'
 import type {
   CodexConnectionStatus,
   CodexGenerationRequest,
@@ -15,6 +17,8 @@ const HOME_MARKER_CONTENT = 'hantong-codex-isolation-v1\n'
 const HOME_NAME = 'hantong-codex-isolated-v1'
 const WORKSPACE_NAME = 'empty-workspace'
 const PERMISSION_PROFILE = 'hantong-no-local-io'
+const CODEX_RUNTIME_VERSION = '0.167.1'
+const CODEX_RUNTIME_TARGET = 'aarch64-apple-darwin'
 const APP_SERVER_TIMEOUT_MS = 15_000
 const LOGIN_TIMEOUT_MS = 5 * 60_000
 // Request every known optional capability off at launch. `unified_exec` is
@@ -67,18 +71,26 @@ type CodexProcess = {
   closed: boolean
   home: string
   workspace: string
+  generation: number
 }
 type ServiceOptions = {
-  executablePath?: string
+  resourcesDirectory?: string
   dataRoot?: string
   spawnProcess?: typeof spawn
   openExternal?: (url: string) => Promise<void>
-  environment?: NodeJS.ProcessEnv
   requestTimeoutMs?: number
   loginTimeoutMs?: number
   platform?: NodeJS.Platform
   appDataDirectory?: string
   onStatus?: (status: CodexConnectionStatus) => void
+}
+type FileIdentity = { dev: number; ino: number; size: number; mtimeMs: number }
+type LoginFlow = {
+  id: string
+  generation: number
+  timer: NodeJS.Timeout
+  poll: NodeJS.Timeout
+  completion?: Promise<void>
 }
 
 class AppServerRpcError extends Error {
@@ -101,6 +113,55 @@ function validPrivateStat(stat: Awaited<ReturnType<typeof lstat>>, directory: bo
     modeBits === (directory ? 0o700 : 0o600) &&
     (directory || stat.nlink === 1)
   )
+}
+
+function validPackagedDirectory(stat: Awaited<ReturnType<typeof lstat>>): boolean {
+  const modeBits = typeof stat.mode === 'bigint' ? Number(stat.mode & 0o7777n) : stat.mode & 0o7777
+  return stat.isDirectory() && !stat.isSymbolicLink() && (modeBits & 0o022) === 0
+}
+
+function validPackagedExecutable(stat: Awaited<ReturnType<typeof lstat>>): boolean {
+  const modeBits = typeof stat.mode === 'bigint' ? Number(stat.mode & 0o7777n) : stat.mode & 0o7777
+  return (
+    stat.isFile() &&
+    !stat.isSymbolicLink() &&
+    stat.nlink === 1 &&
+    (modeBits & 0o111) !== 0 &&
+    (modeBits & 0o022) === 0
+  )
+}
+
+function sameFileIdentity(
+  first: Awaited<ReturnType<typeof lstat>>,
+  second: Awaited<ReturnType<typeof lstat>> | FileIdentity
+): boolean {
+  return (
+    first.dev === second.dev &&
+    first.ino === second.ino &&
+    first.size === second.size &&
+    first.mtimeMs === second.mtimeMs
+  )
+}
+
+async function hashPackagedExecutable(
+  path: string,
+  expectedStat: Awaited<ReturnType<typeof lstat>>
+): Promise<string> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const openStat = await handle.stat()
+    if (!sameFileIdentity(openStat, expectedStat) || !validPackagedExecutable(openStat))
+      throw new Error('product_owned_executable_changed')
+    const digest = createHash('sha256')
+    const stream = handle.createReadStream({ autoClose: false })
+    for await (const chunk of stream) digest.update(chunk)
+    const finalStat = await handle.stat()
+    if (!sameFileIdentity(finalStat, expectedStat))
+      throw new Error('product_owned_executable_changed')
+    return digest.digest('hex')
+  } finally {
+    await handle.close()
+  }
 }
 
 async function readPrivateText(path: string): Promise<string> {
@@ -199,17 +260,21 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
 } {
   const platform = options.platform ?? process.platform
   const appDataDirectory = options.appDataDirectory
-  const configuredExecutable = options.executablePath ?? process.env['HANTONG_CODEX_EXECUTABLE']
+  const resourcesDirectory =
+    options.resourcesDirectory ??
+    (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
   const dataRoot = resolve(
     options.dataRoot ??
       (appDataDirectory
         ? join(appDataDirectory, 'codex-runtime', 'home')
         : join(tmpdir(), 'hantong-ai-mail'))
   )
-  const executablePath = configuredExecutable ? resolve(configuredExecutable) : undefined
-  const ownedExecutableRoot = appDataDirectory
-    ? resolve(join(appDataDirectory, 'codex-runtime', 'bin'))
+  const runtimePin: CodexRuntimePin = CODEX_RUNTIME_PIN
+  const executablePath = resourcesDirectory
+    ? join(resolve(resourcesDirectory), 'codex-runtime', 'bin', 'codex')
     : undefined
+  const executableRoot = executablePath ? dirname(executablePath) : undefined
+  const runtimeDirectory = executableRoot ? dirname(executableRoot) : undefined
   const spawnProcess = options.spawnProcess ?? spawn
   const requestTimeoutMs = options.requestTimeoutMs ?? APP_SERVER_TIMEOUT_MS
   const loginTimeoutMs = options.loginTimeoutMs ?? LOGIN_TIMEOUT_MS
@@ -218,9 +283,27 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     reason: 'product_owned_executable_unavailable'
   }
   let runtime: CodexProcess | null = null
-  let login: { id: string; timer: NodeJS.Timeout; poll: NodeJS.Timeout } | null = null
+  let login: LoginFlow | null = null
   let disposed = false
+  let lifecycleGeneration = 0
   let lifecycle: Promise<CodexConnectionStatus> | null = null
+
+  function isCurrent(generation: number): boolean {
+    return !disposed && lifecycleGeneration === generation
+  }
+
+  function assertCurrent(generation: number): void {
+    if (!isCurrent(generation)) throw new Error('service_stale')
+  }
+
+  function hasTrustedRuntimePin(): boolean {
+    return (
+      runtimePin.version === CODEX_RUNTIME_VERSION &&
+      runtimePin.target === CODEX_RUNTIME_TARGET &&
+      typeof runtimePin.executableSha256 === 'string' &&
+      /^[a-f0-9]{64}$/.test(runtimePin.executableSha256)
+    )
+  }
 
   function setStatus(next: CodexConnectionStatus): void {
     if (JSON.stringify(status) === JSON.stringify(next)) return
@@ -309,52 +392,69 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         processState.child.once('exit', () => resolvePromise())
       )
       const timeout = setTimeout(() => processState.child.kill('SIGTERM'), 300)
+      let hardTimeout: NodeJS.Timeout | undefined
       await Promise.race([
         exited,
-        new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 700))
+        new Promise<void>((resolvePromise) => {
+          hardTimeout = setTimeout(resolvePromise, 700)
+        })
       ])
       clearTimeout(timeout)
+      if (hardTimeout) clearTimeout(hardTimeout)
       if (processState.child.exitCode === null && processState.child.signalCode === null)
         processState.child.kill('SIGKILL')
     }
     if (runtime === processState) runtime = null
   }
 
-  async function startProcess(): Promise<CodexProcess> {
-    if (!executablePath) throw new Error('product_owned_executable_unavailable')
-    if (
-      platform !== 'darwin' ||
-      !ownedExecutableRoot ||
-      executablePath !== join(ownedExecutableRoot, 'codex')
-    )
+  async function startProcess(generation: number): Promise<CodexProcess> {
+    assertCurrent(generation)
+    if (!executablePath || !executableRoot || !runtimeDirectory || !hasTrustedRuntimePin())
       throw new Error('product_owned_executable_unavailable')
-    const executableStat = await lstat(executablePath)
-    const runtimeDirectoryStat = await lstat(dirname(ownedExecutableRoot))
-    const executableDirectoryStat = await lstat(ownedExecutableRoot)
-    const uid = process.getuid?.()
+    if (platform !== 'darwin' || process.arch !== 'arm64')
+      throw new Error('product_owned_executable_unavailable')
+    const [resourceStat, runtimeStat, executableDirectoryStat, executableStat] = await Promise.all([
+      lstat(resolve(resourcesDirectory!)),
+      lstat(runtimeDirectory),
+      lstat(executableRoot),
+      lstat(executablePath)
+    ])
+    assertCurrent(generation)
     if (
-      !executableStat.isFile() ||
-      executableStat.isSymbolicLink() ||
-      (executableStat.mode & 0o111) === 0 ||
-      !Number.isInteger(uid) ||
-      executableStat.uid !== uid ||
-      executableStat.nlink !== 1 ||
-      (executableStat.mode & 0o022) !== 0 ||
-      !validPrivateStat(runtimeDirectoryStat, true) ||
-      !validPrivateStat(executableDirectoryStat, true)
+      !validPackagedDirectory(resourceStat) ||
+      !validPackagedDirectory(runtimeStat) ||
+      !validPackagedDirectory(executableDirectoryStat) ||
+      !validPackagedExecutable(executableStat)
     )
       throw new Error('product_owned_executable_invalid')
+    const executableIdentity: FileIdentity = {
+      dev: executableStat.dev,
+      ino: executableStat.ino,
+      size: executableStat.size,
+      mtimeMs: executableStat.mtimeMs
+    }
+    const digest = await hashPackagedExecutable(executablePath, executableStat)
+    assertCurrent(generation)
+    if (digest !== runtimePin.executableSha256) throw new Error('product_owned_executable_invalid')
     const { home, workspace } = await prepareIsolatedHome(dataRoot)
+    assertCurrent(generation)
     const restrictedEnv: NodeJS.ProcessEnv = {
       CODEX_HOME: home,
       HOME: home,
-      PATH: options.environment?.PATH ?? '/usr/bin:/bin',
-      TMPDIR: options.environment?.TMPDIR ?? tmpdir(),
-      LANG: options.environment?.LANG ?? 'en_US.UTF-8',
+      PATH: '/usr/bin:/bin',
+      TMPDIR: tmpdir(),
+      LANG: 'en_US.UTF-8',
       TERM: 'dumb'
     }
     const args = ['app-server', '--listen', 'stdio://', '--enable', 'skip_host_skill_discovery']
     for (const feature of APP_SERVER_DISABLE_FEATURES) args.push('--disable', feature)
+    const beforeSpawnStat = await lstat(executablePath)
+    assertCurrent(generation)
+    if (
+      !validPackagedExecutable(beforeSpawnStat) ||
+      !sameFileIdentity(beforeSpawnStat, executableIdentity)
+    )
+      throw new Error('product_owned_executable_changed')
     const child = spawnProcess(executablePath, args, {
       cwd: workspace,
       env: restrictedEnv,
@@ -369,13 +469,15 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       sequence: 1,
       closed: false,
       home,
-      workspace
+      workspace,
+      generation
     }
     runtime = processState
     lines.on('line', (line) => onProtocolLine(processState, line))
     child.on('error', () => failPending(processState, 'app_server_process_failed'))
     child.on('exit', () => {
       const wasClosing = processState.closed
+      if (login?.generation === processState.generation) cleanLogin()
       failPending(processState, 'app_server_process_exited')
       processState.closed = true
       if (runtime === processState) {
@@ -391,6 +493,7 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       child.stdin.write(
         `${JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} })}\n`
       )
+      assertCurrent(generation)
       return processState
     } catch (error) {
       await stopProcess(processState)
@@ -403,6 +506,11 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     clearTimeout(login.timer)
     clearInterval(login.poll)
     login = null
+  }
+
+  function clearLoginTimers(flow: LoginFlow): void {
+    clearTimeout(flow.timer)
+    clearInterval(flow.poll)
   }
 
   async function readAccount(processState: CodexProcess): Promise<{ type?: string } | null> {
@@ -476,41 +584,58 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     }
   }
 
-  async function completeLogin(processState: CodexProcess, loginId: string): Promise<void> {
+  async function completeLogin(processState: CodexProcess, flow: LoginFlow): Promise<void> {
+    if (login !== flow || !isCurrent(flow.generation)) return
     const completed = processState.notifications.some(
       (notification) =>
         notification.method === 'account/login/completed' &&
-        notification.params['loginId'] === loginId &&
+        notification.params['loginId'] === flow.id &&
         notification.params['success'] === true
     )
     if (!completed) return
-    cleanLogin()
-    let account: { type?: string } | null
-    try {
-      account = await readAccount(processState)
-    } catch {
-      await rpc(processState, 'account/logout').catch(() => undefined)
-      setStatus({ state: 'error', reason: 'connection_failed' })
-      return
-    }
-    if (account?.type !== 'chatgpt') {
-      await rpc(processState, 'account/logout').catch(() => undefined)
-      setStatus({ state: 'error', reason: 'chatgpt_account_required' })
-      return
-    }
-    setStatus({ state: 'connected' })
-    void verifyRestrictions(processState)
+    if (flow.completion) return flow.completion
+    clearLoginTimers(flow)
+    flow.completion = (async () => {
+      try {
+        const account = await readAccount(processState)
+        if (!isCurrent(flow.generation) || login !== flow) return
+        if (account?.type !== 'chatgpt') {
+          await rpc(processState, 'account/logout').catch(() => undefined)
+          if (isCurrent(flow.generation)) {
+            setStatus({ state: 'error', reason: 'chatgpt_account_required' })
+            await stopProcess(processState)
+          }
+          return
+        }
+        setStatus({ state: 'connected' })
+        void verifyRestrictions(processState)
+      } catch {
+        await rpc(processState, 'account/logout').catch(() => undefined)
+        if (isCurrent(flow.generation)) {
+          setStatus({ state: 'error', reason: 'connection_failed' })
+          await stopProcess(processState)
+        }
+      } finally {
+        clearLoginTimers(flow)
+        if (login === flow) login = null
+      }
+    })()
+    return flow.completion
   }
 
   async function connect(): Promise<CodexConnectionStatus> {
     if (disposed) return { state: 'error', reason: 'service_disposed' }
-    if (!executablePath) return status
+    if (!executablePath || !hasTrustedRuntimePin()) return status
     if (lifecycle) return lifecycle
-    lifecycle = (async () => {
+    if (login) return status
+    const generation = lifecycleGeneration
+    const attempt = (async () => {
       setStatus({ state: 'connecting' })
       try {
-        const processState = runtime ?? (await startProcess())
+        const processState = runtime ?? (await startProcess(generation))
+        assertCurrent(generation)
         const account = await readAccount(processState)
+        assertCurrent(generation)
         if (account?.type === 'chatgpt') {
           setStatus({ state: 'connected' })
           void verifyRestrictions(processState)
@@ -520,6 +645,13 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
           type: 'chatgpt',
           codexStreamlinedLogin: true
         })) as { type?: string; authUrl?: unknown; loginId?: string }
+        if (!isCurrent(generation)) {
+          if (typeof result.loginId === 'string')
+            await rpc(processState, 'account/login/cancel', { loginId: result.loginId }).catch(
+              () => undefined
+            )
+          return status
+        }
         if (
           result.type !== 'chatgpt' ||
           !validatedAuthUrl(result.authUrl) ||
@@ -530,18 +662,42 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         if (!opener) throw new Error('system_browser_unavailable')
         setStatus({ state: 'connecting', reason: 'awaiting_chatgpt_login' })
         const loginId = result.loginId
-        await opener(result.authUrl)
-        const timeout = setTimeout(() => {
-          if (login?.id !== loginId) return
+        const flowHolder: { value?: LoginFlow } = {}
+        const timer = setTimeout(() => {
+          const flow = flowHolder.value
+          if (!flow || login !== flow || !isCurrent(generation)) return
           cleanLogin()
-          void rpc(processState, 'account/login/cancel', { loginId }).catch(() => undefined)
-          setStatus({ state: 'error', reason: 'login_timed_out' })
+          void (async () => {
+            await rpc(processState, 'account/login/cancel', { loginId }).catch(() => undefined)
+            await stopProcess(processState)
+            if (isCurrent(generation)) setStatus({ state: 'error', reason: 'login_timed_out' })
+          })()
         }, loginTimeoutMs)
-        const poll = setInterval(() => void completeLogin(processState, loginId), 200)
-        login = { id: loginId, timer: timeout, poll }
-        await completeLogin(processState, loginId)
+        const poll = setInterval(() => {
+          const flow = flowHolder.value
+          if (flow) void completeLogin(processState, flow)
+        }, 200)
+        const flow: LoginFlow = { id: loginId, generation, timer, poll }
+        flowHolder.value = flow
+        login = flow
+        await opener(result.authUrl)
+        if (!isCurrent(generation) || login !== flow) {
+          clearLoginTimers(flow)
+          await rpc(processState, 'account/login/cancel', { loginId }).catch(() => undefined)
+          return status
+        }
+        await completeLogin(processState, flow)
         return status
       } catch (error) {
+        if (!isCurrent(generation)) return status
+        const failedLogin = login?.generation === generation ? login : null
+        if (failedLogin) {
+          cleanLogin()
+          if (runtime)
+            await rpc(runtime, 'account/login/cancel', { loginId: failedLogin.id }).catch(
+              () => undefined
+            )
+        }
         const message = error instanceof Error ? error.message : ''
         if (message === 'product_owned_executable_unavailable') {
           setStatus({ state: 'unsupported', reason: 'product_owned_executable_unavailable' })
@@ -557,16 +713,19 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         if (runtime && status.state === 'error') await stopProcess(runtime)
         return status
       }
-    })().finally(() => {
-      lifecycle = null
+    })()
+    const trackedAttempt = attempt.finally(() => {
+      if (lifecycle === trackedAttempt) lifecycle = null
     })
-    return lifecycle
+    lifecycle = trackedAttempt
+    return trackedAttempt
   }
 
   return {
     getStatus: (): CodexConnectionStatus => status,
     connect,
     disconnect: async (): Promise<CodexConnectionStatus> => {
+      lifecycleGeneration += 1
       const pendingLogin = login
       cleanLogin()
       const processState = runtime
@@ -579,7 +738,7 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         await stopProcess(processState)
       }
       setStatus(
-        executablePath
+        executablePath && hasTrustedRuntimePin()
           ? { state: 'disconnected' }
           : { state: 'unsupported', reason: 'product_owned_executable_unavailable' }
       )
@@ -597,13 +756,19 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     },
     dispose: async (): Promise<void> => {
       disposed = true
+      lifecycleGeneration += 1
+      const pendingLogin = login
       cleanLogin()
       if (runtime) {
         const processState = runtime
+        if (pendingLogin)
+          await rpc(processState, 'account/login/cancel', { loginId: pendingLogin.id }).catch(
+            () => undefined
+          )
         await stopProcess(processState)
       }
       setStatus(
-        executablePath
+        executablePath && hasTrustedRuntimePin()
           ? { state: 'disconnected' }
           : { state: 'unsupported', reason: 'product_owned_executable_unavailable' }
       )

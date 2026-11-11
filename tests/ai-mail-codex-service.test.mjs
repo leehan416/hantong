@@ -1,23 +1,25 @@
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Test helper runs in plain JavaScript. */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const { createAiMailCodexService } = loadTypeScript(
-  new URL('../src/main/ai-mail-codex-service.ts', import.meta.url),
-  {
-    'node:child_process': {
-      spawn: () => {
-        throw new Error('unexpected_spawn')
-      }
-    }
+const serviceSource = new URL('../src/main/ai-mail-codex-service.ts', import.meta.url)
+const childProcessMock = {
+  spawn: () => {
+    throw new Error('unexpected_spawn')
   }
-)
+}
+function createServiceFactory(runtimePin) {
+  const overrides = { 'node:child_process': childProcessMock }
+  if (runtimePin !== undefined) overrides['./codex-runtime-pin'] = { CODEX_RUNTIME_PIN: runtimePin }
+  return loadTypeScript(serviceSource, overrides).createAiMailCodexService
+}
 const { isAllowedAiMailCodexRequest } = loadTypeScript(
   new URL('../src/main/security-policy.ts', import.meta.url)
 )
@@ -39,23 +41,42 @@ const base = {
 }
 const plain = (value) => JSON.parse(JSON.stringify(value))
 
-async function setup(t, behavior) {
+async function setup(t, behavior, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'hantong-ai-mail-service-'))
   const appDataDirectory = join(root, 'user-data')
-  const runtimeDirectory = join(appDataDirectory, 'codex-runtime')
-  const executableDirectory = join(runtimeDirectory, 'bin')
-  const privateRoot = join(runtimeDirectory, 'home')
+  const resourcesDirectory = join(root, 'Hantong.app', 'Contents', 'Resources')
+  const executableDirectory = join(resourcesDirectory, 'codex-runtime', 'bin')
+  const legacyExecutableDirectory = join(appDataDirectory, 'codex-runtime', 'bin')
+  const privateRoot = join(appDataDirectory, 'codex-runtime', 'home')
   await mkdir(executableDirectory, { recursive: true, mode: 0o700 })
-  await mkdir(privateRoot, { mode: 0o700 })
+  await mkdir(legacyExecutableDirectory, { recursive: true, mode: 0o700 })
+  await mkdir(appDataDirectory, { recursive: true, mode: 0o700 })
   const executablePath = join(executableDirectory, 'codex')
-  await writeFile(executablePath, 'synthetic executable', { mode: 0o700 })
+  const legacyExecutablePath = join(legacyExecutableDirectory, 'codex')
+  const executableBytes = 'synthetic executable'
+  await writeFile(executablePath, executableBytes, { mode: 0o700 })
+  await writeFile(legacyExecutablePath, executableBytes, { mode: 0o700 })
+  if (options.symlinkExecutable) {
+    await unlink(executablePath)
+    await symlink(legacyExecutablePath, executablePath)
+  }
+  const runtimePin = Object.hasOwn(options, 'runtimePin')
+    ? options.runtimePin
+    : {
+        version: '0.167.1',
+        target: 'aarch64-apple-darwin',
+        executableSha256: createHash('sha256').update(executableBytes).digest('hex')
+      }
   t.after(() => rm(root, { recursive: true, force: true }))
   const spawned = []
   const openedUrls = []
-  const service = createAiMailCodexService({
-    executablePath,
+  const originalExecutableOverride = process.env['HANTONG_CODEX_EXECUTABLE']
+  if (options.environmentOverride) process.env['HANTONG_CODEX_EXECUTABLE'] = legacyExecutablePath
+  const service = createServiceFactory(runtimePin)({
+    executablePath: options.environmentOverride ? undefined : legacyExecutablePath,
     dataRoot: privateRoot,
     appDataDirectory,
+    resourcesDirectory,
     requestTimeoutMs: 1000,
     loginTimeoutMs: 1000,
     spawnProcess: (executable, args, options) => {
@@ -84,11 +105,13 @@ async function setup(t, behavior) {
       openedUrls.push(url)
     }
   })
-  return { service, spawned, openedUrls }
+  if (originalExecutableOverride === undefined) delete process.env['HANTONG_CODEX_EXECUTABLE']
+  else process.env['HANTONG_CODEX_EXECUTABLE'] = originalExecutableOverride
+  return { service, spawned, openedUrls, executablePath, legacyExecutablePath }
 }
 
 test('without an explicitly provisioned Hantong executable, Codex stays unsupported', async () => {
-  const service = createAiMailCodexService()
+  const service = createServiceFactory()()
   assert.deepEqual(plain(service.getStatus()), {
     state: 'unsupported',
     reason: 'product_owned_executable_unavailable'
@@ -107,6 +130,114 @@ test('without an explicitly provisioned Hantong executable, Codex stays unsuppor
     state: 'unsupported',
     reason: 'product_owned_executable_unavailable'
   })
+})
+
+test('dispose during asynchronous startup prevents a later app-server spawn', async (t) => {
+  const { service, spawned } = await setup(t, ({ child, packet }) => {
+    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
+  })
+  const connecting = service.connect()
+  await service.dispose()
+  await connecting
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(spawned.length, 0)
+})
+
+test('repeated connect during the same pending ChatGPT login owns one flow', async (t) => {
+  let loginStarts = 0
+  const { service, spawned, openedUrls } = await setup(t, ({ child, packet }) => {
+    let result = {}
+    if (packet.method === 'account/read') result = { account: null }
+    if (packet.method === 'account/login/start') {
+      loginStarts += 1
+      result = { type: 'chatgpt', authUrl: 'https://auth.openai.com/authorize', loginId: 'login_1' }
+    }
+    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+  })
+  assert.deepEqual(plain(await service.connect()), {
+    state: 'connecting',
+    reason: 'awaiting_chatgpt_login'
+  })
+  assert.deepEqual(plain(await service.connect()), {
+    state: 'connecting',
+    reason: 'awaiting_chatgpt_login'
+  })
+  assert.equal(loginStarts, 1)
+  assert.deepEqual(openedUrls, ['https://auth.openai.com/authorize'])
+  await service.dispose()
+  assert.equal(
+    spawned[0].writes.filter((packet) => packet.method === 'account/login/cancel').length,
+    1
+  )
+})
+
+test('a packaged runtime whose digest differs from the build pin is never spawned', async (t) => {
+  const { service, spawned } = await setup(
+    t,
+    ({ child, packet }) => {
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
+    },
+    {
+      runtimePin: {
+        version: '0.167.1',
+        target: 'aarch64-apple-darwin',
+        executableSha256: '0'.repeat(64)
+      }
+    }
+  )
+  const result = await service.connect()
+  assert.equal(result.state, 'error')
+  assert.equal(spawned.length, 0)
+  await service.dispose()
+})
+
+test('a packaged file without a build-owned executable digest stays unsupported', async (t) => {
+  const { service, spawned } = await setup(
+    t,
+    ({ child, packet }) => {
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
+    },
+    { runtimePin: { version: '0.167.1', target: 'aarch64-apple-darwin', executableSha256: null } }
+  )
+  assert.deepEqual(plain(await service.connect()), {
+    state: 'unsupported',
+    reason: 'product_owned_executable_unavailable'
+  })
+  assert.equal(spawned.length, 0)
+  await service.dispose()
+})
+
+test('the packaged runtime path rejects symlink substitution', async (t) => {
+  const { service, spawned } = await setup(
+    t,
+    ({ child, packet }) => {
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
+    },
+    { symlinkExecutable: true }
+  )
+  await service.connect()
+  assert.equal(spawned.length, 0)
+  await service.dispose()
+})
+
+test('the launcher environment cannot replace the packaged Codex executable', async (t) => {
+  const { service, spawned, executablePath, legacyExecutablePath } = await setup(
+    t,
+    ({ child, packet }) => {
+      if (packet.method === 'account/read') {
+        child.stdout.write(
+          `${JSON.stringify({ id: packet.id, result: { account: { type: 'chatgpt' } } })}\n`
+        )
+        return
+      }
+      if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
+    },
+    { environmentOverride: true }
+  )
+  await service.connect()
+  assert.equal(spawned[0].executable, executablePath)
+  assert.notEqual(spawned[0].executable, legacyExecutablePath)
+  await service.dispose()
 })
 
 test('app-server receives only its isolated home, path and disabled tool configuration', async (t) => {

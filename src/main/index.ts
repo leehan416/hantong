@@ -116,7 +116,7 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   showAccount
 })
 const aiMailCodex = createAiMailCodexService({
-  executablePath: process.env['HANTONG_CODEX_EXECUTABLE'],
+  resourcesDirectory: process.resourcesPath,
   appDataDirectory: app.getPath('userData'),
   openExternal: async (url) => {
     await shell.openExternal(url)
