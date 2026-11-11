@@ -113,11 +113,34 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       if (!service) return { status: 'access_locked' }
       const result =
         operation === 'status' ? await service.getStatus() : await service.getSnapshot()
-      if (!owner.isDestroyed())
-        owner.webContents.send(
-          AI_MAIL_COMPOSE_TARGET_EVENT,
-          operation === 'status' ? result : await service.getStatus()
-        )
+      const targetStillCurrent = await service.isResultTargetCurrent(result)
+      const currentOwner = dependencies.window()
+      const requestStillTrusted =
+        currentOwner === owner &&
+        !owner.isDestroyed() &&
+        isAllowedAiMailComposeTargetRequest({
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          args
+        })
+      if (!requestStillTrusted) throw new Error('Request rejected')
+      if (!targetStillCurrent || !service.isResultCurrent(result)) return { status: 'stale' }
+      const targetStatus =
+        operation === 'status' || result.status !== 'ready'
+          ? result
+          : {
+              status: 'ready' as const,
+              accountId: result.accountId,
+              composeId: result.composeId,
+              accountLabel: result.accountLabel,
+              recipients: result.recipients,
+              subject: result.subject
+            }
+      owner.webContents.send(AI_MAIL_COMPOSE_TARGET_EVENT, targetStatus)
       return result
     })
   }

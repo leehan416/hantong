@@ -20,6 +20,7 @@ function fixture(options = {}) {
   let activeAccountId = 'account-a'
   let ready = true
   let destroyed = false
+  let targetId = 'target-7'
   let documentRevision = '4:9'
   const listeners = new Map()
   const contents = {
@@ -38,7 +39,7 @@ function fixture(options = {}) {
       if (code.includes('globalThis.__hantongComposeTarget?.documentId ===')) {
         if (options.deferRead) await options.deferRead()
         return {
-          targetId: 'target-7',
+          targetId,
           snapshot: {
             subject: 'Synthetic subject',
             recipients: ['recipient@example.test'],
@@ -82,6 +83,9 @@ function fixture(options = {}) {
     setRevision(value) {
       documentRevision = value
     },
+    setTarget(value) {
+      targetId = value
+    },
     destroy() {
       destroyed = true
     }
@@ -102,6 +106,16 @@ test('snapshot request returns only bounded current compose data and opaque iden
   assert.equal(snapshot.composeId, status.composeId)
   assert.equal(snapshot.body, 'Synthetic body')
   assert.match(snapshot.documentVersion, /^[0-9a-f-]{36}$/)
+  assert.equal(await f.service.isResultTargetCurrent(snapshot), true)
+  f.service.dispose()
+})
+
+test('a target switch invalidates an already captured snapshot lease', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  f.setTarget('target-8')
+  assert.equal(await f.service.isResultTargetCurrent(snapshot), false)
   f.service.dispose()
 })
 
@@ -170,11 +184,7 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
       return []
     }
     querySelector(selector) {
-      return selector.includes('Reply')
-        ? selector.includes('aria-label')
-          ? replyMarker
-          : null
-        : null
+      return selector.includes('Reply') && this.contains(replyMarker) ? replyMarker : null
     }
     contains(node) {
       for (let item = node; item; item = item.parentElement) if (item === this) return true
@@ -185,9 +195,14 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
     }
   }
   const root = new SyntheticElement('[role="dialog"]')
-  const editor = new SyntheticElement('[contenteditable="true"]', root, 'Reply fixture body')
-  const replyMarker = new SyntheticElement('[aria-label*="Reply"]', root)
-  const nodes = [root, editor, replyMarker]
+  const composeBranch = new SyntheticElement('div', root)
+  const editor = new SyntheticElement(
+    '[contenteditable="true"]',
+    composeBranch,
+    'Reply fixture body'
+  )
+  const replyMarker = new SyntheticElement('button[aria-label*="Reply"]', composeBranch)
+  const nodes = [root, composeBranch, editor, replyMarker]
   const listeners = new Map()
   const document = {
     addEventListener: (name, listener) => listeners.set(name, listener),
@@ -207,4 +222,243 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
   assert.equal(result.snapshot.body, 'Reply fixture body')
   assert.equal(result.snapshot.supported, true)
   context.__hantongComposeTarget.revoke()
+})
+
+test('an unrelated reply marker in a shared ancestor cannot classify the editor as a reply', () => {
+  class SyntheticElement {
+    constructor(selector = '', parentElement = null, text = '') {
+      this.selector = selector
+      this.parentElement = parentElement
+      this.innerText = text
+      this.isConnected = true
+    }
+    matches(selector) {
+      return this.selector === selector
+    }
+    closest(selector) {
+      return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null)
+    }
+    contains(node) {
+      for (let item = node; item; item = item.parentElement) if (item === this) return true
+      return false
+    }
+    querySelectorAll(selector) {
+      if (selector === '[contenteditable="true"]')
+        return nodes.filter(
+          (node) => node.matches(selector) && node !== this && this.contains(node)
+        )
+      if (selector === 'input[name="subjectbox"]') return []
+      return []
+    }
+    querySelector(selector) {
+      return selector.includes('Reply') && this.contains(replyMarker) ? replyMarker : null
+    }
+    querySelectorAllForRecipient() {
+      return []
+    }
+    getAttribute() {
+      return null
+    }
+  }
+  const dialog = new SyntheticElement('[role="dialog"]')
+  const editorBranch = new SyntheticElement('div', dialog)
+  const editor = new SyntheticElement('[contenteditable="true"]', editorBranch, 'Unrelated body')
+  const unrelatedControls = new SyntheticElement('div', dialog)
+  const replyMarker = new SyntheticElement('button[aria-label*="Reply"]', unrelatedControls)
+  const nodes = [dialog, editorBranch, editor, unrelatedControls, replyMarker]
+  const listeners = new Map()
+  const context = {
+    document: {
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      removeEventListener() {
+        return listeners.clear()
+      }
+    },
+    Element: SyntheticElement,
+    HTMLInputElement: class extends SyntheticElement {}
+  }
+  runInNewContext(gmailComposeTargetPageSource('synthetic-shared-ancestor'), context)
+  listeners.get('click')({ target: editor })
+  const result = context.__hantongComposeTarget.read()
+  assert.deepEqual(plain(result), { targetId: 'unsupported', unsupported: true, snapshot: null })
+})
+
+test('snapshot IPC rejects a ready result whose Main target lease changed before delivery', async () => {
+  const handlers = new Map()
+  const electron = {
+    app: {},
+    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    nativeTheme: {},
+    webContents: { getAllWebContents: () => [] }
+  }
+  const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
+    electron
+  })
+  let activeAccountId = 'account-a'
+  const ownerContents = {
+    send() {
+      return undefined
+    }
+  }
+  const owner = { webContents: ownerContents, isDestroyed: () => false }
+  let statusCalls = 0
+  const service = {
+    async getSnapshot() {
+      queueMicrotask(() => {
+        activeAccountId = 'account-b'
+      })
+      return {
+        status: 'ready',
+        accountId: 'account-a',
+        composeId: 'compose-a',
+        documentVersion: 'version-a',
+        subject: 'Synthetic',
+        recipients: [],
+        body: 'Fixture'
+      }
+    },
+    async getStatus() {
+      statusCalls += 1
+      return await new Promise((resolve) => {
+        queueMicrotask(() =>
+          resolve({ status: activeAccountId === 'account-b' ? 'none' : 'ready' })
+        )
+      })
+    },
+    async isResultTargetCurrent() {
+      return true
+    },
+    isResultCurrent(result) {
+      return activeAccountId === result.accountId
+    }
+  }
+  const dependencies = {
+    rendererUrl: renderer,
+    window: () => owner,
+    views: () => null,
+    access: () => null,
+    notifications: () => null,
+    settings: () => null,
+    isQuitting: () => false,
+    requireAccountStore: () => ({}),
+    requireAccountRemoval: () => ({}),
+    requireGoogleRuntime: () => ({}),
+    recovery: {},
+    gmailCleanup: {},
+    unreadCounts: () => ({ unreadCounts: () => new Map() }),
+    locale: () => 'en',
+    activateView() {
+      return undefined
+    },
+    publishAccountState() {
+      return undefined
+    },
+    installAppMenu() {
+      return undefined
+    },
+    createWindow() {
+      return undefined
+    },
+    loginLaunch: {},
+    aiMailCodex: {},
+    composeTarget: () => service
+  }
+  registerMainIpc(dependencies)
+  const mainFrame = { url: renderer }
+  ownerContents.mainFrame = mainFrame
+  const sender = ownerContents
+  const handler = handlers.get('hantong:ai-mail-compose-snapshot')
+  const response = await handler({
+    sender,
+    senderFrame: mainFrame
+  })
+  assert.deepEqual(plain(response), { status: 'stale' })
+  assert.equal(statusCalls, 0)
+})
+
+test('snapshot IPC rejects a renderer that navigates while the snapshot is pending', async () => {
+  const handlers = new Map()
+  const electron = {
+    app: {},
+    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    nativeTheme: {},
+    webContents: { getAllWebContents: () => [] }
+  }
+  const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
+    electron
+  })
+  const mainFrame = { url: renderer }
+  const ownerContents = {
+    mainFrame,
+    send() {
+      return undefined
+    }
+  }
+  const owner = { webContents: ownerContents, isDestroyed: () => false }
+  const result = {
+    status: 'ready',
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    accountLabel: 'Synthetic A',
+    documentVersion: 'opaque-version',
+    subject: 'Synthetic subject',
+    recipients: [],
+    body: 'Synthetic body'
+  }
+  const service = {
+    async getSnapshot() {
+      queueMicrotask(() => {
+        mainFrame.url = 'https://mail.google.com/'
+      })
+      return result
+    },
+    async getStatus() {
+      return { status: 'none' }
+    },
+    async isResultTargetCurrent() {
+      return true
+    },
+    isResultCurrent() {
+      return true
+    }
+  }
+  const dependencies = {
+    rendererUrl: renderer,
+    window: () => owner,
+    views: () => null,
+    access: () => null,
+    notifications: () => null,
+    settings: () => null,
+    isQuitting: () => false,
+    requireAccountStore: () => ({}),
+    requireAccountRemoval: () => ({}),
+    requireGoogleRuntime: () => ({}),
+    recovery: {},
+    gmailCleanup: {},
+    unreadCounts: () => ({ unreadCounts: () => new Map() }),
+    locale: () => 'en',
+    activateView() {
+      return undefined
+    },
+    publishAccountState() {
+      return undefined
+    },
+    installAppMenu() {
+      return undefined
+    },
+    createWindow() {
+      return undefined
+    },
+    loginLaunch: {},
+    aiMailCodex: {},
+    composeTarget: () => service
+  }
+  registerMainIpc(dependencies)
+  const handler = handlers.get('hantong:ai-mail-compose-snapshot')
+  await assert.rejects(
+    handler({ sender: ownerContents, senderFrame: mainFrame }),
+    /Request rejected/
+  )
 })

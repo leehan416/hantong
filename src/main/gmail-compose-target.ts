@@ -51,8 +51,14 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         const subjects = Array.from(root.querySelectorAll('input[name="subjectbox"]'));
         if (editors.length !== 1 || (editor && editors[0] !== editor) || subjects.length > 1) continue;
         if (subjects.length === 1 && subjects[0] instanceof HTMLInputElement) return { root, editor: editors[0], subject: subjects[0] };
-        const replyMarker = root.querySelector('[aria-label*="Reply"], [data-tooltip*="Reply"], [aria-label*="답장"], [data-tooltip*="답장"]');
-        if (replyMarker) return { root, editor: editors[0], subject: null };
+        const replyMarker = root.querySelector('button[aria-label*="Reply"], [role="button"][aria-label*="Reply"], button[data-tooltip*="Reply"], [role="button"][data-tooltip*="Reply"], button[aria-label*="답장"], [role="button"][aria-label*="답장"], button[data-tooltip*="답장"], [role="button"][data-tooltip*="답장"]');
+        if (replyMarker) {
+          let editorBranch = editors[0];
+          while (editorBranch && editorBranch.parentElement !== root) editorBranch = editorBranch.parentElement;
+          let markerBranch = replyMarker;
+          while (markerBranch && markerBranch.parentElement !== root) markerBranch = markerBranch.parentElement;
+          if (editorBranch && editorBranch === markerBranch) return { root, editor: editors[0], subject: null };
+        }
       }
       return null;
     };
@@ -145,6 +151,8 @@ export function createGmailComposeTargetService(options: {
 }): {
   getStatus(): Promise<ComposeTargetStatus>
   getSnapshot(): Promise<ComposeSnapshotResult>
+  isResultTargetCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): Promise<boolean>
+  isResultCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): boolean
   onAccessState(state: AccountAccessState): void
   onAccountSwitch(): void
   dispose(): void
@@ -159,6 +167,18 @@ export function createGmailComposeTargetService(options: {
     ((event: Electron.Event, url: string, inPlace: boolean, mainFrame: boolean) => void) | null =
     null
   let destroyedListener: (() => void) | null = null
+  const resultLeases = new WeakMap<
+    object,
+    {
+      generation: number
+      accountId: string
+      composeId: string
+      targetId: string
+      contents: WebContents
+      lifecycleVersion: string
+      documentVersion: string
+    }
+  >()
 
   function clear(): void {
     generation += 1
@@ -335,16 +355,51 @@ export function createGmailComposeTargetService(options: {
       recipients: capturedResult.snapshot.recipients,
       subject: capturedResult.snapshot.subject
     }
-    if (!snapshot) return { status: 'ready', ...metadata }
-    return {
-      status: 'ready',
+    const lease = {
+      generation,
+      accountId: capturedContext.accountId,
+      composeId: metadata.composeId,
+      targetId: selectedDomId ?? '',
+      contents: capturedContext.contents,
+      lifecycleVersion: capturedContext.lifecycleVersion,
+      documentVersion: capturedContext.documentVersion
+    }
+    if (!snapshot) {
+      const status = { status: 'ready' as const, ...metadata }
+      resultLeases.set(status, lease)
+      return status
+    }
+    const snapshotResult = {
+      status: 'ready' as const,
       accountId: metadata.accountId,
       composeId: metadata.composeId,
+      accountLabel: metadata.accountLabel,
       documentVersion: capturedContext.documentVersion,
       recipients: metadata.recipients,
       subject: metadata.subject,
       body: capturedResult.snapshot.body
     }
+    resultLeases.set(snapshotResult, lease)
+    return snapshotResult
+  }
+
+  function isResultCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): boolean {
+    if (!value || typeof value !== 'object' || value.status !== 'ready') return true
+    const lease = resultLeases.get(value)
+    const latest = current()
+    return Boolean(
+      lease &&
+      !disposed &&
+      generation === lease.generation &&
+      context?.contents === lease.contents &&
+      context.documentVersion === lease.documentVersion &&
+      context.lifecycleVersion === lease.lifecycleVersion &&
+      selectedId === lease.composeId &&
+      selectedDomId === lease.targetId &&
+      latest?.accountId === lease.accountId &&
+      latest.contents === lease.contents &&
+      latest.lifecycleVersion === lease.lifecycleVersion
+    )
   }
 
   return {
@@ -354,6 +409,22 @@ export function createGmailComposeTargetService(options: {
     async getSnapshot() {
       return (await result(true)) as ComposeSnapshotResult
     },
+    async isResultTargetCurrent(value) {
+      if (!value || typeof value !== 'object' || value.status !== 'ready') return true
+      const lease = resultLeases.get(value)
+      if (!lease || !isResultCurrent(value)) return false
+      const latest = await capture()
+      return Boolean(
+        latest.status === 'ready' &&
+        selectedId === lease.composeId &&
+        selectedDomId === lease.targetId &&
+        latest.ctx?.accountId === lease.accountId &&
+        latest.ctx.contents === lease.contents &&
+        latest.ctx.lifecycleVersion === lease.lifecycleVersion &&
+        latest.ctx.documentVersion === lease.documentVersion
+      )
+    },
+    isResultCurrent,
     onAccessState(state) {
       if (state.status !== 'ready' || state.accountId !== context?.accountId) clear()
     },

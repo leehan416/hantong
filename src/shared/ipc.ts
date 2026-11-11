@@ -107,6 +107,7 @@ export type ComposeSnapshotResult =
       status: 'ready'
       accountId: string
       composeId: string
+      accountLabel: string
       documentVersion: string
       subject: string
       recipients: string[]
