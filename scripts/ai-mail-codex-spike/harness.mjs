@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node executes this protocol harness as JavaScript. */
 // Temporary Codex app-server feasibility harness. Never logs protocol payloads.
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'

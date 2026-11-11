@@ -1,3 +1,4 @@
+/* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node executes this classifier as JavaScript. */
 const TOOL_ITEM_TYPES = new Set([
   'commandExecution',
   'fileChange',
