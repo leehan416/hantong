@@ -33,6 +33,9 @@ import {
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
+  AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_TARGET_EVENT,
   NOTIFICATION_CONNECTIONS_CHANNEL,
   NOTIFICATION_CONNECTIONS_EVENT,
   NOTIFICATION_RECOVER_CHANNEL,
@@ -42,6 +45,7 @@ import {
   type UnreadCounts,
   type AccountAccessState,
   type NotificationConnectionStates,
+  type ComposeTargetStatus,
   type HantongApi
 } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
@@ -51,6 +55,14 @@ if (!process.contextIsolated) throw new Error('Context isolation is required')
 
 // Expose operations rather than a generic channel sender or Electron objects.
 const api: HantongApi = Object.freeze({
+  getAiMailComposeTargetStatus: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL),
+  getAiMailComposeSnapshot: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL),
+  onAiMailComposeTarget: (listener) => {
+    const handler = (_event: IpcRendererEvent, status: ComposeTargetStatus): void =>
+      listener(status)
+    ipcRenderer.on(AI_MAIL_COMPOSE_TARGET_EVENT, handler)
+    return () => ipcRenderer.removeListener(AI_MAIL_COMPOSE_TARGET_EVENT, handler)
+  },
   getAiMailCodexStatus: () => ipcRenderer.invoke(AI_MAIL_CODEX_STATUS_CHANNEL),
   connectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_CONNECT_CHANNEL),
   disconnectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_DISCONNECT_CHANNEL),

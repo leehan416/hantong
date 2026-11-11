@@ -80,6 +80,16 @@ export function isAllowedAiMailCodexRequest(request: AiMailCodexRequest): boolea
   )
 }
 
+export function isAllowedAiMailComposeTargetRequest(request: AppInfoRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    request.args.length === 0 &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)

@@ -44,7 +44,10 @@ import {
   AI_MAIL_CODEX_CONNECT_CHANNEL,
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
-  AI_MAIL_CODEX_CANCEL_CHANNEL
+  AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
+  AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_TARGET_EVENT
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
@@ -54,10 +57,12 @@ import {
   isAllowedSettingsRequest,
   isTrustedRendererUrl,
   isAllowedLoginLaunchRequest,
-  isAllowedAiMailCodexRequest
+  isAllowedAiMailCodexRequest,
+  isAllowedAiMailComposeTargetRequest
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
 import type { createAiMailCodexService } from './ai-mail-codex-service'
+import type { createGmailComposeTargetService } from './gmail-compose-target'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -80,9 +85,42 @@ export interface MainIpcDependencies {
   readonly createWindow: () => void
   readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
   readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
+  readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
 }
 
 export function registerMainIpc(dependencies: MainIpcDependencies): void {
+  for (const [channel, operation] of [
+    [AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL, 'status'],
+    [AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL, 'snapshot']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      if (
+        !isAllowedAiMailComposeTargetRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          args
+        })
+      )
+        throw new Error('Request rejected')
+      if (!owner) throw new Error('Request rejected')
+      const service = dependencies.composeTarget()
+      if (!service) return { status: 'access_locked' }
+      const result =
+        operation === 'status' ? await service.getStatus() : await service.getSnapshot()
+      if (!owner.isDestroyed())
+        owner.webContents.send(
+          AI_MAIL_COMPOSE_TARGET_EVENT,
+          operation === 'status' ? result : await service.getStatus()
+        )
+      return result
+    })
+  }
   const codexRoutes = [
     [AI_MAIL_CODEX_STATUS_CHANNEL, 'status'],
     [AI_MAIL_CODEX_CONNECT_CHANNEL, 'connect'],
@@ -396,6 +434,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     dependencies.requireAccountRemoval().assertIdle()
     if (!accountRequestAllowed(event, 'add', args)) throw new Error('Request rejected')
     const state = dependencies.requireAccountStore().add()
+    dependencies.composeTarget()?.onAccountSwitch()
     if (state.activeAccountId) dependencies.activateView(state.activeAccountId)
     return state
   })
@@ -405,6 +444,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     const id = args[0]
     if (typeof id !== 'string') throw new Error('Request rejected')
     const state = dependencies.requireAccountStore().activate(id)
+    dependencies.composeTarget()?.onAccountSwitch()
     if (state.activeAccountId) dependencies.activateView(state.activeAccountId)
     return state
   })
@@ -505,6 +545,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       },
       disposeView: (id) => viewManager.disposeAccount(id),
       activate: (id) => {
+        dependencies.composeTarget()?.onAccountSwitch()
         if (!ownerIsAlive()) return
         try {
           viewManager.activate(id)
@@ -516,6 +557,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       }
     })
     if (result.outcome === 'removed' && typeof accountId === 'string') {
+      dependencies.composeTarget()?.onAccountSwitch()
       viewManager.forgetLogoutLock(accountId)
       dependencies.access()?.forget(accountId)
       dependencies.recovery.clearPending(accountId)

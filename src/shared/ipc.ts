@@ -37,6 +37,9 @@ export const AI_MAIL_CODEX_CONNECT_CHANNEL = 'hantong:ai-mail-codex-connect'
 export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnect'
 export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
 export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
+export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-target-status'
+export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
+export const AI_MAIL_COMPOSE_TARGET_EVENT = 'hantong:ai-mail-compose-target-change'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
 export const NOTIFICATION_RECOVER_CHANNEL = 'hantong:notification-recover'
@@ -85,6 +88,31 @@ export type CodexConnectionStatus =
   | { state: 'unsupported'; reason: 'product_owned_executable_unavailable' }
   | { state: 'disconnected' | 'connecting' | 'connected' | 'error'; reason?: string }
 
+export type ComposeTargetStatus =
+  | { status: 'none' | 'stale' | 'access_locked' }
+  | { status: 'unsupported'; code: 'unsupported_compose' | 'unsupported_content' }
+  | {
+      status: 'ready'
+      accountId: string
+      composeId: string
+      accountLabel: string
+      recipients: string[]
+      subject: string
+    }
+
+export type ComposeSnapshotResult =
+  | { status: 'none' | 'stale' | 'access_locked' }
+  | { status: 'unsupported'; code: 'unsupported_compose' | 'unsupported_content' }
+  | {
+      status: 'ready'
+      accountId: string
+      composeId: string
+      documentVersion: string
+      subject: string
+      recipients: string[]
+      body: string
+    }
+
 /** Explicit plain-text fixture only; the caller must never pass Gmail content. */
 export interface CodexGenerationRequest {
   accountId: string
@@ -125,6 +153,9 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  getAiMailComposeTargetStatus: () => Promise<ComposeTargetStatus>
+  getAiMailComposeSnapshot: () => Promise<ComposeSnapshotResult>
+  onAiMailComposeTarget: (listener: (status: ComposeTargetStatus) => void) => () => void
   getAiMailCodexStatus: () => Promise<CodexConnectionStatus>
   connectAiMailCodex: () => Promise<CodexConnectionStatus>
   disconnectAiMailCodex: () => Promise<CodexConnectionStatus>
