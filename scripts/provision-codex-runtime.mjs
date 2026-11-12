@@ -26,8 +26,35 @@ const archiveUrl = `https://github.com/openai/codex/releases/download/rust-v${ve
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const destination = join(repoRoot, 'resources/codex-runtime/bin/codex')
 
-function sha256(bytes) {
+export function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
+}
+
+export function inspectArchiveListing(listing) {
+  const entries = listing.trim().split('\n')
+  if (
+    entries.length !== 1 ||
+    !entries[0].endsWith(' codex-aarch64-apple-darwin') ||
+    !entries[0].startsWith('-rwxr-xr-x')
+  )
+    throw new Error('Unexpected or unsafe Codex archive contents')
+}
+
+export function validateRedirect(currentUrl, location, redirects) {
+  if (redirects >= 5) throw new Error('Too many Codex download redirects')
+  const redirected = new URL(location, currentUrl)
+  if (
+    redirected.protocol !== 'https:' ||
+    redirected.username ||
+    redirected.password ||
+    ![
+      'github.com',
+      'release-assets.githubusercontent.com',
+      'objects.githubusercontent.com'
+    ].includes(redirected.hostname)
+  )
+    throw new Error('Unsafe Codex download redirect')
+  return redirected.href
 }
 
 function run(command, args) {
@@ -53,13 +80,9 @@ async function main() {
       for (let redirects = 0; redirects <= 5; redirects += 1) {
         downloaded = await fetch(url, { redirect: 'manual' })
         if (![301, 302, 303, 307, 308].includes(downloaded.status)) break
-        if (redirects === 5) throw new Error('Too many Codex download redirects')
         const location = downloaded.headers.get('location')
         if (!location) throw new Error('Codex download redirect missing location')
-        const redirected = new URL(location, url)
-        if (redirected.protocol !== 'https:' || redirected.username || redirected.password)
-          throw new Error('Unsafe Codex download redirect')
-        url = redirected.href
+        url = validateRedirect(url, location, redirects)
       }
       if (!downloaded?.ok) throw new Error(`Codex download failed with HTTP ${downloaded?.status}`)
       bytes = Buffer.from(await downloaded.arrayBuffer())
@@ -68,13 +91,7 @@ async function main() {
     await writeFile(archive, bytes, { mode: 0o600, flag: 'wx' })
 
     const listing = run('tar', ['-tzvf', archive])
-    const entries = listing.trim().split('\n')
-    if (
-      entries.length !== 1 ||
-      !entries[0].endsWith(' codex-aarch64-apple-darwin') ||
-      !entries[0].startsWith('-rwxr-xr-x')
-    )
-      throw new Error('Unexpected or unsafe Codex archive contents')
+    inspectArchiveListing(listing)
 
     const extracted = join(temp, 'codex-aarch64-apple-darwin')
     run('tar', ['-xzf', archive, '-C', temp, 'codex-aarch64-apple-darwin'])
@@ -113,7 +130,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : 'Codex provisioning failed')
-  process.exitCode = 1
-})
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : 'Codex provisioning failed')
+    process.exitCode = 1
+  })
+}
