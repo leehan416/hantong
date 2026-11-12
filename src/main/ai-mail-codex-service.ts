@@ -5,7 +5,6 @@ import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { createInterface, type Interface } from 'node:readline'
 import { CODEX_RUNTIME_PIN, type CodexRuntimePin } from './codex-runtime-pin'
 import type {
   CodexConnectionStatus,
@@ -22,6 +21,9 @@ const CODEX_RUNTIME_VERSION = '0.167.1'
 const CODEX_RUNTIME_TARGET = 'aarch64-apple-darwin'
 const APP_SERVER_TIMEOUT_MS = 15_000
 const LOGIN_TIMEOUT_MS = 5 * 60_000
+const MAX_PROTOCOL_LINE_BYTES = 256_000
+const MAX_GENERATION_OUTPUT_BYTES = 20_000
+const INTERRUPT_TIMEOUT_MS = 1_000
 // Request every known optional capability off at launch. `unified_exec` is
 // retained here because the spike tried that flag, but the CLI reported it
 // enabled as an execution backend; it is not evidence that model tools are
@@ -50,9 +52,11 @@ const APP_SERVER_DISABLE_FEATURES = [
   'skill_mcp_dependency_install',
   'request_permissions_tool'
 ] as const
-const APP_SERVER_TOOL_FEATURES = APP_SERVER_DISABLE_FEATURES.filter(
-  (name) => name !== 'unified_exec'
-)
+const APP_SERVER_TOOL_FEATURES = new Set<string>(APP_SERVER_DISABLE_FEATURES)
+const APP_SERVER_PROFILE_CONTROLLED_CAPABILITIES = new Set(['unified_exec'])
+// Observed in the pinned runtime inventory and explicitly enabled at launch;
+// this controls host skill discovery, not a model-callable tool capability.
+const APP_SERVER_KNOWN_NON_TOOL_FEATURES = new Set(['skip_host_skill_discovery'])
 
 type RpcResponse = {
   result?: unknown
@@ -65,7 +69,7 @@ type PendingRpc = {
 }
 type CodexProcess = {
   child: ChildProcess
-  lines: Interface
+  stdoutBuffer: Buffer
   pending: Map<string, PendingRpc>
   notifications: Array<{ method: string; params: Record<string, unknown> }>
   sequence: number
@@ -76,7 +80,7 @@ type CodexProcess = {
   readiness: boolean
   threads: Map<string, string>
   activeTurns: Map<string, ActiveGeneration>
-  stopPromise?: Promise<void>
+  stopPromise?: Promise<boolean>
 }
 type ActiveGeneration = {
   request: CodexGenerationRequest
@@ -85,6 +89,8 @@ type ActiveGeneration = {
   turnId?: string
   cancelled: boolean
   cancelRequested: boolean
+  interruptPromise?: Promise<boolean>
+  stopResult?: CodexGenerationResult
   output: string
   inputTokens: number | null
   outputTokens: number | null
@@ -346,6 +352,13 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
 
   function onProtocolLine(processState: CodexProcess, line: string): void {
     if (processState.closed) return
+    if (Buffer.byteLength(line, 'utf8') > MAX_PROTOCOL_LINE_BYTES) {
+      failPending(processState, 'invalid_protocol')
+      for (const entry of [...processState.activeTurns.values()])
+        finishGeneration(entry, { ok: false, error: 'failed', reason: 'invalid_protocol' })
+      void stopProcess(processState)
+      return
+    }
     let packet: Record<string, unknown>
     try {
       packet = JSON.parse(line) as Record<string, unknown>
@@ -403,12 +416,12 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       )
       if (owner && !owner.cancelled) {
         if (packet['method'] === 'item/agentMessage/delta' && typeof params['delta'] === 'string') {
-          owner.output += params['delta']
-          if (owner.output.length > 20_000) {
-            owner.cancelled = true
-            interruptGeneration(owner)
-            finishGeneration(owner, { ok: false, error: 'failed', reason: 'response_too_large' })
-          }
+          const delta = params['delta']
+          const remaining = MAX_GENERATION_OUTPUT_BYTES - Buffer.byteLength(owner.output, 'utf8')
+          if (Buffer.byteLength(delta, 'utf8') > remaining) {
+            owner.stopResult = { ok: false, error: 'failed', reason: 'response_too_large' }
+            void stopProcess(processState)
+          } else owner.output += delta
         } else if (packet['method'] === 'thread/tokenUsage/updated') {
           const tokenUsage = params['tokenUsage'] as
             { last?: { inputTokens?: unknown; outputTokens?: unknown } } | undefined
@@ -448,14 +461,22 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     return promise
   }
 
-  function stopProcess(processState: CodexProcess): Promise<void> {
+  function stopProcess(processState: CodexProcess): Promise<boolean> {
     if (processState.stopPromise) return processState.stopPromise
     const stopping = (async () => {
       processState.closed = true
       failPending(processState, 'app_server_closed')
       for (const entry of [...processState.activeTurns.values()])
-        finishGeneration(entry, { ok: false, error: 'failed', reason: 'app_server_closed' })
-      processState.lines.close()
+        if (entry.stopResult) continue
+        else
+          finishGeneration(
+            entry,
+            entry.stopResult ??
+              (entry.cancelled
+                ? { ok: false, error: 'cancelled', reason: 'cancelled' }
+                : { ok: false, error: 'failed', reason: 'app_server_closed' })
+          )
+      processState.stdoutBuffer = Buffer.alloc(0)
       processState.child.stdin?.end()
       if (processState.child.exitCode === null && processState.child.signalCode === null) {
         const exited = new Promise<void>((resolvePromise) =>
@@ -471,10 +492,25 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         ])
         clearTimeout(timeout)
         if (hardTimeout) clearTimeout(hardTimeout)
-        if (processState.child.exitCode === null && processState.child.signalCode === null)
+        if (processState.child.exitCode === null && processState.child.signalCode === null) {
           processState.child.kill('SIGKILL')
+          await Promise.race([
+            exited,
+            new Promise<void>((resolvePromise) => {
+              hardTimeout = setTimeout(resolvePromise, 500)
+            })
+          ])
+          if (hardTimeout) clearTimeout(hardTimeout)
+        }
       }
       if (runtime === processState) runtime = null
+      const confirmed =
+        processState.child.exitCode !== null || processState.child.signalCode !== null
+      for (const entry of [...processState.activeTurns.values()]) {
+        if (!entry.stopResult) continue
+        if (confirmed) finishGeneration(entry, entry.stopResult)
+      }
+      return confirmed
     })()
     processState.stopPromise = stopping
     return stopping
@@ -533,10 +569,9 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       env: restrictedEnv,
       stdio: ['pipe', 'pipe', 'ignore']
     })
-    const lines = createInterface({ input: child.stdout })
     const processState: CodexProcess = {
       child,
-      lines,
+      stdoutBuffer: Buffer.alloc(0),
       pending: new Map(),
       notifications: [],
       sequence: 1,
@@ -549,7 +584,40 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       activeTurns: new Map()
     }
     runtime = processState
-    lines.on('line', (line) => onProtocolLine(processState, line))
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      if (processState.closed) return
+      const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      if (incoming.length > MAX_PROTOCOL_LINE_BYTES) {
+        processState.stdoutBuffer = Buffer.alloc(0)
+        failPending(processState, 'invalid_protocol')
+        for (const entry of [...processState.activeTurns.values()])
+          finishGeneration(entry, { ok: false, error: 'failed', reason: 'invalid_protocol' })
+        void stopProcess(processState)
+        return
+      }
+      processState.stdoutBuffer = Buffer.concat([processState.stdoutBuffer, incoming])
+      let newline: number
+      while ((newline = processState.stdoutBuffer.indexOf(0x0a)) >= 0) {
+        const line = processState.stdoutBuffer.subarray(0, newline)
+        processState.stdoutBuffer = processState.stdoutBuffer.subarray(newline + 1)
+        if (line.length > MAX_PROTOCOL_LINE_BYTES) {
+          processState.stdoutBuffer = Buffer.alloc(0)
+          failPending(processState, 'invalid_protocol')
+          for (const entry of [...processState.activeTurns.values()])
+            finishGeneration(entry, { ok: false, error: 'failed', reason: 'invalid_protocol' })
+          void stopProcess(processState)
+          return
+        }
+        onProtocolLine(processState, line.toString('utf8'))
+      }
+      if (processState.stdoutBuffer.length > MAX_PROTOCOL_LINE_BYTES) {
+        processState.stdoutBuffer = Buffer.alloc(0)
+        failPending(processState, 'invalid_protocol')
+        for (const entry of [...processState.activeTurns.values()])
+          finishGeneration(entry, { ok: false, error: 'failed', reason: 'invalid_protocol' })
+        void stopProcess(processState)
+      }
+    })
     child.on('error', () => {
       failPending(processState, 'app_server_process_failed')
       for (const entry of [...processState.activeTurns.values()])
@@ -560,7 +628,13 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       if (login?.generation === processState.generation) cleanLogin()
       failPending(processState, 'app_server_process_exited')
       for (const entry of [...processState.activeTurns.values()])
-        finishGeneration(entry, { ok: false, error: 'failed', reason: 'app_server_process_exited' })
+        if (entry.stopResult) continue
+        else
+          finishGeneration(entry, {
+            ok: false,
+            error: 'failed',
+            reason: 'app_server_process_exited'
+          })
       processState.closed = true
       if (runtime === processState) {
         runtime = null
@@ -615,9 +689,29 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         features.push(...page.data)
         cursor = page.nextCursor ?? null
       } while (cursor)
-      const selected = features.filter((feature) =>
-        APP_SERVER_TOOL_FEATURES.includes(feature.name as (typeof APP_SERVER_TOOL_FEATURES)[number])
+      const featureNames = new Set(features.map((feature) => feature.name))
+      if ([...APP_SERVER_TOOL_FEATURES].some((name) => !featureNames.has(name))) return false
+      if (!featureNames.has('unified_exec')) return false
+      if (
+        features.some(
+          (feature) => typeof feature.name !== 'string' || typeof feature.enabled !== 'boolean'
+        )
       )
+        return false
+      const known = new Set(features.map((feature) => feature.name!))
+      if (known.size !== features.length) return false
+      if (
+        features.some(
+          (feature) =>
+            feature.enabled === true &&
+            !APP_SERVER_TOOL_FEATURES.has(feature.name!) &&
+            !APP_SERVER_PROFILE_CONTROLLED_CAPABILITIES.has(feature.name!) &&
+            !APP_SERVER_KNOWN_NON_TOOL_FEATURES.has(feature.name!)
+        )
+      )
+        return false
+      const selected = features.filter((feature) => APP_SERVER_TOOL_FEATURES.has(feature.name!))
+      const unifiedExec = features.find((feature) => feature.name === 'unified_exec')
       const mcp = (await rpc(processState, 'mcpServerStatus/list', {
         limit: 100,
         detail: 'toolsAndAuthOnly'
@@ -633,8 +727,13 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         limit: 200
       })) as { data?: Array<{ id?: string; allowed?: boolean }>; nextCursor?: string | null }
       const noConfiguredCapabilities =
-        selected.length === APP_SERVER_TOOL_FEATURES.length &&
-        selected.every((feature) => feature.enabled === false) &&
+        [...APP_SERVER_TOOL_FEATURES].every((name) =>
+          selected.some((feature) => feature.name === name)
+        ) &&
+        selected
+          .filter((feature) => !APP_SERVER_PROFILE_CONTROLLED_CAPABILITIES.has(feature.name!))
+          .every((feature) => feature.enabled === false) &&
+        unifiedExec?.enabled === true &&
         Array.isArray(mcp.data) &&
         mcp.data.length === 0 &&
         mcp.nextCursor == null &&
@@ -714,11 +813,45 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
 
   function interruptGeneration(entry: ActiveGeneration): void {
     entry.cancelRequested = true
-    if (entry.turnId)
-      void rpc(entry.process, 'turn/interrupt', {
-        threadId: entry.threadId,
-        turnId: entry.turnId
-      }).catch(() => undefined)
+    if (entry.interruptPromise) return
+    if (entry.turnId) {
+      entry.interruptPromise = (async () => {
+        let timeout: NodeJS.Timeout | undefined
+        try {
+          await Promise.race([
+            rpc(entry.process, 'turn/interrupt', {
+              threadId: entry.threadId,
+              turnId: entry.turnId
+            }),
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(
+                () => reject(new Error('interrupt_timeout')),
+                INTERRUPT_TIMEOUT_MS
+              )
+            })
+          ])
+          return true
+        } catch {
+          try {
+            return await stopProcess(entry.process)
+          } catch {
+            return false
+          }
+        } finally {
+          if (timeout) clearTimeout(timeout)
+        }
+      })()
+    }
+  }
+
+  async function cancelActiveGeneration(entry: ActiveGeneration): Promise<boolean> {
+    entry.cancelled = true
+    interruptGeneration(entry)
+    const stopped = await (entry.interruptPromise ?? Promise.resolve(false))
+    if (!stopped && activeByRequest.get(entry.request.requestId) === entry) return false
+    if (activeByRequest.get(entry.request.requestId) === entry)
+      finishGeneration(entry, { ok: false, error: 'cancelled', reason: 'cancelled' })
+    return stopped
   }
 
   function finishGeneration(entry: ActiveGeneration, result: CodexGenerationResult): void {
@@ -1101,10 +1234,8 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         preparation.cancelled = true
         return { cancelled: true }
       }
-      entry.cancelled = true
-      interruptGeneration(entry)
-      finishGeneration(entry, { ok: false, error: 'cancelled', reason: 'cancelled' })
-      return { cancelled: true }
+      const stopped = await cancelActiveGeneration(entry)
+      return stopped ? { cancelled: true } : { cancelled: false, reason: 'interrupt_unconfirmed' }
     },
     dispose: async (): Promise<void> => {
       disposed = true

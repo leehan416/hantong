@@ -642,13 +642,23 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
     'skill_mcp_dependency_install',
     'request_permissions_tool'
   ]
+  toolFeatures.push('unified_exec')
+  toolFeatures.push('skip_host_skill_discovery')
   let finishTurn
+  let nextDelta = '한국어 답변'
+  let interruptBehavior = 'ack'
   let nativeProbe = 0
   const { service, spawned } = await setup(t, ({ child, packet }) => {
     let result = {}
     if (packet.method === 'account/read') result = { account: { type: 'chatgpt' } }
     if (packet.method === 'experimentalFeature/list')
-      result = { data: toolFeatures.map((name) => ({ name, enabled: false })), nextCursor: null }
+      result = {
+        data: toolFeatures.map((name) => ({
+          name,
+          enabled: name === 'unified_exec' || name === 'skip_host_skill_discovery'
+        })),
+        nextCursor: null
+      }
     if (packet.method === 'mcpServerStatus/list') result = { data: [], nextCursor: null }
     if (packet.method === 'app/installed') result = { apps: [] }
     if (packet.method === 'config/read')
@@ -665,9 +675,12 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
     if (packet.method === 'turn/start') {
       result = { turn: { id: 'turn_safe' } }
       finishTurn = () => {
-        child.stdout.write(
-          `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 'thread_safe', turnId: 'turn_safe', itemId: 'item_safe', delta: 'Synthetic reply.' } })}\n`
+        const delta = Buffer.from(
+          `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 'thread_safe', turnId: 'turn_safe', itemId: 'item_safe', delta: nextDelta } })}\n`
         )
+        const split = delta.indexOf(Buffer.from('한')) + 1
+        child.stdout.write(delta.subarray(0, split))
+        child.stdout.write(delta.subarray(split))
         child.stdout.write(
           `${JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread_safe', turnId: 'turn_safe', tokenUsage: { last: { inputTokens: 12, outputTokens: 4 } } } })}\n`
         )
@@ -686,6 +699,14 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
         result = { exitCode: 0, stdout: `HANTONG_ALLOWED_${nonce}\n`, stderr: '' }
       } else result = { exitCode: 1, stdout: '', stderr: 'Operation not permitted' }
     }
+    if (packet.method === 'turn/interrupt') {
+      if (interruptBehavior === 'reject')
+        child.stdout.write(
+          `${JSON.stringify({ id: packet.id, error: { message: 'interrupt rejected' } })}\n`
+        )
+      else if (interruptBehavior === 'ack')
+        child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
+    }
     if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
   })
   await service.connect()
@@ -699,17 +720,137 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
   finishTurn()
   assert.deepEqual(plain(await generation), {
     ok: true,
-    text: 'Synthetic reply.',
+    text: '한국어 답변',
     usage: { inputTokens: 12, outputTokens: 4 }
   })
   const pending = service.generate({ ...request, requestId: 'request_cancel', generation: 2 })
   await new Promise((resolve) => setTimeout(resolve, 20))
+  interruptBehavior = 'reject'
   assert.deepEqual(plain(await service.cancel('request_cancel')), { cancelled: true })
   assert.deepEqual(plain(await pending), { ok: false, error: 'cancelled', reason: 'cancelled' })
+  // A late completion from the stopped owned process cannot change the result.
   finishTurn()
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(
     spawned[0].writes.some((packet) => packet.method === 'turn/interrupt'),
+    true
+  )
+  assert.equal(spawned[0].child.exitCode !== null || spawned[0].child.signalCode !== null, true)
+  await service.dispose()
+})
+
+test('oversized delta is rejected before output concatenation', async (t) => {
+  const toolFeatures = [
+    'shell_tool',
+    'unified_exec_tty',
+    'computer_use',
+    'browser_use',
+    'browser_use_external',
+    'in_app_browser',
+    'image_generation',
+    'view_image',
+    'apps',
+    'plugins',
+    'skill_search',
+    'multi_agent',
+    'multi_agent_v2',
+    'code_mode',
+    'standalone_web_search',
+    'web_search_request',
+    'web_search_cached',
+    'shell_snapshot',
+    'shell_snapshot_v2',
+    'skill_mcp_dependency_install',
+    'request_permissions_tool',
+    'unified_exec'
+  ]
+  let sendDelta
+  let probes = 0
+  const { service, spawned } = await setup(t, ({ child, packet }) => {
+    let result = {}
+    if (packet.method === 'account/read') result = { account: { type: 'chatgpt' } }
+    if (packet.method === 'experimentalFeature/list')
+      result = {
+        data: toolFeatures.map((name) => ({ name, enabled: name === 'unified_exec' })),
+        nextCursor: null
+      }
+    if (packet.method === 'mcpServerStatus/list') result = { data: [], nextCursor: null }
+    if (packet.method === 'app/installed') result = { apps: [] }
+    if (packet.method === 'config/read')
+      result = { config: { project_doc_max_bytes: 0, default_permissions: 'hantong-no-local-io' } }
+    if (packet.method === 'permissionProfile/list')
+      result = { data: [{ id: 'hantong-no-local-io', allowed: true }], nextCursor: null }
+    if (packet.method === 'thread/start')
+      result = {
+        thread: { id: 'thread_delta' },
+        sandbox: { type: 'readOnly', networkAccess: false },
+        approvalPolicy: 'never'
+      }
+    if (packet.method === 'command/exec') {
+      probes += 1
+      result =
+        probes === 1
+          ? { exitCode: 0, stdout: 'HANTONG_READONLY_CONTROL\n' }
+          : probes === 2
+            ? {
+                exitCode: 0,
+                stdout: `HANTONG_ALLOWED_${packet.params.command[1].match(/\.hantong-policy-([a-f0-9]+)\.txt$/)?.[1]}\n`
+              }
+            : { exitCode: 1, stdout: '' }
+    }
+    if (packet.method === 'turn/start') {
+      result = { turn: { id: 'turn_delta' } }
+      sendDelta = () =>
+        child.stdout.write(
+          `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 'thread_delta', turnId: 'turn_delta', delta: 'x'.repeat(20_001) } })}\n`
+        )
+    }
+    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+  })
+  await service.connect()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  const generation = service.generate(request)
+  for (let attempt = 0; attempt < 50 && !sendDelta; attempt += 1)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(typeof sendDelta, 'function')
+  sendDelta()
+  assert.deepEqual(plain(await generation), {
+    ok: false,
+    error: 'failed',
+    reason: 'response_too_large'
+  })
+  assert.equal(spawned[0].child.exitCode !== null || spawned[0].child.signalCode !== null, true)
+  await service.dispose()
+})
+
+test('readiness rejects unknown enabled capabilities', async (t) => {
+  const { service } = await setup(t, ({ child, packet }) => {
+    const result =
+      packet.method === 'account/read'
+        ? { account: { type: 'chatgpt' } }
+        : packet.method === 'experimentalFeature/list'
+          ? { data: [{ name: 'future_shell_backend', enabled: true }], nextCursor: null }
+          : {}
+    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+  })
+  assert.deepEqual(plain(await service.connect()), { state: 'connected' })
+  assert.deepEqual(plain(await service.generate(request)), {
+    ok: false,
+    error: 'unsupported',
+    reason: 'tool_restrictions_unverified'
+  })
+  await service.dispose()
+})
+
+test('an oversized single protocol chunk fails closed before parsing', async (t) => {
+  const { service, spawned } = await setup(t, ({ child, packet }) => {
+    if (packet.method === 'initialize') child.stdout.write('x'.repeat(300_000))
+  })
+  await service.connect()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(
+    spawned[0].child.killSignals.includes('SIGTERM') ||
+      spawned[0].child.killSignals.includes('SIGKILL'),
     true
   )
   await service.dispose()
