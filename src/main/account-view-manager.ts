@@ -1,4 +1,4 @@
-import type { BrowserWindow, WebContentsView } from 'electron'
+import type { BrowserWindow, WebContents, WebContentsView } from 'electron'
 import type { AccountState } from '../shared/accounts'
 import type { AccountRemovalOutcome } from '../shared/ipc'
 import type { AccountSelectorPosition } from '../shared/settings'
@@ -83,6 +83,11 @@ export function createAccountViewManager(
     signal?: AbortSignal
   ) => Promise<{ accountExists: boolean; emailAddress: string | null }>
   getDocumentState: (id: string) => GmailDocumentState
+  getComposeProbeView: (id: string) => {
+    contents: WebContents
+    navigationRevision: number
+    accessRevision: number
+  } | null
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   clearLogoutLock: (id: string, recoveryPending?: boolean) => boolean
   forgetLogoutLock: (id: string) => boolean
@@ -90,6 +95,7 @@ export function createAccountViewManager(
   setCovered: (covered: boolean) => Promise<AccountViewSnapshot | null>
   setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
   setStatusStripVisible: (visible: boolean) => void
+  setAiMailPanelOpen: (open: boolean) => void
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -124,6 +130,7 @@ export function createAccountViewManager(
   let layoutPosition: AccountSelectorPosition = 'top'
   let sidebarCollapsed = false
   let statusStripVisible = true
+  let aiMailPanelOpen = false
   let disposed = false
 
   function alive(): boolean {
@@ -167,7 +174,8 @@ export function createAccountViewManager(
         ...window.getContentBounds(),
         position: layoutPosition,
         sidebarCollapsed,
-        statusStripVisible
+        statusStripVisible,
+        aiMailPanelOpen
       })
     )
   }
@@ -623,6 +631,12 @@ export function createAccountViewManager(
       const entry = activeAccountId ? views.get(activeAccountId) : undefined
       if (entry?.attached) setBounds(entry.handle.view)
     },
+    setAiMailPanelOpen(open) {
+      if (aiMailPanelOpen === open) return
+      aiMailPanelOpen = open
+      const entry = activeAccountId ? views.get(activeAccountId) : undefined
+      if (entry?.attached) setBounds(entry.handle.view)
+    },
     disposeAccount,
     async readWebIdentity(id, signal) {
       const accountExists = (): boolean =>
@@ -650,6 +664,31 @@ export function createAccountViewManager(
               loaded: entry.loaded && !entry.loading && !entry.blocked && !entry.disposePromise
             }
           : {})
+      }
+    },
+    getComposeProbeView(id) {
+      const entry = views.get(id)
+      const contents = entry?.handle.view.webContents
+      const document = entry ? lifecycle.documentKind(entry.committedUrl) : 'unknown'
+      if (
+        !entry ||
+        !contents ||
+        id !== activeAccountId ||
+        !entry.mailAccessGranted ||
+        entry.logoutLocked ||
+        entry.loading ||
+        !entry.loaded ||
+        entry.blocked ||
+        entry.disposePromise ||
+        document !== 'mail' ||
+        !isAllowedGmailIdentityUrl(entry.committedUrl) ||
+        contents.isDestroyed()
+      )
+        return null
+      return {
+        contents,
+        navigationRevision: entry.navigationRevision,
+        accessRevision: entry.accessRevision
       }
     },
     setMailAccess(id, allowed, expectedRevision) {

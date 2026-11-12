@@ -18,7 +18,6 @@ publish:
   releaseType: draft
 asarUnpack:
   - resources/**
-# License and notice files ship in Contents/Resources; electron-builder omits Electron's own on macOS.
 extraResources:
   - from: LICENSE.md
     to: LICENSE.md
@@ -28,6 +27,11 @@ extraResources:
     to: LICENSE.electron.txt
   - from: node_modules/electron/dist/LICENSES.chromium.html
     to: LICENSES.chromium.html
+  - from: resources/codex-runtime/LICENSE
+    to: codex-runtime/LICENSE
+  - from: resources/codex-runtime
+    to: codex-runtime
+# License and notice files ship in Contents/Resources; electron-builder omits Electron's own on macOS.
 mac:
   category: public.app-category.productivity
   # Apple Silicon only: the only architecture the project can verify.

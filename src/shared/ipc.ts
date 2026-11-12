@@ -20,6 +20,7 @@ export const SETTINGS_UPDATE_CHANNEL = 'hantong:settings-update'
 export const SETTINGS_EVENT = 'hantong:settings-change'
 export const SETTINGS_PANEL_CHANNEL = 'hantong:settings-panel'
 export const ACCOUNT_STATUS_STRIP_CHANNEL = 'hantong:account-status-strip'
+export const AI_MAIL_PANEL_LAYOUT_CHANNEL = 'hantong:ai-mail-panel-layout'
 export const SETTINGS_OPEN_EVENT = 'hantong:settings-open'
 export const LOGIN_LAUNCH_GET_CHANNEL = 'hantong:login-launch-get'
 export const LOGIN_LAUNCH_SET_CHANNEL = 'hantong:login-launch-set'
@@ -32,6 +33,17 @@ export const GOOGLE_CONNECTION_STATUS_CHANNEL = 'hantong:google-connection-statu
 export const GOOGLE_CONNECTION_CONNECT_CHANNEL = 'hantong:google-connection-connect'
 export const GOOGLE_CONNECTION_CANCEL_CHANNEL = 'hantong:google-connection-cancel'
 export const GOOGLE_CONNECTION_DISCONNECT_CHANNEL = 'hantong:google-connection-disconnect'
+export const AI_MAIL_CODEX_STATUS_CHANNEL = 'hantong:ai-mail-codex-status'
+export const AI_MAIL_CODEX_CONNECT_CHANNEL = 'hantong:ai-mail-codex-connect'
+export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnect'
+export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
+export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
+export const AI_MAIL_CODEX_STATUS_EVENT = 'hantong:ai-mail-codex-status-change'
+export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-target-status'
+export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
+export const AI_MAIL_COMPOSE_APPLY_CHANNEL = 'hantong:ai-mail-compose-apply'
+export const AI_MAIL_COMPOSE_UNDO_CHANNEL = 'hantong:ai-mail-compose-undo'
+export const AI_MAIL_COMPOSE_TARGET_EVENT = 'hantong:ai-mail-compose-target-change'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
 export const NOTIFICATION_RECOVER_CHANNEL = 'hantong:notification-recover'
@@ -43,6 +55,7 @@ export const ACCOUNT_CHROME_HEIGHT = 72
 export const ACCOUNT_STATUS_STRIP_HEIGHT = 32
 export const ACCOUNT_SIDEBAR_WIDTH = 248
 export const ACCOUNT_SIDEBAR_COLLAPSED_WIDTH = 56
+export const AI_MAIL_PANEL_WIDTH = 360
 
 export type AccountViewStatus = {
   accountId: string
@@ -76,6 +89,80 @@ export type GoogleConnectionStatus = {
   status: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
 }
 
+export type CodexConnectionStatus =
+  | { state: 'unsupported'; reason: 'product_owned_executable_unavailable' }
+  | { state: 'disconnected' | 'connecting' | 'connected' | 'error'; reason?: string }
+
+export type ComposeTargetStatus =
+  | { status: 'none' | 'stale' | 'access_locked' }
+  | { status: 'unsupported'; code: 'unsupported_compose' | 'unsupported_content' }
+  | {
+      status: 'ready'
+      accountId: string
+      composeId: string
+      accountLabel: string
+      recipients: string[]
+      subject: string
+    }
+
+export type ComposeSnapshotResult =
+  | { status: 'none' | 'stale' | 'access_locked' }
+  | { status: 'unsupported'; code: 'unsupported_compose' | 'unsupported_content' }
+  | {
+      status: 'ready'
+      accountId: string
+      composeId: string
+      accountLabel: string
+      documentVersion: string
+      snapshotId: string
+      subject: string
+      recipients: string[]
+      body: string
+    }
+
+export interface AiMailComposeApplyRequest {
+  accountId: string
+  composeId: string
+  documentVersion: string
+  snapshotId: string
+  replacement: string
+  /** Send only after the user explicitly approves the `currentBody` returned by a conflict. */
+  confirmedCurrentVersion?: string
+}
+
+export interface AiMailComposeUndoRequest {
+  accountId: string
+  composeId: string
+  documentVersion: string
+  applyId: string
+  /** Send only after the user explicitly approves the `currentBody` returned by a conflict. */
+  confirmedCurrentVersion?: string
+}
+
+export type AiMailComposeMutationResult =
+  | { status: 'applied'; applyId: string }
+  | { status: 'undone' }
+  | { status: 'conflict'; currentVersion: string; currentBody: string }
+  | { status: 'unsupported' | 'stale_target' | 'busy' | 'failed' }
+
+/** Explicit plain-text fixture only; the caller must never pass Gmail content. */
+export interface CodexGenerationRequest {
+  accountId: string
+  composeId: string
+  requestId: string
+  generation: number
+  prompt: string
+  followUp?: string
+}
+
+export type CodexGenerationResult =
+  | { ok: true; text: string; usage: { inputTokens: number | null; outputTokens: number | null } }
+  | {
+      ok: false
+      error: 'unsupported' | 'unauthenticated' | 'rate_limited' | 'cancelled' | 'failed'
+      reason: string
+    }
+
 export type AccountAccessState = {
   accountId: string
   status: 'sign_in' | 'checking' | 'required' | 'ready' | 'error'
@@ -98,6 +185,17 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  getAiMailComposeTargetStatus: () => Promise<ComposeTargetStatus>
+  getAiMailComposeSnapshot: () => Promise<ComposeSnapshotResult>
+  applyAiMailDraft: (request: AiMailComposeApplyRequest) => Promise<AiMailComposeMutationResult>
+  undoAiMailDraft: (request: AiMailComposeUndoRequest) => Promise<AiMailComposeMutationResult>
+  onAiMailComposeTarget: (listener: (status: ComposeTargetStatus) => void) => () => void
+  getAiMailCodexStatus: () => Promise<CodexConnectionStatus>
+  connectAiMailCodex: () => Promise<CodexConnectionStatus>
+  disconnectAiMailCodex: () => Promise<CodexConnectionStatus>
+  generateAiMailDraft: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
+  cancelAiMailGeneration: (requestId: string) => Promise<{ cancelled: boolean; reason?: string }>
+  onAiMailCodexStatus: (listener: (status: CodexConnectionStatus) => void) => () => void
   getLoginLaunchState: () => Promise<LoginLaunchState>
   setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>
@@ -119,6 +217,7 @@ export interface HantongApi {
   onSettings: (listener: (settings: AppSettings) => void) => () => void
   setSettingsPanelOpen: (open: boolean) => Promise<AccountViewSnapshot | null>
   setStatusStripVisible: (visible: boolean) => Promise<void>
+  setAiMailPanelOpen: (open: boolean) => Promise<void>
   onOpenSettings: (listener: () => void) => () => void
   getGoogleConnectionStatus: (accountId: string) => Promise<GoogleConnectionStatus>
   connectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>

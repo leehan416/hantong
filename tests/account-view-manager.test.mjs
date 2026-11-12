@@ -90,6 +90,36 @@ test('inactive load completion is cached and the view stays below the fixed chro
   await fixtureData.manager.dispose()
 })
 
+test('AI mail panel changes only the attached Gmail view bounds and restores them on close', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, 0), true)
+  fixtureData.manager.setAiMailPanelOpen(true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 72,
+    width: 540,
+    height: 628
+  })
+  fixtureData.manager.setAiMailPanelOpen(false)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 72,
+    width: 900,
+    height: 628
+  })
+  fixtureData.manager.setLayout('left', false)
+  fixtureData.manager.setAiMailPanelOpen(true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 56,
+    y: 32,
+    width: 484,
+    height: 668
+  })
+  await fixtureData.manager.dispose()
+})
+
 test('mail view stays detached until Main grants access and sign-in remains visible', async () => {
   const fixtureData = fixture()
   await fixtureData.manager.activate(firstId)
@@ -145,6 +175,46 @@ test('mail view stays detached until Main grants access and sign-in remains visi
   assert.equal(fixtureData.detached.length, 2)
   assert.equal(fixtureData.manager.setMailAccess(firstId, false), true)
   assert.equal(fixtureData.detached.length, 2)
+  await fixtureData.manager.dispose()
+})
+
+test('compose probe view binding is Main-only, active and access-gated', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.getComposeProbeView(firstId), null)
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, 0), true)
+  const firstBinding = fixtureData.manager.getComposeProbeView(firstId)
+  assert.equal(firstBinding.contents, fixtureData.created[0].view.webContents)
+  assert.equal(firstBinding.accessRevision, fixtureData.manager.getDocumentState(firstId).revision)
+  assert.equal(firstBinding.navigationRevision, 0)
+
+  await fixtureData.manager.activate(secondId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.getComposeProbeView(firstId), null)
+  assert.equal(fixtureData.manager.getComposeProbeView(secondId), null)
+  assert.equal(fixtureData.manager.setMailAccess(secondId, true, 0), true)
+  assert.notEqual(fixtureData.manager.getComposeProbeView(secondId), null)
+
+  await fixtureData.manager.disposeAccount(secondId)
+  assert.equal(fixtureData.manager.getComposeProbeView(secondId), null)
+  await fixtureData.manager.dispose()
+})
+
+test('compose probe binding is revoked on Gmail document navigation', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, 0), true)
+  assert.notEqual(fixtureData.manager.getComposeProbeView(firstId), null)
+  const contents = fixtureData.created[0].view.webContents
+  contents.url = 'https://mail.google.com/mail/u/0/?compose=1'
+  contents.emit('did-start-navigation', {
+    isMainFrame: true,
+    isSameDocument: false,
+    url: contents.url
+  })
+  assert.equal(fixtureData.manager.getComposeProbeView(firstId), null)
   await fixtureData.manager.dispose()
 })
 

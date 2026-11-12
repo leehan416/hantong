@@ -3,6 +3,16 @@
 Hantong ships the following third-party software. Electron and Chromium notices are
 shipped alongside the app as `LICENSE.electron.txt` and `LICENSES.chromium.html`.
 
+## OpenAI Codex CLI 0.167.1 (Apache-2.0)
+
+The Apple Silicon runtime is provisioned from the official OpenAI release at
+<https://github.com/openai/codex/releases/tag/rust-v0.167.1>. The release's
+Apache License 2.0 is included at `resources/codex-runtime/LICENSE` and shipped
+inside the application. The runtime binary is downloaded and verified during
+`npm run provision:codex-runtime`; archive and executable SHA-256 pins are
+recorded in `scripts/provision-codex-runtime.mjs` and
+`src/main/codex-runtime-pin.ts`.
+
 ## @electron-toolkit/preload@3.0.2 (MIT)
 
 Source: `node_modules/@electron-toolkit/preload/LICENSE`

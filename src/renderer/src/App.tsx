@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { getAccountViewBounds } from '../../shared/account-layout'
+import {
+  getAccountViewBounds,
+  getAiMailPanelWidth,
+  isAccountSidebarCollapsedForPanel
+} from '../../shared/account-layout'
 import {
   ACCOUNT_CHROME_HEIGHT,
   ACCOUNT_SIDEBAR_COLLAPSED_WIDTH,
@@ -13,6 +17,7 @@ import { GeneralSettings } from './GeneralSettings'
 import { AccountSettings } from './AccountSettings'
 import { AppearanceSettings } from './AppearanceSettings'
 import { AccountAccessGate } from './AccountAccessGate'
+import { AiMailPanel } from './AiMailPanel'
 import { NotificationStatusStrip, type StatusAction } from './NotificationStatusStrip'
 import { useAppAccounts } from './use-app-accounts'
 import { useAppConnections } from './use-app-connections'
@@ -76,6 +81,11 @@ function App(): React.JSX.Element {
     setSettingsSection
   } = settingsState
   const [statusStripLayoutVisible, setStatusStripLayoutVisible] = useState(true)
+  const [aiMailPanelOpen, setAiMailPanelOpen] = useState(false)
+  const [aiMailPanelCaptureSession, setAiMailPanelCaptureSession] = useState(0)
+  const [aiMailPanelLayoutFailed, setAiMailPanelLayoutFailed] = useState(false)
+  const [aiMailPanelLayoutBusy, setAiMailPanelLayoutBusy] = useState(false)
+  const aiMailToggleRef = useRef<HTMLButtonElement>(null)
   const statusStripLayoutRevision = useRef(0)
   const locale =
     settings && settings.language !== 'system'
@@ -89,6 +99,11 @@ function App(): React.JSX.Element {
   }
   const position = settings?.accountSelectorPosition ?? 'top'
   const sidebarCollapsed = settings?.sidebarCollapsed ?? false
+  const effectiveSidebarCollapsed = isAccountSidebarCollapsedForPanel(
+    position,
+    sidebarCollapsed,
+    aiMailPanelOpen
+  )
   const activeIndex =
     accounts?.accounts.findIndex((account) => account.id === activeAccountId) ?? -1
   const currentStatus = viewStatus?.accountId === activeAccountId ? viewStatus.status : null
@@ -98,6 +113,22 @@ function App(): React.JSX.Element {
   const gateVisible = Boolean(
     activeAccountId && access?.status !== 'sign_in' && access?.status !== 'ready'
   )
+
+  async function changeAiMailPanel(open: boolean): Promise<void> {
+    if (aiMailPanelLayoutBusy || open === aiMailPanelOpen) return
+    setAiMailPanelLayoutBusy(true)
+    setAiMailPanelLayoutFailed(false)
+    try {
+      await window.api.setAiMailPanelOpen(open)
+      setAiMailPanelOpen(open)
+      if (!open) setAiMailPanelCaptureSession((session) => session + 1)
+      if (!open) aiMailToggleRef.current?.focus()
+    } catch {
+      setAiMailPanelLayoutFailed(true)
+    } finally {
+      setAiMailPanelLayoutBusy(false)
+    }
+  }
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -109,16 +140,20 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     document.documentElement.dataset.accountPosition = position
-    document.documentElement.dataset.sidebarCollapsed = String(sidebarCollapsed)
+    document.documentElement.dataset.sidebarCollapsed = String(effectiveSidebarCollapsed)
     document.documentElement.style.setProperty(
       '--account-sidebar-width',
-      `${sidebarCollapsed ? ACCOUNT_SIDEBAR_COLLAPSED_WIDTH : ACCOUNT_SIDEBAR_WIDTH}px`
+      `${effectiveSidebarCollapsed ? ACCOUNT_SIDEBAR_COLLAPSED_WIDTH : ACCOUNT_SIDEBAR_WIDTH}px`
+    )
+    document.documentElement.style.setProperty(
+      '--ai-mail-panel-width',
+      `${getAiMailPanelWidth(window.innerWidth, position, sidebarCollapsed, aiMailPanelOpen)}px`
     )
     document.documentElement.style.setProperty(
       '--account-chrome-height',
       `${ACCOUNT_CHROME_HEIGHT}px`
     )
-  }, [position, sidebarCollapsed])
+  }, [position, sidebarCollapsed, effectiveSidebarCollapsed, aiMailPanelOpen])
 
   // The strip only appears for something the user can act on; loading progress stays silent.
   const selectedNotificationState =
@@ -179,7 +214,8 @@ function App(): React.JSX.Element {
           height: window.innerHeight,
           position,
           sidebarCollapsed,
-          statusStripVisible: statusStripLayoutVisible
+          statusStripVisible: statusStripLayoutVisible,
+          aiMailPanelOpen
         })
       : null
 
@@ -200,6 +236,17 @@ function App(): React.JSX.Element {
     )
   }, [showStatusStrip, statusStripLayoutVisible])
 
+  useEffect(() => {
+    function updatePanelWidth(): void {
+      document.documentElement.style.setProperty(
+        '--ai-mail-panel-width',
+        `${getAiMailPanelWidth(window.innerWidth, position, sidebarCollapsed, aiMailPanelOpen)}px`
+      )
+    }
+    window.addEventListener('resize', updatePanelWidth)
+    return () => window.removeEventListener('resize', updatePanelWidth)
+  }, [position, sidebarCollapsed, aiMailPanelOpen])
+
   useLayoutEffect(() => {
     document.documentElement.dataset.statusStripVisible = String(statusStripLayoutVisible)
   }, [statusStripLayoutVisible])
@@ -216,7 +263,7 @@ function App(): React.JSX.Element {
                   activeAccountId={activeAccountId}
                   unreadCounts={unreadCounts}
                   locale={locale}
-                  collapsed={sidebarCollapsed}
+                  collapsed={effectiveSidebarCollapsed}
                   disabled={accountActionsBusy}
                   addDisabled={accountActionsBusy || accounts === null}
                   onActivate={(id) => void activateAccount(id)}
@@ -225,6 +272,19 @@ function App(): React.JSX.Element {
                 />
               </div>
               <div className="sidebar-footer">
+                <button
+                  ref={aiMailToggleRef}
+                  className="ai-mail-toggle ai-mail-toggle-sidebar"
+                  type="button"
+                  disabled={aiMailPanelLayoutBusy}
+                  aria-label={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
+                  title={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
+                  aria-pressed={aiMailPanelOpen}
+                  onClick={() => void changeAiMailPanel(!aiMailPanelOpen)}
+                >
+                  <span aria-hidden="true">✦</span>
+                  <span>AI</span>
+                </button>
                 <IconActionButton
                   action={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'}
                   className="sidebar-action"
@@ -269,6 +329,19 @@ function App(): React.JSX.Element {
                 aria-pressed={settingsOpen}
                 onClick={() => void openSettings()}
               />
+              <button
+                ref={aiMailToggleRef}
+                className="ai-mail-toggle"
+                type="button"
+                disabled={aiMailPanelLayoutBusy}
+                aria-label={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
+                title={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
+                aria-pressed={aiMailPanelOpen}
+                onClick={() => void changeAiMailPanel(!aiMailPanelOpen)}
+              >
+                <span aria-hidden="true">✦</span>
+                <span>AI</span>
+              </button>
             </>
           )}
         </header>
@@ -286,6 +359,19 @@ function App(): React.JSX.Element {
           />
         )}
       </div>
+      {aiMailPanelLayoutFailed && (
+        <p className="ai-mail-layout-error" role="alert">
+          {text.operationError}
+        </p>
+      )}
+      <AiMailPanel
+        activeAccountId={activeAccountId}
+        layoutMode={position}
+        open={aiMailPanelOpen}
+        captureSession={aiMailPanelCaptureSession}
+        text={text.aiMail}
+        onClose={() => void changeAiMailPanel(false)}
+      />
       {settingsBackground && snapshotBounds && (
         <img
           className="settings-background-snapshot"

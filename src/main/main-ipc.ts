@@ -22,6 +22,7 @@ import {
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATUS_STRIP_CHANNEL,
+  AI_MAIL_PANEL_LAYOUT_CHANNEL,
   UNREAD_COUNTS_CHANNEL,
   SETTINGS_GET_CHANNEL,
   SETTINGS_UPDATE_CHANNEL,
@@ -39,7 +40,17 @@ import {
   NOTIFICATION_RETRY_CHANNEL,
   ACCOUNT_ACCESS_STATE_CHANNEL,
   LOGIN_LAUNCH_GET_CHANNEL,
-  LOGIN_LAUNCH_SET_CHANNEL
+  LOGIN_LAUNCH_SET_CHANNEL,
+  AI_MAIL_CODEX_STATUS_CHANNEL,
+  AI_MAIL_CODEX_CONNECT_CHANNEL,
+  AI_MAIL_CODEX_DISCONNECT_CHANNEL,
+  AI_MAIL_CODEX_GENERATE_CHANNEL,
+  AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
+  AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_APPLY_CHANNEL,
+  AI_MAIL_COMPOSE_UNDO_CHANNEL,
+  AI_MAIL_COMPOSE_TARGET_EVENT
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
@@ -48,9 +59,14 @@ import {
   isAllowedNotificationRequest,
   isAllowedSettingsRequest,
   isTrustedRendererUrl,
-  isAllowedLoginLaunchRequest
+  isAllowedLoginLaunchRequest,
+  isAllowedAiMailCodexRequest,
+  isAllowedAiMailComposeTargetRequest,
+  isAllowedAiMailComposeMutationRequest
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
+import type { createAiMailCodexService } from './ai-mail-codex-service'
+import type { createGmailComposeTargetService } from './gmail-compose-target'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -72,9 +88,142 @@ export interface MainIpcDependencies {
   readonly installAppMenu: () => void
   readonly createWindow: () => void
   readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
+  readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
+  readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
 }
 
 export function registerMainIpc(dependencies: MainIpcDependencies): void {
+  for (const [channel, operation] of [
+    [AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL, 'status'],
+    [AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL, 'snapshot']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      if (
+        !isAllowedAiMailComposeTargetRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          args
+        })
+      )
+        throw new Error('Request rejected')
+      if (!owner) throw new Error('Request rejected')
+      const service = dependencies.composeTarget()
+      if (!service) return { status: 'access_locked' }
+      const result =
+        operation === 'status' ? await service.getStatus() : await service.getSnapshot()
+      const targetStillCurrent = await service.isResultTargetCurrent(result)
+      const currentOwner = dependencies.window()
+      const requestStillTrusted =
+        currentOwner === owner &&
+        !owner.isDestroyed() &&
+        isAllowedAiMailComposeTargetRequest({
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          args
+        })
+      if (!requestStillTrusted) throw new Error('Request rejected')
+      if (!targetStillCurrent || !service.isResultCurrent(result)) return { status: 'stale' }
+      const targetStatus =
+        operation === 'status' || result.status !== 'ready'
+          ? result
+          : {
+              status: 'ready' as const,
+              accountId: result.accountId,
+              composeId: result.composeId,
+              accountLabel: result.accountLabel,
+              recipients: result.recipients,
+              subject: result.subject
+            }
+      owner.webContents.send(AI_MAIL_COMPOSE_TARGET_EVENT, targetStatus)
+      return result
+    })
+  }
+  for (const [channel, operation] of [
+    [AI_MAIL_COMPOSE_APPLY_CHANNEL, 'apply'],
+    [AI_MAIL_COMPOSE_UNDO_CHANNEL, 'undo']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      const request = {
+        ownerAlive,
+        senderMatches: ownerAlive && event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        operation,
+        args
+      }
+      if (!isAllowedAiMailComposeMutationRequest(request)) throw new Error('Request rejected')
+      if (!owner) throw new Error('Request rejected')
+      const service = dependencies.composeTarget()
+      if (!service) return { status: 'stale_target' }
+      const result =
+        operation === 'apply'
+          ? await service.applyDraft(args[0] as import('../shared/ipc').AiMailComposeApplyRequest)
+          : await service.undoDraft(args[0] as import('../shared/ipc').AiMailComposeUndoRequest)
+      const currentOwner = dependencies.window()
+      if (
+        currentOwner !== owner ||
+        owner.isDestroyed() ||
+        !isAllowedAiMailComposeMutationRequest({
+          ...request,
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? ''
+        })
+      )
+        throw new Error('Request rejected')
+      return result
+    })
+  }
+  const codexRoutes = [
+    [AI_MAIL_CODEX_STATUS_CHANNEL, 'status'],
+    [AI_MAIL_CODEX_CONNECT_CHANNEL, 'connect'],
+    [AI_MAIL_CODEX_DISCONNECT_CHANNEL, 'disconnect'],
+    [AI_MAIL_CODEX_GENERATE_CHANNEL, 'generate'],
+    [AI_MAIL_CODEX_CANCEL_CHANNEL, 'cancel']
+  ] as const
+  for (const [channel, operation] of codexRoutes) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      if (
+        !isAllowedAiMailCodexRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          operation,
+          args
+        })
+      )
+        throw new Error('Request rejected')
+      if (operation === 'status') return dependencies.aiMailCodex.getStatus()
+      if (operation === 'connect') return dependencies.aiMailCodex.connect()
+      if (operation === 'disconnect') return dependencies.aiMailCodex.disconnect()
+      if (operation === 'generate')
+        return dependencies.aiMailCodex.generate(
+          args[0] as import('../shared/ipc').CodexGenerationRequest
+        )
+      return dependencies.aiMailCodex.cancel(args[0] as string)
+    })
+  }
   for (const [channel, operation] of [
     [LOGIN_LAUNCH_GET_CHANNEL, 'get'],
     [LOGIN_LAUNCH_SET_CHANNEL, 'set']
@@ -292,7 +441,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
 
   function settingsRequestAllowed(
     event: Electron.IpcMainInvokeEvent,
-    operation: 'get' | 'update' | 'panel' | 'status-strip',
+    operation: 'get' | 'update' | 'panel' | 'status-strip' | 'ai-mail-panel',
     args: unknown[]
   ): boolean {
     const owner = dependencies.window()
@@ -339,6 +488,10 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     if (!settingsRequestAllowed(event, 'status-strip', args)) throw new Error('Request rejected')
     dependencies.views()?.setStatusStripVisible(args[0] === true)
   })
+  ipcMain.handle(AI_MAIL_PANEL_LAYOUT_CHANNEL, (event, ...args: unknown[]) => {
+    if (!settingsRequestAllowed(event, 'ai-mail-panel', args)) throw new Error('Request rejected')
+    dependencies.views()?.setAiMailPanelOpen(args[0] === true)
+  })
   ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
     if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')
     return Object.fromEntries(dependencies.unreadCounts().unreadCounts())
@@ -354,6 +507,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     dependencies.requireAccountRemoval().assertIdle()
     if (!accountRequestAllowed(event, 'add', args)) throw new Error('Request rejected')
     const state = dependencies.requireAccountStore().add()
+    dependencies.composeTarget()?.onAccountSwitch()
     if (state.activeAccountId) dependencies.activateView(state.activeAccountId)
     return state
   })
@@ -363,6 +517,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     const id = args[0]
     if (typeof id !== 'string') throw new Error('Request rejected')
     const state = dependencies.requireAccountStore().activate(id)
+    dependencies.composeTarget()?.onAccountSwitch()
     if (state.activeAccountId) dependencies.activateView(state.activeAccountId)
     return state
   })
@@ -463,6 +618,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       },
       disposeView: (id) => viewManager.disposeAccount(id),
       activate: (id) => {
+        dependencies.composeTarget()?.onAccountSwitch()
         if (!ownerIsAlive()) return
         try {
           viewManager.activate(id)
@@ -474,6 +630,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       }
     })
     if (result.outcome === 'removed' && typeof accountId === 'string') {
+      dependencies.composeTarget()?.onAccountSwitch()
       viewManager.forgetLogoutLock(accountId)
       dependencies.access()?.forget(accountId)
       dependencies.recovery.clearPending(accountId)
