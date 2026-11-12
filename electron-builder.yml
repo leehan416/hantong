@@ -49,6 +49,9 @@ mac:
   identity: 'Hantong Self Sign'
   hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
+  # Preserve the pinned upstream Codex executable and its trusted signature.
+  # electron-builder v26 passes signIgnore to @electron/osx-sign as a path regex.
+  signIgnore: 'Contents/Resources/codex-runtime/bin/codex$'
   notarize: false
   artifactName: ${name}-${version}-${arch}.${ext}
   generateUpdatesFilesForAllChannels: true
