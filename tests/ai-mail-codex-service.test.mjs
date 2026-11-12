@@ -647,6 +647,8 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
   let finishTurn
   let nextDelta = '한국어 답변'
   let interruptBehavior = 'ack'
+  let deferTurnStart = false
+  let deferredTurnStartId
   let nativeProbe = 0
   const { service, spawned } = await setup(t, ({ child, packet }) => {
     let result = {}
@@ -674,6 +676,10 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
       }
     if (packet.method === 'turn/start') {
       result = { turn: { id: 'turn_safe' } }
+      if (deferTurnStart) {
+        deferTurnStart = false
+        deferredTurnStartId = packet.id
+      }
       finishTurn = () => {
         const delta = Buffer.from(
           `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 'thread_safe', turnId: 'turn_safe', itemId: 'item_safe', delta: nextDelta } })}\n`
@@ -707,7 +713,12 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
       else if (interruptBehavior === 'ack')
         child.stdout.write(`${JSON.stringify({ id: packet.id, result: {} })}\n`)
     }
-    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+    if (
+      packet.id &&
+      packet.id !== deferredTurnStartId &&
+      !(packet.method === 'turn/interrupt' && interruptBehavior !== 'ack')
+    )
+      child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
   })
   await service.connect()
   await new Promise((resolve) => setTimeout(resolve, 20))
@@ -723,10 +734,27 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
     text: '한국어 답변',
     usage: { inputTokens: 12, outputTokens: 4 }
   })
+  deferTurnStart = true
   const pending = service.generate({ ...request, requestId: 'request_cancel', generation: 2 })
+  for (let attempt = 0; attempt < 50 && deferredTurnStartId === undefined; attempt += 1)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.notEqual(deferredTurnStartId, undefined)
+  let cancellationSettled = false
+  const cancellation = service.cancel('request_cancel').then((result) => {
+    cancellationSettled = true
+    return result
+  })
   await new Promise((resolve) => setTimeout(resolve, 20))
-  interruptBehavior = 'reject'
-  assert.deepEqual(plain(await service.cancel('request_cancel')), { cancelled: true })
+  assert.equal(cancellationSettled, false)
+  assert.equal(
+    spawned[0].writes.some((packet) => packet.method === 'turn/interrupt'),
+    false
+  )
+  interruptBehavior = 'hang'
+  spawned[0].child.stdout.write(
+    `${JSON.stringify({ id: deferredTurnStartId, result: { turn: { id: 'turn_safe' } } })}\n`
+  )
+  assert.deepEqual(plain(await cancellation), { cancelled: true })
   assert.deepEqual(plain(await pending), { ok: false, error: 'cancelled', reason: 'cancelled' })
   // A late completion from the stopped owned process cannot change the result.
   finishTurn()

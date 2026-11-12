@@ -89,6 +89,8 @@ type ActiveGeneration = {
   turnId?: string
   cancelled: boolean
   cancelRequested: boolean
+  turnStartReady: Promise<string | undefined>
+  resolveTurnStart: (turnId?: string) => void
   interruptPromise?: Promise<boolean>
   stopResult?: CodexGenerationResult
   output: string
@@ -814,34 +816,33 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
   function interruptGeneration(entry: ActiveGeneration): void {
     entry.cancelRequested = true
     if (entry.interruptPromise) return
-    if (entry.turnId) {
-      entry.interruptPromise = (async () => {
-        let timeout: NodeJS.Timeout | undefined
+    entry.interruptPromise = (async () => {
+      let timeout: NodeJS.Timeout | undefined
+      try {
+        const timedOut = new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('interrupt_timeout')), INTERRUPT_TIMEOUT_MS)
+        })
+        const turnId = entry.turnId ?? (await Promise.race([entry.turnStartReady, timedOut]))
+        if (!turnId) throw new Error('turn_start_unconfirmed')
+        entry.turnId = turnId
+        await Promise.race([
+          rpc(entry.process, 'turn/interrupt', {
+            threadId: entry.threadId,
+            turnId
+          }),
+          timedOut
+        ])
+        return true
+      } catch {
         try {
-          await Promise.race([
-            rpc(entry.process, 'turn/interrupt', {
-              threadId: entry.threadId,
-              turnId: entry.turnId
-            }),
-            new Promise<never>((_, reject) => {
-              timeout = setTimeout(
-                () => reject(new Error('interrupt_timeout')),
-                INTERRUPT_TIMEOUT_MS
-              )
-            })
-          ])
-          return true
+          return await stopProcess(entry.process)
         } catch {
-          try {
-            return await stopProcess(entry.process)
-          } catch {
-            return false
-          }
-        } finally {
-          if (timeout) clearTimeout(timeout)
+          return false
         }
-      })()
-    }
+      } finally {
+        if (timeout) clearTimeout(timeout)
+      }
+    })()
   }
 
   async function cancelActiveGeneration(entry: ActiveGeneration): Promise<boolean> {
@@ -984,12 +985,18 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
         ? `${request.prompt}\n\n${request.followUp}`
         : request.prompt
       const resultPromise = new Promise<CodexGenerationResult>((resolvePromise) => {
+        let resolveTurnStart!: (turnId?: string) => void
+        const turnStartReady = new Promise<string | undefined>((resolve) => {
+          resolveTurnStart = resolve
+        })
         const entry: ActiveGeneration = {
           request,
           process: processState,
           threadId: threadId!,
           cancelled: false,
           cancelRequested: false,
+          turnStartReady,
+          resolveTurnStart,
           output: '',
           inputTokens: null,
           outputTokens: null,
@@ -1019,6 +1026,7 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
           .then((response) => {
             const turnId = (response as { turn?: { id?: string } }).turn?.id
             if (typeof turnId !== 'string') {
+              entry.resolveTurnStart(undefined)
               if (activeByRequest.get(request.requestId) !== entry || entry.cancelled) return
               finishGeneration(entry, {
                 ok: false,
@@ -1028,6 +1036,7 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
               return
             }
             entry.turnId = turnId
+            entry.resolveTurnStart(turnId)
             if (
               entry.cancelRequested ||
               entry.cancelled ||
@@ -1036,6 +1045,8 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
               interruptGeneration(entry)
           })
           .catch((error: unknown) => {
+            entry.resolveTurnStart(undefined)
+            if (entry.cancelled) return
             finishGeneration(entry, {
               ok: false,
               error: 'failed',
