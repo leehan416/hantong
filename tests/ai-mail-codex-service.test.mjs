@@ -750,12 +750,20 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
     spawned[0].writes.some((packet) => packet.method === 'turn/interrupt'),
     false
   )
+  spawned[0].child.deferExitOnKill = true
   interruptBehavior = 'hang'
   spawned[0].child.stdout.write(
     `${JSON.stringify({ id: deferredTurnStartId, result: { turn: { id: 'turn_safe' } } })}\n`
   )
-  assert.deepEqual(plain(await cancellation), { cancelled: true })
-  assert.deepEqual(plain(await pending), { ok: false, error: 'cancelled', reason: 'cancelled' })
+  assert.deepEqual(plain(await cancellation), {
+    cancelled: false,
+    reason: 'interrupt_unconfirmed'
+  })
+  assert.deepEqual(plain(await pending), {
+    ok: false,
+    error: 'failed',
+    reason: 'process_stop_unconfirmed'
+  })
   // A late completion from the stopped owned process cannot change the result.
   finishTurn()
   await new Promise((resolve) => setTimeout(resolve, 10))
@@ -763,7 +771,25 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
     spawned[0].writes.some((packet) => packet.method === 'turn/interrupt'),
     true
   )
-  assert.equal(spawned[0].child.exitCode !== null || spawned[0].child.signalCode !== null, true)
+  assert.equal(spawned[0].child.exitCode, null)
+  assert.equal(spawned[0].child.signalCode, null)
+  assert.deepEqual(plain(service.getStatus()), {
+    state: 'error',
+    reason: 'process_stop_unconfirmed'
+  })
+  const turnStartsBeforeReuse = spawned[0].writes.filter(
+    (packet) => packet.method === 'turn/start'
+  ).length
+  assert.deepEqual(
+    plain(
+      await service.generate({ ...request, requestId: 'after_unconfirmed_stop', generation: 3 })
+    ),
+    { ok: false, error: 'unauthenticated', reason: 'chatgpt_account_not_connected' }
+  )
+  assert.equal(
+    spawned[0].writes.filter((packet) => packet.method === 'turn/start').length,
+    turnStartsBeforeReuse
+  )
   await service.dispose()
 })
 

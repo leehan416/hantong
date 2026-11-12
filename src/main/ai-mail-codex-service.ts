@@ -469,15 +469,8 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
       processState.closed = true
       failPending(processState, 'app_server_closed')
       for (const entry of [...processState.activeTurns.values()])
-        if (entry.stopResult) continue
-        else
-          finishGeneration(
-            entry,
-            entry.stopResult ??
-              (entry.cancelled
-                ? { ok: false, error: 'cancelled', reason: 'cancelled' }
-                : { ok: false, error: 'failed', reason: 'app_server_closed' })
-          )
+        if (entry.stopResult || entry.cancelled) continue
+        else finishGeneration(entry, { ok: false, error: 'failed', reason: 'app_server_closed' })
       processState.stdoutBuffer = Buffer.alloc(0)
       processState.child.stdin?.end()
       if (processState.child.exitCode === null && processState.child.signalCode === null) {
@@ -505,12 +498,19 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
           if (hardTimeout) clearTimeout(hardTimeout)
         }
       }
-      if (runtime === processState) runtime = null
       const confirmed =
         processState.child.exitCode !== null || processState.child.signalCode !== null
+      if (runtime === processState && confirmed) runtime = null
+      if (!confirmed && runtime === processState)
+        setStatus({ state: 'error', reason: 'process_stop_unconfirmed' })
       for (const entry of [...processState.activeTurns.values()]) {
-        if (!entry.stopResult) continue
-        if (confirmed) finishGeneration(entry, entry.stopResult)
+        const result = confirmed
+          ? (entry.stopResult ??
+            (entry.cancelled
+              ? { ok: false as const, error: 'cancelled' as const, reason: 'cancelled' }
+              : { ok: false as const, error: 'failed' as const, reason: 'app_server_closed' }))
+          : { ok: false as const, error: 'failed' as const, reason: 'process_stop_unconfirmed' }
+        finishGeneration(entry, result)
       }
       return confirmed
     })()
