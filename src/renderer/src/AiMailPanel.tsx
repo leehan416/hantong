@@ -6,7 +6,10 @@ import type {
 } from '../../shared/ipc'
 import type { AppMessages } from './app-messages'
 import {
+  type AiMailTargetCapture,
   applyAiMailProposal,
+  captureAiMailTargetSnapshot,
+  createAiMailTargetEpoch,
   requestAiMailProposal,
   undoAiMailProposal
 } from './ai-mail-panel-flow'
@@ -83,7 +86,7 @@ export function AiMailPanel({
   const [codexStatus, setCodexStatus] = useState<CodexConnectionStatus | null>(null)
   const [codexBusy, setCodexBusy] = useState(false)
   const [statusFailed, setStatusFailed] = useState(false)
-  const [snapshotBusy, setSnapshotBusy] = useState(false)
+  const [snapshotCapture, setSnapshotCapture] = useState<AiMailTargetCapture | null>(null)
   const [capturedSnapshot, setCapturedSnapshot] = useState<ReadySnapshot | null>(null)
   const [snapshotStatus, setSnapshotStatus] = useState('')
   const [thread, setThread] = useState<Thread>({ key: '', items: [] })
@@ -94,6 +97,7 @@ export function AiMailPanel({
   const [copySuccessId, setCopySuccessId] = useState<string | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const currentTargetKey = useRef('')
+  const captureEpoch = useRef(createAiMailTargetEpoch())
   const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
   const codexActionRevision = useRef(0)
   const conversation = useRef<{ key: string; requestId: string } | null>(null)
@@ -108,6 +112,7 @@ export function AiMailPanel({
   const key = targetKey(target)
   const messages = thread.key === key ? thread.items : []
   const targetReady = Boolean(target)
+  const snapshotBusy = Boolean(open && snapshotCapture)
   const generationAvailable = GENERATION_ENABLED && codexStatus?.state === 'connected'
 
   const acceptTargetStatus = useCallback(
@@ -117,6 +122,8 @@ export function AiMailPanel({
         status.status === 'ready' && status.accountId === activeAccountId
           ? `${status.accountId}:${status.composeId}`
           : ''
+      captureEpoch.current.setTarget(nextKey)
+      if (currentTargetKey.current !== nextKey) setSnapshotCapture(null)
       if (currentTargetKey.current !== nextKey) setInstruction('')
       if (currentTargetKey.current !== nextKey) {
         conversation.current = null
@@ -138,6 +145,7 @@ export function AiMailPanel({
   )
 
   useEffect(() => {
+    const captureEpochForEffect = captureEpoch.current
     currentTargetKey.current = ''
     let current = true
     const unsubscribeTarget = window.api.onAiMailComposeTarget((status) => {
@@ -163,6 +171,7 @@ export function AiMailPanel({
     )
     return () => {
       current = false
+      captureEpochForEffect.invalidate()
       unsubscribeTarget()
       unsubscribeCodex()
     }
@@ -170,6 +179,7 @@ export function AiMailPanel({
 
   useEffect(() => {
     if (open) closeButtonRef.current?.focus()
+    else captureEpoch.current.invalidate()
   }, [open])
 
   const updateMessage = useCallback(
@@ -186,10 +196,21 @@ export function AiMailPanel({
 
   async function captureDraft(): Promise<void> {
     if (!target || snapshotBusy) return
-    setSnapshotBusy(true)
+    const targetKeyAtStart = targetKey(target)
+    const capture = captureEpoch.current.capture(targetKeyAtStart)
+    setSnapshotCapture(capture)
     setSnapshotStatus(text.loadingSnapshot)
-    try {
-      const result = await window.api.getAiMailComposeSnapshot()
+    const outcome = await captureAiMailTargetSnapshot(captureEpoch.current, capture, () =>
+      window.api.getAiMailComposeSnapshot()
+    )
+    if (outcome.status === 'stale') {
+      setSnapshotCapture((current) => (current === capture ? null : current))
+      return
+    }
+    if (outcome.status === 'error') {
+      setSnapshotStatus(text.staleTarget)
+    } else {
+      const result = outcome.result
       if (result.status !== 'ready') {
         setCapturedSnapshot(null)
         setSnapshotStatus(
@@ -208,11 +229,8 @@ export function AiMailPanel({
         setCapturedSnapshot(result)
         setSnapshotStatus(text.captured)
       }
-    } catch {
-      setSnapshotStatus(text.staleTarget)
-    } finally {
-      setSnapshotBusy(false)
     }
+    setSnapshotCapture((current) => (current === capture ? null : current))
   }
 
   async function connectCodex(): Promise<void> {

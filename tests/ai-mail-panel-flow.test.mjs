@@ -2,9 +2,78 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const { requestAiMailProposal, applyAiMailProposal, undoAiMailProposal } = loadTypeScript(
-  new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url)
-)
+const {
+  requestAiMailProposal,
+  applyAiMailProposal,
+  undoAiMailProposal,
+  createAiMailTargetEpoch,
+  captureAiMailTargetSnapshot
+} = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
+
+test('a snapshot started for A is invalid after switching A to B and back to A', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  const capture = epoch.capture('account-a:compose-1')
+  let resolveSnapshot
+  const pendingSnapshot = captureAiMailTargetSnapshot(
+    epoch,
+    capture,
+    () =>
+      new Promise((resolve) => {
+        resolveSnapshot = resolve
+      })
+  )
+
+  epoch.setTarget('account-b:compose-2')
+  epoch.setTarget('account-a:compose-1')
+  resolveSnapshot(snapshot)
+  assert.deepEqual(JSON.parse(JSON.stringify(await pendingSnapshot)), { status: 'stale' })
+})
+
+test('a current target capture returns its snapshot', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  const capture = epoch.capture('account-a:compose-1')
+
+  const outcome = await captureAiMailTargetSnapshot(epoch, capture, async () => snapshot)
+
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'ready', result: snapshot })
+})
+
+test('a snapshot error after switching targets is discarded as stale', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  const capture = epoch.capture('account-a:compose-1')
+  let rejectSnapshot
+  const pendingSnapshot = captureAiMailTargetSnapshot(
+    epoch,
+    capture,
+    () =>
+      new Promise((resolve, reject) => {
+        void resolve
+        rejectSnapshot = reject
+      })
+  )
+
+  epoch.setTarget('account-b:compose-2')
+  rejectSnapshot(new Error('synthetic snapshot failure'))
+  assert.deepEqual(JSON.parse(JSON.stringify(await pendingSnapshot)), { status: 'stale' })
+})
+
+test('a token invalidated by closing cannot start a snapshot call', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  const capture = epoch.capture('account-a:compose-1')
+  epoch.invalidate()
+  let snapshotCalls = 0
+  const outcome = await captureAiMailTargetSnapshot(epoch, capture, async () => {
+    snapshotCalls += 1
+    return snapshot
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
+  assert.equal(snapshotCalls, 0)
+})
 
 const target = {
   status: 'ready',

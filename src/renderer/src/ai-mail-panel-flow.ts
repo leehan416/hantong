@@ -13,6 +13,50 @@ type AiMailPanelApi = Pick<
   'getAiMailComposeSnapshot' | 'generateAiMailDraft' | 'applyAiMailDraft' | 'undoAiMailDraft'
 >
 
+export type AiMailTargetCapture = { key: string; epoch: number }
+
+export type AiMailTargetEpoch = {
+  setTarget: (nextTargetKey: string) => void
+  invalidate: () => void
+  capture: (key: string) => AiMailTargetCapture
+  isCurrent: (capture: AiMailTargetCapture) => boolean
+}
+
+export function createAiMailTargetEpoch(): AiMailTargetEpoch {
+  let targetKey = ''
+  let epoch = 0
+  return {
+    setTarget(nextTargetKey: string): void {
+      if (targetKey === nextTargetKey) return
+      targetKey = nextTargetKey
+      epoch += 1
+    },
+    invalidate(): void {
+      epoch += 1
+    },
+    capture(key: string): AiMailTargetCapture {
+      return { key, epoch }
+    },
+    isCurrent(capture: AiMailTargetCapture): boolean {
+      return capture.key === targetKey && capture.epoch === epoch
+    }
+  }
+}
+
+export async function captureAiMailTargetSnapshot<T>(
+  epoch: AiMailTargetEpoch,
+  capture: AiMailTargetCapture,
+  getSnapshot: () => Promise<T>
+): Promise<{ status: 'ready'; result: T } | { status: 'stale' } | { status: 'error' }> {
+  if (!epoch.isCurrent(capture)) return { status: 'stale' }
+  try {
+    const result = await getSnapshot()
+    return epoch.isCurrent(capture) ? { status: 'ready', result } : { status: 'stale' }
+  } catch {
+    return epoch.isCurrent(capture) ? { status: 'error' } : { status: 'stale' }
+  }
+}
+
 export type AiMailProposalOutcome =
   | { status: 'ready'; snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>; text: string }
   | { status: 'unavailable'; result: Exclude<ComposeSnapshotResult, { status: 'ready' }> }
