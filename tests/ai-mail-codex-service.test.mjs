@@ -560,7 +560,10 @@ test('ChatGPT login is opened through the system browser and tool restrictions m
     if (packet.method === 'experimentalFeature/list') result = { data: [], nextCursor: null }
     if (packet.method === 'mcpServerStatus/list') result = { data: [], nextCursor: null }
     if (packet.method === 'app/installed') result = { apps: [] }
-    if (packet.method === 'config/read') result = { config: { project_doc_max_bytes: 0 } }
+    if (packet.method === 'config/read')
+      result = { config: { project_doc_max_bytes: 0, default_permissions: 'hantong-no-local-io' } }
+    if (packet.method === 'permissionProfile/list')
+      result = { data: [{ id: 'hantong-no-local-io', allowed: true }], nextCursor: null }
     if (packet.method === 'thread/start')
       result = {
         thread: { id: 'thread_1' },
@@ -592,7 +595,8 @@ test('ChatGPT session connects while generation fails closed without a verified 
     if (packet.method === 'experimentalFeature/list') result = { data: [], nextCursor: null }
     if (packet.method === 'mcpServerStatus/list') result = { data: [], nextCursor: null }
     if (packet.method === 'app/installed') result = { apps: [] }
-    if (packet.method === 'config/read') result = { config: { project_doc_max_bytes: 0 } }
+    if (packet.method === 'config/read')
+      result = { config: { project_doc_max_bytes: 0, default_permissions: 'hantong-no-local-io' } }
     if (packet.method === 'thread/start')
       result = {
         thread: { id: 'thread_1' },
@@ -610,6 +614,103 @@ test('ChatGPT session connects while generation fails closed without a verified 
   assert.equal(
     spawned[0].writes.some((packet) => packet.method === 'turn/start'),
     false
+  )
+  await service.dispose()
+})
+
+test('verified synthetic policy permits bounded app-server turns and fences cancellation', async (t) => {
+  const toolFeatures = [
+    'shell_tool',
+    'unified_exec_tty',
+    'computer_use',
+    'browser_use',
+    'browser_use_external',
+    'in_app_browser',
+    'image_generation',
+    'view_image',
+    'apps',
+    'plugins',
+    'skill_search',
+    'multi_agent',
+    'multi_agent_v2',
+    'code_mode',
+    'standalone_web_search',
+    'web_search_request',
+    'web_search_cached',
+    'shell_snapshot',
+    'shell_snapshot_v2',
+    'skill_mcp_dependency_install',
+    'request_permissions_tool'
+  ]
+  let finishTurn
+  let nativeProbe = 0
+  const { service, spawned } = await setup(t, ({ child, packet }) => {
+    let result = {}
+    if (packet.method === 'account/read') result = { account: { type: 'chatgpt' } }
+    if (packet.method === 'experimentalFeature/list')
+      result = { data: toolFeatures.map((name) => ({ name, enabled: false })), nextCursor: null }
+    if (packet.method === 'mcpServerStatus/list') result = { data: [], nextCursor: null }
+    if (packet.method === 'app/installed') result = { apps: [] }
+    if (packet.method === 'config/read')
+      result = { config: { project_doc_max_bytes: 0, default_permissions: 'hantong-no-local-io' } }
+    if (packet.method === 'permissionProfile/list')
+      result = { data: [{ id: 'hantong-no-local-io', allowed: true }], nextCursor: null }
+    if (packet.method === 'thread/start')
+      result = {
+        thread: { id: 'thread_safe' },
+        sandbox: { type: 'readOnly', networkAccess: false },
+        approvalPolicy: 'never',
+        activePermissionProfile: 'hantong-no-local-io'
+      }
+    if (packet.method === 'turn/start') {
+      result = { turn: { id: 'turn_safe' } }
+      finishTurn = () => {
+        child.stdout.write(
+          `${JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 'thread_safe', turnId: 'turn_safe', itemId: 'item_safe', delta: 'Synthetic reply.' } })}\n`
+        )
+        child.stdout.write(
+          `${JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread_safe', turnId: 'turn_safe', tokenUsage: { last: { inputTokens: 12, outputTokens: 4 } } } })}\n`
+        )
+        child.stdout.write(
+          `${JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread_safe', turn: { id: 'turn_safe', status: 'completed', items: [] } } })}\n`
+        )
+      }
+    }
+    if (packet.method === 'command/exec') {
+      const command = packet.params.command
+      nativeProbe += 1
+      if (nativeProbe === 1)
+        result = { exitCode: 0, stdout: 'HANTONG_READONLY_CONTROL\n', stderr: '' }
+      else if (nativeProbe === 2) {
+        const nonce = command[1].match(/\.hantong-policy-([a-f0-9]+)\.txt$/)?.[1]
+        result = { exitCode: 0, stdout: `HANTONG_ALLOWED_${nonce}\n`, stderr: '' }
+      } else result = { exitCode: 1, stdout: '', stderr: 'Operation not permitted' }
+    }
+    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+  })
+  await service.connect()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const generation = service.generate(request)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(
+    spawned[0].writes.some((packet) => packet.method === 'turn/start'),
+    true
+  )
+  finishTurn()
+  assert.deepEqual(plain(await generation), {
+    ok: true,
+    text: 'Synthetic reply.',
+    usage: { inputTokens: 12, outputTokens: 4 }
+  })
+  const pending = service.generate({ ...request, requestId: 'request_cancel', generation: 2 })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(plain(await service.cancel('request_cancel')), { cancelled: true })
+  assert.deepEqual(plain(await pending), { ok: false, error: 'cancelled', reason: 'cancelled' })
+  finishTurn()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(
+    spawned[0].writes.some((packet) => packet.method === 'turn/interrupt'),
+    true
   )
   await service.dispose()
 })
