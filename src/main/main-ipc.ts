@@ -22,6 +22,7 @@ import {
   ACCOUNT_REMOVE_CHANNEL,
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATUS_STRIP_CHANNEL,
+  AI_MAIL_PANEL_LAYOUT_CHANNEL,
   UNREAD_COUNTS_CHANNEL,
   SETTINGS_GET_CHANNEL,
   SETTINGS_UPDATE_CHANNEL,
@@ -440,7 +441,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
 
   function settingsRequestAllowed(
     event: Electron.IpcMainInvokeEvent,
-    operation: 'get' | 'update' | 'panel' | 'status-strip',
+    operation: 'get' | 'update' | 'panel' | 'status-strip' | 'ai-mail-panel',
     args: unknown[]
   ): boolean {
     const owner = dependencies.window()
@@ -486,6 +487,10 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
   ipcMain.handle(ACCOUNT_STATUS_STRIP_CHANNEL, (event, ...args: unknown[]) => {
     if (!settingsRequestAllowed(event, 'status-strip', args)) throw new Error('Request rejected')
     dependencies.views()?.setStatusStripVisible(args[0] === true)
+  })
+  ipcMain.handle(AI_MAIL_PANEL_LAYOUT_CHANNEL, (event, ...args: unknown[]) => {
+    if (!settingsRequestAllowed(event, 'ai-mail-panel', args)) throw new Error('Request rejected')
+    dependencies.views()?.setAiMailPanelOpen(args[0] === true)
   })
   ipcMain.handle(UNREAD_COUNTS_CHANNEL, (event, ...args: unknown[]) => {
     if (!accountRequestAllowed(event, 'get', args)) throw new Error('Request rejected')

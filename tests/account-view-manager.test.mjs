@@ -90,6 +90,36 @@ test('inactive load completion is cached and the view stays below the fixed chro
   await fixtureData.manager.dispose()
 })
 
+test('AI mail panel changes only the attached Gmail view bounds and restores them on close', async () => {
+  const fixtureData = fixture()
+  await fixtureData.manager.activate(firstId)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fixtureData.manager.setMailAccess(firstId, true, 0), true)
+  fixtureData.manager.setAiMailPanelOpen(true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 72,
+    width: 540,
+    height: 628
+  })
+  fixtureData.manager.setAiMailPanelOpen(false)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 0,
+    y: 72,
+    width: 900,
+    height: 628
+  })
+  fixtureData.manager.setLayout('left', false)
+  fixtureData.manager.setAiMailPanelOpen(true)
+  assert.deepEqual(structuredClone(fixtureData.created[0].view.bounds), {
+    x: 56,
+    y: 32,
+    width: 484,
+    height: 668
+  })
+  await fixtureData.manager.dispose()
+})
+
 test('mail view stays detached until Main grants access and sign-in remains visible', async () => {
   const fixtureData = fixture()
   await fixtureData.manager.activate(firstId)

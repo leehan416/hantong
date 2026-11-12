@@ -20,6 +20,7 @@ export const SETTINGS_UPDATE_CHANNEL = 'hantong:settings-update'
 export const SETTINGS_EVENT = 'hantong:settings-change'
 export const SETTINGS_PANEL_CHANNEL = 'hantong:settings-panel'
 export const ACCOUNT_STATUS_STRIP_CHANNEL = 'hantong:account-status-strip'
+export const AI_MAIL_PANEL_LAYOUT_CHANNEL = 'hantong:ai-mail-panel-layout'
 export const SETTINGS_OPEN_EVENT = 'hantong:settings-open'
 export const LOGIN_LAUNCH_GET_CHANNEL = 'hantong:login-launch-get'
 export const LOGIN_LAUNCH_SET_CHANNEL = 'hantong:login-launch-set'
@@ -54,6 +55,7 @@ export const ACCOUNT_CHROME_HEIGHT = 72
 export const ACCOUNT_STATUS_STRIP_HEIGHT = 32
 export const ACCOUNT_SIDEBAR_WIDTH = 248
 export const ACCOUNT_SIDEBAR_COLLAPSED_WIDTH = 56
+export const AI_MAIL_PANEL_WIDTH = 360
 
 export type AccountViewStatus = {
   accountId: string
@@ -215,6 +217,7 @@ export interface HantongApi {
   onSettings: (listener: (settings: AppSettings) => void) => () => void
   setSettingsPanelOpen: (open: boolean) => Promise<AccountViewSnapshot | null>
   setStatusStripVisible: (visible: boolean) => Promise<void>
+  setAiMailPanelOpen: (open: boolean) => Promise<void>
   onOpenSettings: (listener: () => void) => () => void
   getGoogleConnectionStatus: (accountId: string) => Promise<GoogleConnectionStatus>
   connectGoogleAccount: (accountId: string) => Promise<GoogleConnectionStatus>

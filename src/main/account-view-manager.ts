@@ -95,6 +95,7 @@ export function createAccountViewManager(
   setCovered: (covered: boolean) => Promise<AccountViewSnapshot | null>
   setLayout: (position: AccountSelectorPosition, sidebarCollapsed: boolean) => void
   setStatusStripVisible: (visible: boolean) => void
+  setAiMailPanelOpen: (open: boolean) => void
   dispose: () => Promise<void>
 } {
   const views = new Map<string, ViewEntry>()
@@ -129,6 +130,7 @@ export function createAccountViewManager(
   let layoutPosition: AccountSelectorPosition = 'top'
   let sidebarCollapsed = false
   let statusStripVisible = true
+  let aiMailPanelOpen = false
   let disposed = false
 
   function alive(): boolean {
@@ -172,7 +174,8 @@ export function createAccountViewManager(
         ...window.getContentBounds(),
         position: layoutPosition,
         sidebarCollapsed,
-        statusStripVisible
+        statusStripVisible,
+        aiMailPanelOpen
       })
     )
   }
@@ -625,6 +628,12 @@ export function createAccountViewManager(
     setStatusStripVisible(visible) {
       if (statusStripVisible === visible) return
       statusStripVisible = visible
+      const entry = activeAccountId ? views.get(activeAccountId) : undefined
+      if (entry?.attached) setBounds(entry.handle.view)
+    },
+    setAiMailPanelOpen(open) {
+      if (aiMailPanelOpen === open) return
+      aiMailPanelOpen = open
       const entry = activeAccountId ? views.get(activeAccountId) : undefined
       if (entry?.attached) setBounds(entry.handle.view)
     },

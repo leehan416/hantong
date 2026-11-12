@@ -1,0 +1,83 @@
+import type {
+  AiMailComposeApplyRequest,
+  AiMailComposeMutationResult,
+  AiMailComposeUndoRequest,
+  ComposeSnapshotResult,
+  ComposeTargetStatus,
+  CodexGenerationResult,
+  HantongApi
+} from '../../shared/ipc'
+
+type AiMailPanelApi = Pick<
+  HantongApi,
+  'getAiMailComposeSnapshot' | 'generateAiMailDraft' | 'applyAiMailDraft' | 'undoAiMailDraft'
+>
+
+export type AiMailProposalOutcome =
+  | { status: 'ready'; snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>; text: string }
+  | { status: 'unavailable'; result: Exclude<ComposeSnapshotResult, { status: 'ready' }> }
+  | { status: 'stale' }
+  | { status: 'failed'; result: Extract<CodexGenerationResult, { ok: false }> }
+
+export async function requestAiMailProposal(
+  api: AiMailPanelApi,
+  target: Extract<ComposeTargetStatus, { status: 'ready' }>,
+  instruction: string,
+  requestId: string,
+  generation: number,
+  followUp?: string
+): Promise<AiMailProposalOutcome> {
+  const snapshot = await api.getAiMailComposeSnapshot()
+  if (snapshot.status !== 'ready') return { status: 'unavailable', result: snapshot }
+  if (snapshot.accountId !== target.accountId || snapshot.composeId !== target.composeId)
+    return { status: 'stale' }
+
+  const prompt = [
+    `Request: ${instruction}`,
+    snapshot.subject ? `Subject: ${snapshot.subject}` : 'Subject: (new message)',
+    `Current draft:\n${snapshot.body}`
+  ].join('\n\n')
+  const generated = await api.generateAiMailDraft({
+    accountId: target.accountId,
+    composeId: target.composeId,
+    requestId,
+    generation,
+    prompt,
+    ...(followUp ? { followUp } : {})
+  })
+  if (!generated.ok) return { status: 'failed', result: generated }
+  return { status: 'ready', snapshot, text: generated.text }
+}
+
+export function applyAiMailProposal(
+  api: AiMailPanelApi,
+  snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>,
+  replacement: string,
+  confirmedCurrentVersion?: string
+): Promise<AiMailComposeMutationResult> {
+  const request: AiMailComposeApplyRequest = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement,
+    ...(confirmedCurrentVersion ? { confirmedCurrentVersion } : {})
+  }
+  return api.applyAiMailDraft(request)
+}
+
+export function undoAiMailProposal(
+  api: AiMailPanelApi,
+  snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>,
+  applyId: string,
+  confirmedCurrentVersion?: string
+): Promise<AiMailComposeMutationResult> {
+  const request: AiMailComposeUndoRequest = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    applyId,
+    ...(confirmedCurrentVersion ? { confirmedCurrentVersion } : {})
+  }
+  return api.undoAiMailDraft(request)
+}

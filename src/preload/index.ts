@@ -11,6 +11,7 @@ import {
   ACCOUNT_STATE_CHANNEL,
   ACCOUNT_STATE_EVENT,
   ACCOUNT_STATUS_STRIP_CHANNEL,
+  AI_MAIL_PANEL_LAYOUT_CHANNEL,
   UNREAD_COUNTS_CHANNEL,
   UNREAD_COUNTS_EVENT,
   SETTINGS_GET_CHANNEL,
@@ -125,6 +126,7 @@ const api: HantongApi = Object.freeze({
   updateSettings: (patch) => ipcRenderer.invoke(SETTINGS_UPDATE_CHANNEL, patch),
   setSettingsPanelOpen: (open) => ipcRenderer.invoke(SETTINGS_PANEL_CHANNEL, open),
   setStatusStripVisible: (visible) => ipcRenderer.invoke(ACCOUNT_STATUS_STRIP_CHANNEL, visible),
+  setAiMailPanelOpen: (open) => ipcRenderer.invoke(AI_MAIL_PANEL_LAYOUT_CHANNEL, open),
   onOpenSettings: (listener) => {
     const handler = (): void => listener()
     ipcRenderer.on(SETTINGS_OPEN_EVENT, handler)

@@ -366,6 +366,10 @@ test('settings IPC allows get with no args and update with one valid patch from 
     isAllowedSettingsRequest({ ...base, operation: 'status-strip', args: [false] }),
     true
   )
+  assert.equal(
+    isAllowedSettingsRequest({ ...base, operation: 'ai-mail-panel', args: [true] }),
+    true
+  )
   for (const request of [
     { ...base, operation: 'get', args: [{}] },
     { ...base, operation: 'update', args: [] },
@@ -376,6 +380,9 @@ test('settings IPC allows get with no args and update with one valid patch from 
     { ...base, operation: 'panel', args: [] },
     { ...base, operation: 'status-strip', args: ['false'] },
     { ...base, operation: 'status-strip', args: [false, true] },
+    { ...base, operation: 'ai-mail-panel', args: ['true'] },
+    { ...base, operation: 'ai-mail-panel', args: [] },
+    { ...base, operation: 'ai-mail-panel', args: [true, false] },
     { ...base, senderMatches: false, operation: 'get', args: [] },
     { ...base, senderUrl: 'https://mail.google.com/', operation: 'get', args: [] }
   ]) {

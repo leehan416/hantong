@@ -122,6 +122,23 @@ test('login launch IPC validates sender and exact arguments before calling its c
   assert.deepEqual(writes, [true, false])
 })
 
+test('AI mail panel layout IPC accepts only the owner frame and an exact boolean', () => {
+  const changes = []
+  const { owner } = fixture({
+    views: () => ({ setAiMailPanelOpen: (open) => changes.push(open) })
+  })
+  const handler = handlers.get('hantong:ai-mail-panel-layout')
+  const event = invokeEvent(owner)
+  assert.throws(() => handler(event), /Request rejected/)
+  assert.throws(() => handler(event, 'true'), /Request rejected/)
+  assert.throws(() => handler(event, true, false), /Request rejected/)
+  assert.throws(() => handler(invokeEvent(owner, {}), true), /Request rejected/)
+  assert.deepEqual(changes, [])
+  handler(event, true)
+  handler(event, false)
+  assert.deepEqual(changes, [true, false])
+})
+
 test('notification preference IPC validates exact arguments and persists through account store', () => {
   let persisted = false
   let published = null
