@@ -14,12 +14,28 @@ type AiMailPanelApi = Pick<
 >
 
 export type AiMailTargetCapture = { key: string; epoch: number }
+export type AiMailSnapshotCapture = AiMailTargetCapture & { session: number }
 
 export type AiMailTargetEpoch = {
   setTarget: (nextTargetKey: string) => void
   invalidate: () => void
   capture: (key: string) => AiMailTargetCapture
   isCurrent: (capture: AiMailTargetCapture) => boolean
+}
+
+export function isAiMailSnapshotCaptureBusy(
+  open: boolean,
+  session: number,
+  capture: AiMailSnapshotCapture | null
+): boolean {
+  return open && capture?.session === session
+}
+
+export function finishAiMailSnapshotCapture<T extends AiMailSnapshotCapture>(
+  current: T | null,
+  capture: T
+): T | null {
+  return current === capture ? null : current
 }
 
 export function createAiMailTargetEpoch(): AiMailTargetEpoch {

@@ -6,10 +6,12 @@ import type {
 } from '../../shared/ipc'
 import type { AppMessages } from './app-messages'
 import {
-  type AiMailTargetCapture,
+  type AiMailSnapshotCapture,
   applyAiMailProposal,
   captureAiMailTargetSnapshot,
   createAiMailTargetEpoch,
+  finishAiMailSnapshotCapture,
+  isAiMailSnapshotCaptureBusy,
   requestAiMailProposal,
   undoAiMailProposal
 } from './ai-mail-panel-flow'
@@ -47,6 +49,7 @@ type Props = {
   activeAccountId: string | null
   layoutMode: 'top' | 'bottom' | 'left' | 'right'
   open: boolean
+  captureSession: number
   text: AppMessages['aiMail']
   onClose: () => void
 }
@@ -79,6 +82,7 @@ export function AiMailPanel({
   activeAccountId,
   layoutMode,
   open,
+  captureSession,
   text,
   onClose
 }: Props): React.JSX.Element | null {
@@ -86,7 +90,7 @@ export function AiMailPanel({
   const [codexStatus, setCodexStatus] = useState<CodexConnectionStatus | null>(null)
   const [codexBusy, setCodexBusy] = useState(false)
   const [statusFailed, setStatusFailed] = useState(false)
-  const [snapshotCapture, setSnapshotCapture] = useState<AiMailTargetCapture | null>(null)
+  const [snapshotCapture, setSnapshotCapture] = useState<AiMailSnapshotCapture | null>(null)
   const [capturedSnapshot, setCapturedSnapshot] = useState<ReadySnapshot | null>(null)
   const [snapshotStatus, setSnapshotStatus] = useState('')
   const [thread, setThread] = useState<Thread>({ key: '', items: [] })
@@ -112,7 +116,7 @@ export function AiMailPanel({
   const key = targetKey(target)
   const messages = thread.key === key ? thread.items : []
   const targetReady = Boolean(target)
-  const snapshotBusy = Boolean(open && snapshotCapture)
+  const snapshotBusy = isAiMailSnapshotCaptureBusy(open, captureSession, snapshotCapture)
   const generationAvailable = GENERATION_ENABLED && codexStatus?.state === 'connected'
 
   const acceptTargetStatus = useCallback(
@@ -197,14 +201,17 @@ export function AiMailPanel({
   async function captureDraft(): Promise<void> {
     if (!target || snapshotBusy) return
     const targetKeyAtStart = targetKey(target)
-    const capture = captureEpoch.current.capture(targetKeyAtStart)
+    const capture: AiMailSnapshotCapture = {
+      ...captureEpoch.current.capture(targetKeyAtStart),
+      session: captureSession
+    }
     setSnapshotCapture(capture)
     setSnapshotStatus(text.loadingSnapshot)
     const outcome = await captureAiMailTargetSnapshot(captureEpoch.current, capture, () =>
       window.api.getAiMailComposeSnapshot()
     )
     if (outcome.status === 'stale') {
-      setSnapshotCapture((current) => (current === capture ? null : current))
+      setSnapshotCapture((current) => finishAiMailSnapshotCapture(current, capture))
       return
     }
     if (outcome.status === 'error') {
@@ -230,7 +237,7 @@ export function AiMailPanel({
         setSnapshotStatus(text.captured)
       }
     }
-    setSnapshotCapture((current) => (current === capture ? null : current))
+    setSnapshotCapture((current) => finishAiMailSnapshotCapture(current, capture))
   }
 
   async function connectCodex(): Promise<void> {

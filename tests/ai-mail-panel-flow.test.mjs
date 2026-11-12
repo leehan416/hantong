@@ -7,7 +7,9 @@ const {
   applyAiMailProposal,
   undoAiMailProposal,
   createAiMailTargetEpoch,
-  captureAiMailTargetSnapshot
+  captureAiMailTargetSnapshot,
+  isAiMailSnapshotCaptureBusy,
+  finishAiMailSnapshotCapture
 } = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
 
 test('a snapshot started for A is invalid after switching A to B and back to A', async () => {
@@ -73,6 +75,100 @@ test('a token invalidated by closing cannot start a snapshot call', async () => 
 
   assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
   assert.equal(snapshotCalls, 0)
+})
+
+test('reopening detaches capture A so its late success cannot clear capture B', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  let session = 0
+  const captureAToken = { ...epoch.capture('account-a:compose-1'), session }
+  let currentCapture = captureAToken
+  let resolveA
+  const captureA = captureAiMailTargetSnapshot(
+    epoch,
+    captureAToken,
+    () =>
+      new Promise((resolve) => {
+        resolveA = resolve
+      })
+  )
+
+  epoch.invalidate()
+  session += 1
+  assert.equal(isAiMailSnapshotCaptureBusy(false, session, currentCapture), false)
+  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), false)
+  const captureB = { ...epoch.capture('account-a:compose-1'), session }
+  currentCapture = captureB
+  let resolveB
+  const pendingB = captureAiMailTargetSnapshot(
+    epoch,
+    captureB,
+    () =>
+      new Promise((resolve) => {
+        resolveB = resolve
+      })
+  )
+
+  resolveA(snapshot)
+  assert.deepEqual(JSON.parse(JSON.stringify(await captureA)), { status: 'stale' })
+  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureAToken)
+  assert.equal(currentCapture, captureB)
+  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), true)
+
+  resolveB(snapshot)
+  assert.deepEqual(JSON.parse(JSON.stringify(await pendingB)), {
+    status: 'ready',
+    result: snapshot
+  })
+  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureB)
+  assert.equal(currentCapture, null)
+  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), false)
+})
+
+test('reopening detaches capture A so its late error cannot clear capture B error state', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  let session = 0
+  const captureAToken = { ...epoch.capture('account-a:compose-1'), session }
+  let currentCapture = captureAToken
+  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), true)
+  let rejectA
+  const captureA = captureAiMailTargetSnapshot(
+    epoch,
+    captureAToken,
+    () =>
+      new Promise((resolve, reject) => {
+        void resolve
+        rejectA = reject
+      })
+  )
+
+  epoch.invalidate()
+  session += 1
+  const captureB = { ...epoch.capture('account-a:compose-1'), session }
+  currentCapture = captureB
+  let rejectB
+  const pendingB = captureAiMailTargetSnapshot(
+    epoch,
+    captureB,
+    () =>
+      new Promise((resolve, reject) => {
+        void resolve
+        rejectB = reject
+      })
+  )
+
+  rejectA(new Error('old capture failed'))
+  assert.deepEqual(JSON.parse(JSON.stringify(await captureA)), { status: 'stale' })
+  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureAToken)
+  assert.equal(currentCapture, captureB)
+  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), true)
+
+  rejectB(new Error('current capture failed'))
+  assert.deepEqual(JSON.parse(JSON.stringify(await pendingB)), { status: 'error' })
+  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureB)
+  assert.equal(currentCapture, null)
+  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), false)
 })
 
 const target = {

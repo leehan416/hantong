@@ -82,6 +82,7 @@ function App(): React.JSX.Element {
   } = settingsState
   const [statusStripLayoutVisible, setStatusStripLayoutVisible] = useState(true)
   const [aiMailPanelOpen, setAiMailPanelOpen] = useState(false)
+  const [aiMailPanelCaptureSession, setAiMailPanelCaptureSession] = useState(0)
   const [aiMailPanelLayoutFailed, setAiMailPanelLayoutFailed] = useState(false)
   const [aiMailPanelLayoutBusy, setAiMailPanelLayoutBusy] = useState(false)
   const aiMailToggleRef = useRef<HTMLButtonElement>(null)
@@ -120,6 +121,7 @@ function App(): React.JSX.Element {
     try {
       await window.api.setAiMailPanelOpen(open)
       setAiMailPanelOpen(open)
+      if (!open) setAiMailPanelCaptureSession((session) => session + 1)
       if (!open) aiMailToggleRef.current?.focus()
     } catch {
       setAiMailPanelLayoutFailed(true)
@@ -366,6 +368,7 @@ function App(): React.JSX.Element {
         activeAccountId={activeAccountId}
         layoutMode={position}
         open={aiMailPanelOpen}
+        captureSession={aiMailPanelCaptureSession}
         text={text.aiMail}
         onClose={() => void changeAiMailPanel(false)}
       />
