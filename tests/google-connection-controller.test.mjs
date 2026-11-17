@@ -551,10 +551,74 @@ test('access subscription failure is contained and status snapshots remain query
   )
 
   controller.selectAccount('first')
-  assert.equal(states.at(-1).readFailed, true)
+  assert.equal(states.at(-1).loading, true)
+  assert.equal(states.at(-1).readFailed, false)
   await tick()
 
   assert.equal(states.at(-1).readFailed, false)
   assert.equal(states.at(-1).state.status, 'required')
+  controller.dispose()
+})
+
+test('access refresh clears settled failure state until its snapshot finishes', async () => {
+  const snapshots = [deferred(), deferred()]
+  let reads = 0
+  const states = []
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: () => () => {},
+      getAccountAccessState: () => snapshots[reads++].promise
+    },
+    (state) => states.push(state),
+    () => {}
+  )
+
+  controller.selectAccount('first')
+  snapshots[0].resolve({ accountId: 'first', status: 'error', connectionStatus: 'error' })
+  await tick()
+  assert.equal(states.at(-1).readFailed, false)
+
+  const retry = controller.refresh()
+  assert.equal(states.at(-1).loading, true)
+  assert.equal(states.at(-1).state, null)
+  assert.equal(states.at(-1).readFailed, false)
+
+  snapshots[1].resolve({ accountId: 'first', status: 'required', connectionStatus: 'disconnected' })
+  await retry
+  assert.equal(states.at(-1).state.status, 'required')
+  assert.equal(states.at(-1).loading, false)
+  controller.dispose()
+})
+
+test('Main checking event remains visibly pending until a terminal access event', async () => {
+  const states = []
+  let listener
+  const controller = new AccountAccessController(
+    {
+      onAccountAccessState: (callback) => {
+        listener = callback
+        return () => {}
+      },
+      getAccountAccessState: async (accountId) => ({
+        accountId,
+        status: 'required',
+        connectionStatus: 'disconnected'
+      })
+    },
+    (state) => states.push(state),
+    () => {}
+  )
+
+  controller.selectAccount('first')
+  await tick()
+  listener({ accountId: 'first', status: 'checking', connectionStatus: 'connected' })
+
+  assert.equal(states.at(-1).loading, true)
+  assert.equal(states.at(-1).state.status, 'checking')
+  assert.equal(states.at(-1).readFailed, false)
+
+  listener({ accountId: 'first', status: 'error', connectionStatus: 'error' })
+  assert.equal(states.at(-1).loading, false)
+  assert.equal(states.at(-1).state.status, 'error')
   controller.dispose()
 })

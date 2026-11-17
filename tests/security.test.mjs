@@ -11,6 +11,7 @@ const {
   isAllowedNotificationRequest,
   isAllowedSettingsRequest,
   isAllowedLoginLaunchRequest,
+  isAllowedAiMailComposeMutationRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
 const policy = {
@@ -56,6 +57,75 @@ test('login launch IPC requires the owner main frame and exact boolean argument'
     assert.equal(isAllowedLoginLaunchRequest({ ...base, args }, 'set'), false)
   assert.equal(
     isAllowedLoginLaunchRequest({ ...base, senderMatches: false, args: [true] }, 'set'),
+    false
+  )
+})
+
+test('compose mutation IPC accepts only bounded explicit apply and undo requests', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: []
+  }
+  const apply = {
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    documentVersion: 'document-a',
+    snapshotId: 'snapshot-a',
+    replacement: 'Synthetic replacement'
+  }
+  const undo = {
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    documentVersion: 'document-a',
+    applyId: 'apply-a'
+  }
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({ ...base, operation: 'apply', args: [apply] }),
+    true
+  )
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({ ...base, operation: 'undo', args: [undo] }),
+    true
+  )
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({
+      ...base,
+      operation: 'apply',
+      args: [{ ...apply, replacement: 'x'.repeat(20_001) }]
+    }),
+    false
+  )
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({
+      ...base,
+      operation: 'apply',
+      args: [{ ...apply, accountId: '../account' }]
+    }),
+    false
+  )
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({
+      ...base,
+      operation: 'undo',
+      args: [{ ...undo, confirmedCurrentVersion: 'x'.repeat(129) }]
+    }),
+    false
+  )
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({ ...base, operation: 'apply', args: [apply, 'extra'] }),
+    false
+  )
+  assert.equal(
+    isAllowedAiMailComposeMutationRequest({
+      ...base,
+      senderUrl: 'https://mail.google.com/',
+      operation: 'apply',
+      args: [apply]
+    }),
     false
   )
 })
@@ -296,6 +366,10 @@ test('settings IPC allows get with no args and update with one valid patch from 
     isAllowedSettingsRequest({ ...base, operation: 'status-strip', args: [false] }),
     true
   )
+  assert.equal(
+    isAllowedSettingsRequest({ ...base, operation: 'ai-mail-panel', args: [true] }),
+    true
+  )
   for (const request of [
     { ...base, operation: 'get', args: [{}] },
     { ...base, operation: 'update', args: [] },
@@ -306,6 +380,9 @@ test('settings IPC allows get with no args and update with one valid patch from 
     { ...base, operation: 'panel', args: [] },
     { ...base, operation: 'status-strip', args: ['false'] },
     { ...base, operation: 'status-strip', args: [false, true] },
+    { ...base, operation: 'ai-mail-panel', args: ['true'] },
+    { ...base, operation: 'ai-mail-panel', args: [] },
+    { ...base, operation: 'ai-mail-panel', args: [true, false] },
     { ...base, senderMatches: false, operation: 'get', args: [] },
     { ...base, senderUrl: 'https://mail.google.com/', operation: 'get', args: [] }
   ]) {

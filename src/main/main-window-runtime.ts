@@ -1,6 +1,8 @@
 import { app, BrowserWindow, screen } from 'electron'
 import { createAccountViewManager } from './account-view-manager'
 import { createAccountAccessController } from './account-access-controller'
+import { createGmailComposeProbeRuntime, isGmailComposeProbeOptedIn } from './gmail-compose-probe'
+import { createGmailComposeTargetService } from './gmail-compose-target'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createAccountStore } from './account-store'
@@ -11,6 +13,8 @@ import { isTrustedRendererUrl } from './security-policy'
 import { optimizer } from '@electron-toolkit/utils'
 import { ACCOUNT_ACCESS_STATE_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
 import type { AccountState } from '../shared/accounts'
+import type { AccountRemovalOutcome } from '../shared/ipc'
+import type { LogoutFlowDiagnostic } from './account-view-manager'
 import type { GoogleWebIdentityFailureReason } from './google-web-identity'
 import type { GmailViewLoadDiagnostic } from './account-view-lifecycle'
 import type { NavigationDiagnostic } from './navigation-diagnostic'
@@ -36,6 +40,9 @@ export interface MainWindowRuntimeDependencies {
   readonly requireAccountStore: () => ReturnType<typeof createAccountStore>
   readonly requireGoogleRuntime: () => ReturnType<typeof createGoogleConnectionRuntime>
   readonly requireGoogleManager: () => ReturnType<typeof createGoogleConnectionManager>
+  readonly setComposeTargetService: (
+    service: ReturnType<typeof createGmailComposeTargetService> | null
+  ) => void
   readonly settings: () => ReturnType<typeof createSettingsStore> | null
   readonly windowState: () => ReturnType<typeof createWindowStateStore> | null
   readonly isQuitting: () => boolean
@@ -54,6 +61,11 @@ export interface MainWindowRuntimeDependencies {
     diagnostic: GmailViewLoadDiagnostic
   ) => void
   readonly reportNavigationDiagnostic: (accountId: string, diagnostic: NavigationDiagnostic) => void
+  readonly removeExplicitLogout: (
+    accountId: string,
+    views: ViewManager,
+    owner: BrowserWindow
+  ) => AccountRemovalOutcome | 'skipped' | Promise<AccountRemovalOutcome | 'skipped'>
 }
 
 export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependencies): {
@@ -114,6 +126,8 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       dependencies.notificationController()?.flushAlerts()
     })
     let windowAccessController: AccessController | null = null
+    let gmailComposeProbe: ReturnType<typeof createGmailComposeProbeRuntime> | null = null
+    let composeTargetService: ReturnType<typeof createGmailComposeTargetService> | null = null
     const windowViewManager = createAccountViewManager(
       window,
       dependencies.requireAccountStore(),
@@ -155,7 +169,12 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       30_000,
       dependencies.reportIdentityDiagnostic,
       dependencies.reportViewLoadDiagnostic,
-      dependencies.reportNavigationDiagnostic
+      dependencies.reportNavigationDiagnostic,
+      (accountId) => dependencies.removeExplicitLogout(accountId, windowViewManager, window),
+      (accountId) => windowAccessController?.invalidate(accountId),
+      (diagnostic: LogoutFlowDiagnostic) => {
+        if (!app.isPackaged) console.info('[gmail-logout-flow]', diagnostic)
+      }
     )
     dependencies.setViews(windowViewManager, windowViewManager)
     const savedSettings = dependencies.settings()?.get()
@@ -179,6 +198,8 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
           .getState()
           .accounts.some((account) => account.id === id),
       publish: (state) => {
+        gmailComposeProbe?.onAccessState(state)
+        composeTargetService?.onAccessState(state)
         if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
       },
       onWebIdentity: (accountId, emailAddress) => {
@@ -197,7 +218,30 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
         }
       }
     })
+    composeTargetService = createGmailComposeTargetService({
+      window,
+      views: windowViewManager,
+      access: windowAccessController,
+      getAccounts: () => dependencies.requireAccountStore().getState().accounts
+    })
+    dependencies.setComposeTargetService(composeTargetService)
     dependencies.setAccessController(windowAccessController, windowAccessController)
+    if (process.argv.includes('--gmail-compose-probe') && app.isPackaged)
+      throw new Error('The Gmail compose probe is disabled in packaged builds')
+    if (isGmailComposeProbeOptedIn(process.argv, app.isPackaged) && windowAccessController) {
+      gmailComposeProbe = createGmailComposeProbeRuntime({
+        window,
+        views: windowViewManager,
+        access: windowAccessController,
+        accountExists: (id) =>
+          dependencies
+            .requireAccountStore()
+            .getState()
+            .accounts.some((account) => account.id === id),
+        isPackaged: app.isPackaged,
+        argv: process.argv
+      })
+    }
 
     const contents = window.webContents
     contents.session.setPermissionCheckHandler(() => false)
@@ -220,6 +264,9 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
 
     window.once('ready-to-show', () => window.show())
     window.once('closed', () => {
+      gmailComposeProbe?.dispose()
+      composeTargetService?.dispose()
+      dependencies.setComposeTargetService(null)
       if (!dependencies.isQuitting() && dependencies.settings()?.get().closeAction === 'quit')
         app.quit()
       void dependencies

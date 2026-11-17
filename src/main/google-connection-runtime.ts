@@ -53,6 +53,7 @@ interface RuntimeDependencies {
     code?: OAuthDiagnosticCode
   ) => void
   readonly onConnected?: (accountId: string, result: GoogleConnectionResult) => void
+  readonly onAuthorizationReceived?: (accountId: string) => void
   readonly onDisconnected?: (accountId: string) => void
   readonly onPendingChanged?: () => void
 }
@@ -178,6 +179,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         return status(accountId, 'error')
       }
       reportProgress(accountId, 'connection', 'started')
+      const operationRef: { current?: ActiveOperation } = {}
       try {
         connection = startGoogleConnection(accountId, config, {
           readWebIdentity: dependencies.readWebIdentity,
@@ -189,6 +191,16 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
             : undefined,
           exchangeCode: dependencies.exchangeCode,
           fetchProfile: dependencies.fetchProfile,
+          onAuthorizationReceived: () => {
+            if (
+              !operationRef.current ||
+              active.get(accountId) !== operationRef.current ||
+              generation(accountId) !== expected ||
+              !dependencies.accountExists(accountId)
+            )
+              return
+            dependencies.onAuthorizationReceived?.(accountId)
+          },
           reportProgress: (stage, outcome, code) => reportProgress(accountId, stage, outcome, code)
         })
       } catch {
@@ -199,6 +211,7 @@ export function createGoogleConnectionRuntime(dependencies: RuntimeDependencies)
         phase: 'connecting',
         cancel: connection.cancel
       }
+      operationRef.current = operation
       active.set(accountId, operation)
       reportPendingChanged()
       try {

@@ -122,6 +122,23 @@ test('login launch IPC validates sender and exact arguments before calling its c
   assert.deepEqual(writes, [true, false])
 })
 
+test('AI mail panel layout IPC accepts only the owner frame and an exact boolean', () => {
+  const changes = []
+  const { owner } = fixture({
+    views: () => ({ setAiMailPanelOpen: (open) => changes.push(open) })
+  })
+  const handler = handlers.get('hantong:ai-mail-panel-layout')
+  const event = invokeEvent(owner)
+  assert.throws(() => handler(event), /Request rejected/)
+  assert.throws(() => handler(event, 'true'), /Request rejected/)
+  assert.throws(() => handler(event, true, false), /Request rejected/)
+  assert.throws(() => handler(invokeEvent(owner, {}), true), /Request rejected/)
+  assert.deepEqual(changes, [])
+  handler(event, true)
+  handler(event, false)
+  assert.deepEqual(changes, [true, false])
+})
+
 test('notification preference IPC validates exact arguments and persists through account store', () => {
   let persisted = false
   let published = null
@@ -172,6 +189,39 @@ test('Google status completion is rejected after its owning window changes', asy
   assert.equal(calls, 1)
   currentWindow = secondWindow
   pending.resolve({ accountId, status: 'connected' })
+  await assert.rejects(operation, /Request rejected/)
+})
+
+test('compose apply IPC validates payloads and rechecks the owner after awaiting Main', async () => {
+  const pending = deferred()
+  const firstWindow = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  const secondWindow = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  let currentWindow = firstWindow
+  let calls = 0
+  fixture({
+    window: () => currentWindow,
+    composeTarget: () => ({
+      applyDraft: (request) => {
+        calls += 1
+        assert.equal(request.replacement, 'Synthetic replacement')
+        return pending.promise
+      }
+    })
+  })
+  const apply = handlers.get('hantong:ai-mail-compose-apply')
+  const event = invokeEvent(firstWindow)
+  await assert.rejects(apply(event, { accountId: '../wrong' }), /Request rejected/)
+  assert.equal(calls, 0)
+  const operation = apply(event, {
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    documentVersion: 'document-a',
+    snapshotId: 'snapshot-a',
+    replacement: 'Synthetic replacement'
+  })
+  assert.equal(calls, 1)
+  currentWindow = secondWindow
+  pending.resolve({ status: 'applied', applyId: 'apply-a' })
   await assert.rejects(operation, /Request rejected/)
 })
 

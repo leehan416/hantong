@@ -43,6 +43,7 @@ export function createGoogleConnectionManager(dependencies: GoogleConnectionMana
   acceptConnection(accountId: string, result: GoogleConnectionResult): Promise<PublicStatus>
   getAccessToken(accountId: string, config: GoogleOAuthConfig): Promise<string>
   getStatus(accountId: string): Promise<PublicStatus>
+  getGeneration(accountId: string): number
   disconnect(accountId: string): Promise<void>
 } {
   const connections = new Map<string, ConnectionState>()
@@ -115,6 +116,7 @@ export function createGoogleConnectionManager(dependencies: GoogleConnectionMana
         if (!isCurrent(accountId, expectedGeneration))
           throw new GoogleConnectionManagerFailure('disconnected')
         if (isRecord(error) && error.code === 'invalid_grant') {
+          advance(accountId)
           reconnectRequired.set(accountId, current.emailAddress)
           connections.delete(accountId)
           throw new GoogleConnectionManagerFailure('reconnect_required')
@@ -256,6 +258,10 @@ export function createGoogleConnectionManager(dependencies: GoogleConnectionMana
       if (latest) return { status: 'connected', emailAddress: latest.emailAddress }
       if (!stored) return { status: 'disconnected' }
       return { status: 'connected', emailAddress: stored.emailAddress }
+    },
+    getGeneration(accountId): number {
+      requireAccount(accountId)
+      return generation(accountId)
     },
     async disconnect(accountId): Promise<void> {
       requireAccount(accountId)

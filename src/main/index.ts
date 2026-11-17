@@ -29,6 +29,7 @@ import { createWindowStateStore } from './window-state'
 import { createGmailCleanupRuntime } from './gmail-cleanup-runtime'
 import { createAppUpdateRuntime } from './app-update-runtime'
 import type { AccountState } from '../shared/accounts'
+import type { AccountRemovalOutcome } from '../shared/ipc'
 import { createGmailRelaySync } from './gmail-relay-sync'
 import { createNotificationConnectionController } from './notification-connection-controller'
 import { createMainDiagnostics, createRotatingDiagnosticsSink } from './main-diagnostics'
@@ -36,16 +37,31 @@ import { createNativeMailNotifications } from './native-mail-notifications'
 import { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
 import { createMainMailRuntime } from './main-mail-runtime'
 import { is } from '@electron-toolkit/utils'
-import { ACCOUNT_STATE_EVENT, SETTINGS_OPEN_EVENT, ACCOUNT_VIEW_STATUS_EVENT } from '../shared/ipc'
+import {
+  ACCOUNT_STATE_EVENT,
+  SETTINGS_OPEN_EVENT,
+  ACCOUNT_VIEW_STATUS_EVENT,
+  AI_MAIL_CODEX_STATUS_EVENT
+} from '../shared/ipc'
 import { isAllowedExternalUrl } from './security-policy'
 import { createNotificationPauseStore } from './notification-pause-store'
 import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
 import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
+import { createAiMailCodexService } from './ai-mail-codex-service'
+import type { createGmailComposeTargetService } from './gmail-compose-target'
 import {
   createNotificationPauseController,
   createNotificationPauseMenuActions
 } from './notification-pause'
+import { configureIsolatedGmailComposeProbeProfile } from './gmail-compose-probe'
+
+configureIsolatedGmailComposeProbeProfile({
+  app,
+  argv: process.argv,
+  isPackaged: app.isPackaged,
+  onProcessExit: (listener) => process.once('exit', listener)
+})
 
 app.setName('Hantong')
 
@@ -74,6 +90,7 @@ let googleConnectionManager: ReturnType<typeof createGoogleConnectionManager> | 
 let relayRuntime: ReturnType<typeof createRelayRuntime> | null = null
 let gmailRelaySync: ReturnType<typeof createGmailRelaySync> | null = null
 let accountAccessController: ReturnType<typeof createAccountAccessController> | null = null
+let composeTargetService: ReturnType<typeof createGmailComposeTargetService> | null = null
 let notificationConnectionController: ReturnType<
   typeof createNotificationConnectionController
 > | null = null
@@ -97,6 +114,17 @@ const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   isQuitting: () => appQuitting,
   locale: uiLocale,
   showAccount
+})
+const aiMailCodex = createAiMailCodexService({
+  resourcesDirectory: process.resourcesPath,
+  appDataDirectory: app.getPath('userData'),
+  openExternal: async (url) => {
+    await shell.openExternal(url)
+  },
+  onStatus: (status) => {
+    const window = mainWindow
+    if (window && !window.isDestroyed()) window.webContents.send(AI_MAIL_CODEX_STATUS_EVENT, status)
+  }
 })
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
@@ -141,6 +169,7 @@ function prepareApplicationShutdown(): Promise<void> {
   notificationPauseController?.dispose()
   notificationRecoveryRuntime.resolveAll()
   const cleanup = Promise.all([
+    aiMailCodex.dispose(),
     googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
     relayRuntime?.dispose() ?? Promise.resolve()
   ]).then(() => undefined)
@@ -346,7 +375,49 @@ function publishAccountState(owner: BrowserWindow, state: AccountState): void {
   }
 }
 
+function removeAccountAfterGmailLogout(
+  accountId: string,
+  views: ReturnType<typeof createAccountViewManager>,
+  owner: BrowserWindow
+): Promise<AccountRemovalOutcome | 'skipped'> {
+  return (async (): Promise<AccountRemovalOutcome | 'skipped'> => {
+    const store = accountStore
+    const removal = accountRemoval
+    if (
+      appQuitting ||
+      !store ||
+      !removal ||
+      !store.getState().accounts.some((account) => account.id === accountId)
+    )
+      return 'skipped'
+    const ownerIsAlive = (): boolean => !appQuitting
+    const result = await removal.removeWhenIdle(accountId, {
+      ownerIsAlive,
+      confirm: async () => true,
+      disposeView: (id) => views.disposeAccount(id),
+      activate: (id) => {
+        if (!owner.isDestroyed()) views.activate(id)
+      }
+    })
+    if (result.outcome === 'removed') {
+      views.forgetLogoutLock(accountId)
+      accountAccessController?.forget(accountId)
+      notificationRecoveryRuntime.clearPending(accountId)
+      notificationConnectionController?.disconnect(accountId)
+      publishAccountState(owner, result.state)
+    } else if (result.outcome === 'failed' && !owner.isDestroyed()) {
+      owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId, status: 'error' })
+    }
+    return result.outcome
+  })().catch(() => {
+    if (!owner.isDestroyed())
+      owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId, status: 'error' })
+    return 'failed'
+  })
+}
+
 function activateAccountView(accountId: string): void {
+  composeTargetService?.onAccountSwitch()
   try {
     accountViewManager?.activate(accountId)
   } catch {
@@ -378,6 +449,9 @@ const mainWindowRuntime = createMainWindowRuntime({
   requireAccountStore,
   requireGoogleRuntime: requireGoogleConnectionRuntime,
   requireGoogleManager: requireGoogleConnectionManager,
+  setComposeTargetService: (service) => {
+    composeTargetService = service
+  },
   settings: () => settingsStore,
   windowState: () => windowStateStore,
   isQuitting: () => appQuitting,
@@ -434,7 +508,8 @@ const mainWindowRuntime = createMainWindowRuntime({
       route: diagnostic.route,
       reason: diagnostic.reason
     })
-  }
+  },
+  removeExplicitLogout: removeAccountAfterGmailLogout
 })
 
 void app
@@ -504,7 +579,11 @@ void app
       notify: showMailNotification,
       notificationPause: () => pauseController.snapshot(),
       refreshNotificationPause: () => pauseController.refresh(),
-      bundledEnvironment: __HANTONG_BUNDLED_ENV__
+      bundledEnvironment: __HANTONG_BUNDLED_ENV__,
+      revealForAuthorization: () => {
+        loginLaunchStartup.requestReveal()
+        app.focus({ steal: true })
+      }
     })
     googleConnectionManager = mailRuntime.connectionManager
     relayRuntime = mailRuntime.relayRuntime
@@ -563,7 +642,9 @@ void app
       publishAccountState,
       installAppMenu,
       createWindow,
-      loginLaunch
+      loginLaunch,
+      aiMailCodex,
+      composeTarget: () => composeTargetService
     })
     loginLaunchStartup.start(wasOpenedAtLogin)
     app.on('before-quit', (event) => {

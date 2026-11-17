@@ -1,4 +1,5 @@
 import {
+  app,
   WebContentsView,
   type BrowserWindow,
   type Session,
@@ -14,13 +15,48 @@ interface GmailViewCallbacks {
   onNavigationBlocked: (diagnostic: NavigationDiagnostic) => void
   onMainFrameNavigation: (url: string) => void
   isMailAccessAllowed: () => boolean
+  onLogoutRequestStart?: (requestId: number) => LogoutRequestStartDecision | void
+  onLogoutRequestSuccess?: (requestId: number) => LogoutRequestSuccessDecision | void
+  onLogoutRequestFailure?: (requestId: number) => void
+  onLogoutTerminalRedirect?: () => boolean
 }
+
+export type LogoutRequestStartDecision =
+  | 'accepted'
+  | 'already_confirmed'
+  | 'account_missing'
+  | 'disposed'
+  | 'not_established'
+  | 'request_pending'
+  | 'stale_view'
+
+export type LogoutRequestSuccessDecision = 'confirmed' | 'awaiting_ready_sign_in' | 'stale_request'
 
 interface GmailView {
   view: WebContentsView
   load: () => Promise<void>
   revokeMailAccess: () => void
   dispose: () => Promise<void>
+}
+
+interface LogoutProbeRecord {
+  event: 'start' | 'redirect' | 'completed' | 'error'
+  route: 'accounts_logout_candidate_unverified' | 'mail_logout_candidate_unverified'
+  requestId: number
+  resourceType: string
+  statusCode?: number
+  redirectTarget?: 'google_signin' | 'gmail' | 'logout_candidate' | 'other'
+  ownerContext: 'view_main' | 'popup' | 'other'
+  observed?: boolean
+  decision?:
+    | LogoutRequestStartDecision
+    | LogoutRequestSuccessDecision
+    | 'request_error'
+    | 'http_failure'
+    | 'not_main_frame'
+    | 'not_owner_main_frame'
+    | 'untracked'
+    | 'unsupported_route'
 }
 
 function destroyWebContents(contents: WebContents, destroy: () => void): Promise<void> {
@@ -39,7 +75,14 @@ function destroyWebContents(contents: WebContents, destroy: () => void): Promise
 }
 
 // The caller supplies a dedicated account session, never the local UI session.
-export function createGmailView(webSession: Session, callbacks: GmailViewCallbacks): GmailView {
+export function createGmailView(
+  webSession: Session,
+  callbacks: GmailViewCallbacks,
+  options: {
+    enableLogoutProbe?: boolean
+    reportLogoutProbe?: (record: LogoutProbeRecord) => void
+  } = {}
+): GmailView {
   const webPreferences: WebPreferences = {
     session: webSession,
     sandbox: true,
@@ -56,6 +99,7 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
   const pendingPopupRecovery: boolean[] = []
   let disposed = false
   let disposePromise: Promise<void> | null = null
+  const removeLogoutProbeListeners: Array<() => void> = []
 
   webSession.setPermissionCheckHandler(() => false)
   webSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
@@ -125,6 +169,15 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       if (event.isMainFrame && target !== 'internal') {
         // Redirects must not launch an application without a new user action.
         event.preventDefault()
+        let acceptedLogoutRedirect = false
+        if (!child && target === 'external' && isWorkspaceTerminalRedirect(event.url)) {
+          try {
+            acceptedLogoutRedirect = callbacks.onLogoutTerminalRedirect?.() === true
+          } catch {
+            // A terminal-evidence observer must not interrupt the navigation guard.
+          }
+        }
+        if (acceptedLogoutRedirect) return
         reportBlocked(
           'redirect',
           child ? 'popup' : 'main',
@@ -189,6 +242,127 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
 
   guard(view.webContents)
 
+  {
+    // Account sessions are dedicated to Gmail; Electron allows one webRequest listener per event.
+    const requestFilter = {
+      urls: ['https://accounts.google.com/*', 'https://mail.google.com/*']
+    }
+    const webRequest = webSession.webRequest
+    const logoutRequests = new Set<number>()
+    const ownerContext = (webContentsId: number | undefined): LogoutProbeRecord['ownerContext'] => {
+      if (webContentsId === view.webContents.id) return 'view_main'
+      if ([...children].some((child) => child.webContents.id === webContentsId)) return 'popup'
+      return 'other'
+    }
+    const reportProbe = (
+      event: 'start' | 'redirect' | 'completed' | 'error',
+      details: {
+        id: number
+        url: string
+        resourceType: string
+        webContentsId?: number
+        statusCode?: number
+        redirectURL?: string
+      },
+      decision?: LogoutProbeRecord['decision'],
+      observed?: boolean
+    ): void => {
+      if (disposed || app.isPackaged || options.enableLogoutProbe === false) return
+      const route = classifyLogoutCandidate(details.url)
+      if (!route) return
+      const resourceType = safeResourceType(details.resourceType)
+      const statusCode = Number.isInteger(details.statusCode) ? details.statusCode : undefined
+      try {
+        const record: LogoutProbeRecord = {
+          event,
+          route,
+          requestId: details.id,
+          resourceType,
+          ownerContext: ownerContext(details.webContentsId),
+          ...(decision ? { decision } : {}),
+          ...(observed === undefined ? {} : { observed }),
+          ...(event === 'redirect'
+            ? { redirectTarget: classifyRedirectTarget(details.redirectURL) }
+            : {}),
+          ...(statusCode === undefined ? {} : { statusCode })
+        }
+        if (options.reportLogoutProbe) options.reportLogoutProbe(record)
+        else console.info('[gmail-logout-probe]', record)
+      } catch {
+        // Diagnostics must never affect Gmail requests.
+      }
+    }
+    webRequest.onBeforeRequest(requestFilter, (details, callback) => {
+      try {
+        const route = classifyLogoutCandidate(details.url)
+        const owner = ownerContext(details.webContentsId)
+        let decision: LogoutProbeRecord['decision'] = 'unsupported_route'
+        if (route === 'accounts_logout_candidate_unverified') {
+          if (disposed) decision = 'disposed'
+          else if (details.resourceType !== 'mainFrame') decision = 'not_main_frame'
+          else if (owner !== 'view_main') decision = 'not_owner_main_frame'
+          else {
+            try {
+              decision = callbacks.onLogoutRequestStart?.(details.id) ?? 'stale_view'
+            } catch {
+              decision = 'stale_view'
+            }
+          }
+        }
+        if (
+          route === 'accounts_logout_candidate_unverified' &&
+          details.resourceType === 'mainFrame' &&
+          owner === 'view_main' &&
+          !disposed
+        ) {
+          logoutRequests.add(details.id)
+        }
+        reportProbe('start', details, decision)
+      } finally {
+        callback({})
+      }
+    })
+    webRequest.onBeforeRedirect(requestFilter, (details) =>
+      reportProbe('redirect', details, 'untracked')
+    )
+    webRequest.onCompleted(requestFilter, (details) => {
+      const observed = logoutRequests.delete(details.id)
+      let decision: LogoutProbeRecord['decision'] = 'untracked'
+      const ownerMatches =
+        details.webContentsId === undefined || details.webContentsId === view.webContents.id
+      if (observed && !disposed && ownerMatches) {
+        try {
+          if (details.resourceType === 'mainFrame' && details.statusCode === 200)
+            decision = callbacks.onLogoutRequestSuccess?.(details.id) ?? 'awaiting_ready_sign_in'
+          else {
+            callbacks.onLogoutRequestFailure?.(details.id)
+            decision = 'http_failure'
+          }
+        } catch {
+          // Logout observation must never affect the browser request.
+        }
+      } else if (observed && !ownerMatches) decision = 'not_owner_main_frame'
+      reportProbe('completed', details, decision, observed)
+    })
+    webRequest.onErrorOccurred(requestFilter, (details) => {
+      const observed = logoutRequests.delete(details.id)
+      if (observed && !disposed) {
+        try {
+          callbacks.onLogoutRequestFailure?.(details.id)
+        } catch {
+          // Logout observation must never affect the browser request.
+        }
+      }
+      reportProbe('error', details, observed ? 'request_error' : 'untracked', observed)
+    })
+    removeLogoutProbeListeners.push(
+      () => webRequest.onBeforeRequest(requestFilter, null),
+      () => webRequest.onBeforeRedirect(requestFilter, null),
+      () => webRequest.onCompleted(requestFilter, null),
+      () => webRequest.onErrorOccurred(requestFilter, null)
+    )
+  }
+
   return {
     view,
     revokeMailAccess(): void {
@@ -207,6 +381,8 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       if (disposePromise) return disposePromise
       disposed = true
       const attempt = (async (): Promise<void> => {
+        for (const removeListener of removeLogoutProbeListeners) removeListener()
+        removeLogoutProbeListeners.length = 0
         await Promise.all(
           [...children].map((child) =>
             destroyWebContents(child.webContents, () => {
@@ -227,6 +403,73 @@ export function createGmailView(webSession: Session, callbacks: GmailViewCallbac
       return disposePromise
     }
   }
+}
+
+function isWorkspaceTerminalRedirect(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'workspace.google.com' &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === ''
+    )
+  } catch {
+    return false
+  }
+}
+
+function classifyLogoutCandidate(
+  value: string
+): 'accounts_logout_candidate_unverified' | 'mail_logout_candidate_unverified' | null {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.port !== '' || url.username !== '' || url.password !== '')
+      return null
+    if (url.hostname === 'accounts.google.com' && url.pathname === '/Logout')
+      return 'accounts_logout_candidate_unverified'
+    if (url.hostname === 'mail.google.com' && url.pathname === '/mail/logout')
+      return 'mail_logout_candidate_unverified'
+    return null
+  } catch {
+    return null
+  }
+}
+
+function classifyRedirectTarget(
+  value: string | undefined
+): 'google_signin' | 'gmail' | 'logout_candidate' | 'other' {
+  if (!value) return 'other'
+  if (classifyLogoutCandidate(value)) return 'logout_candidate'
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.port !== '') return 'other'
+    if (url.hostname === 'accounts.google.com') return 'google_signin'
+    if (url.hostname === 'mail.google.com') return 'gmail'
+    return 'other'
+  } catch {
+    return 'other'
+  }
+}
+
+function safeResourceType(value: string): string {
+  const allowed = new Set([
+    'mainFrame',
+    'subFrame',
+    'stylesheet',
+    'script',
+    'image',
+    'font',
+    'object',
+    'xhr',
+    'ping',
+    'cspReport',
+    'media',
+    'webSocket',
+    'other'
+  ])
+  return allowed.has(value) ? value : 'other'
 }
 
 function isMailUrl(value: string): boolean {

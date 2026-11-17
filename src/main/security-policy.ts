@@ -34,6 +34,115 @@ interface NotificationRequest extends Omit<AppInfoRequest, 'args'> {
   accountExists: boolean
 }
 
+interface AiMailCodexRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: 'status' | 'connect' | 'disconnect' | 'generate' | 'cancel'
+  args: unknown[]
+}
+
+const isBoundedId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+
+export function isAllowedAiMailCodexRequest(request: AiMailCodexRequest): boolean {
+  if (
+    !request.ownerAlive ||
+    !request.senderMatches ||
+    !request.mainFrameMatches ||
+    !isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  ) {
+    return false
+  }
+  if (
+    request.operation === 'status' ||
+    request.operation === 'connect' ||
+    request.operation === 'disconnect'
+  ) {
+    return request.args.length === 0
+  }
+  if (request.operation === 'cancel')
+    return request.args.length === 1 && isBoundedId(request.args[0])
+  if (request.args.length !== 1 || !request.args[0] || typeof request.args[0] !== 'object')
+    return false
+  const value = request.args[0] as Record<string, unknown>
+  return (
+    isBoundedId(value.accountId) &&
+    isBoundedId(value.composeId) &&
+    isBoundedId(value.requestId) &&
+    Number.isSafeInteger(value.generation) &&
+    (value.generation as number) > 0 &&
+    typeof value.prompt === 'string' &&
+    value.prompt.length > 0 &&
+    value.prompt.length <= 4000 &&
+    (value.followUp === undefined ||
+      (typeof value.followUp === 'string' && value.followUp.length <= 2000)) &&
+    Object.keys(value).every((key) =>
+      ['accountId', 'composeId', 'requestId', 'generation', 'prompt', 'followUp'].includes(key)
+    )
+  )
+}
+
+export function isAllowedAiMailComposeTargetRequest(request: AppInfoRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    request.args.length === 0 &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
+interface AiMailComposeMutationRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: 'apply' | 'undo'
+  args: unknown[]
+}
+
+export function isAllowedAiMailComposeMutationRequest(
+  request: AiMailComposeMutationRequest
+): boolean {
+  if (
+    !request.ownerAlive ||
+    !request.senderMatches ||
+    !request.mainFrameMatches ||
+    !isTrustedRendererUrl(request.senderUrl, request.rendererUrl) ||
+    request.args.length !== 1 ||
+    !request.args[0] ||
+    typeof request.args[0] !== 'object' ||
+    Array.isArray(request.args[0])
+  )
+    return false
+  const value = request.args[0] as Record<string, unknown>
+  const common =
+    isBoundedId(value.accountId) &&
+    isBoundedId(value.composeId) &&
+    isBoundedId(value.documentVersion) &&
+    (value.confirmedCurrentVersion === undefined || isBoundedId(value.confirmedCurrentVersion))
+  if (request.operation === 'apply')
+    return (
+      common &&
+      isBoundedId(value.snapshotId) &&
+      typeof value.replacement === 'string' &&
+      value.replacement.length <= 20_000 &&
+      Object.keys(value).every((key) =>
+        [
+          'accountId',
+          'composeId',
+          'documentVersion',
+          'snapshotId',
+          'replacement',
+          'confirmedCurrentVersion'
+        ].includes(key)
+      )
+    )
+  return (
+    common &&
+    isBoundedId(value.applyId) &&
+    Object.keys(value).every((key) =>
+      ['accountId', 'composeId', 'documentVersion', 'applyId', 'confirmedCurrentVersion'].includes(
+        key
+      )
+    )
+  )
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)
@@ -190,6 +299,9 @@ export function isAllowedSettingsRequest(request: SettingsRequest): boolean {
     return request.args.length === 1 && typeof request.args[0] === 'boolean'
   }
   if (request.operation === 'status-strip') {
+    return request.args.length === 1 && typeof request.args[0] === 'boolean'
+  }
+  if (request.operation === 'ai-mail-panel') {
     return request.args.length === 1 && typeof request.args[0] === 'boolean'
   }
   return (

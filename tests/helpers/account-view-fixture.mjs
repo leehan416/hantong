@@ -10,7 +10,11 @@ export function fixture({
   loadTimeoutMs = 30_000,
   onLoadDiagnostic = () => {},
   onNavigationDiagnostic = () => {},
-  onLoadStart = () => {}
+  onLoadStart = () => {},
+  onExplicitLogout = () => {},
+  onAccessInvalidated = () => {},
+  onLogoutDiagnostic = () => {},
+  onStatus = () => {}
 } = {}) {
   const created = []
   const attached = []
@@ -48,6 +52,7 @@ export function fixture({
         createGmailView: (session, callbacks) => {
           const webContents = new EventEmitter()
           webContents.url = 'https://mail.google.com/mail/u/0/'
+          webContents.id = created.length + 1
           webContents.loadingMainFrame = false
           webContents.isDestroyed = () => false
           webContents.isLoadingMainFrame = () => webContents.loadingMainFrame
@@ -93,12 +98,18 @@ export function fixture({
   ).createAccountViewManager(
     window,
     store,
-    (status) => statuses.push(status),
+    (status) => {
+      statuses.push(status)
+      onStatus(status)
+    },
     async () => {},
     loadTimeoutMs,
     (reason) => identityFailures.push(reason),
     onLoadDiagnostic,
-    onNavigationDiagnostic
+    onNavigationDiagnostic,
+    onExplicitLogout,
+    onAccessInvalidated,
+    onLogoutDiagnostic
   )
   return {
     manager,

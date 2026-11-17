@@ -313,7 +313,12 @@ export class AccountAccessController {
         this.onConnectionStatus(state)
         if (state.accountId !== this.state.accountId) return
         this.revision += 1
-        this.state = { accountId: state.accountId, state, loading: false, readFailed: false }
+        this.state = {
+          accountId: state.accountId,
+          state,
+          loading: state.status === 'checking',
+          readFailed: false
+        }
         this.publish()
       })
     } catch {
@@ -338,7 +343,7 @@ export class AccountAccessController {
     const { accountId } = this.state
     if (this.disposed || !accountId) return
     const revision = ++this.revision
-    this.state = { ...this.state, loading: true, readFailed: this.subscriptionFailed }
+    this.state = { ...this.state, state: null, loading: true, readFailed: false }
     this.publish()
     try {
       const result = await this.api.getAccountAccessState(accountId)

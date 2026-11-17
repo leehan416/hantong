@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 /* eslint @typescript-eslint/explicit-function-return-type: "off" -- Node executes this JavaScript test without a TypeScript loader. */
-const { getAccountViewBounds } = loadTypeScript(
+const { getAccountViewBounds, getAiMailPanelWidth } = loadTypeScript(
   new URL('../src/shared/account-layout.ts', import.meta.url)
 )
 function bounds(value) {
@@ -82,6 +82,23 @@ test('collapsed sidebars retain a narrow reopen rail without negative content bo
       getAccountViewBounds({ width: 640, height: 480, position: 'right', sidebarCollapsed: true })
     ),
     { x: 0, y: 32, width: 584, height: 448 }
+  )
+})
+
+test('AI panel reserves a live Gmail editing area and adapts to narrow windows', () => {
+  assert.equal(getAiMailPanelWidth(1000, 'top', false, true), 360)
+  assert.deepEqual(
+    bounds(
+      getAccountViewBounds({ width: 1000, height: 700, position: 'left', aiMailPanelOpen: true })
+    ),
+    { x: 56, y: 32, width: 584, height: 668 }
+  )
+  assert.equal(getAiMailPanelWidth(640, 'right', false, true), 320)
+  assert.deepEqual(
+    bounds(
+      getAccountViewBounds({ width: 640, height: 480, position: 'right', aiMailPanelOpen: true })
+    ),
+    { x: 0, y: 32, width: 264, height: 448 }
   )
 })
 
