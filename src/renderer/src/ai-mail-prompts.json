@@ -1,0 +1,6 @@
+{
+  "revise": "Revise only the email body using the user's instruction. Return only the revised body as plain text.",
+  "subject": "Recommend a concise email subject and revise the email body to fit it. Return exactly one JSON object with string keys subject and body. Do not include markdown fences or other text.",
+  "summary": "Summarize the email subject and body in a few concise sentences. This is read-only; return only the summary as plain text.",
+  "translate": "Translate the email subject and body into the requested target language. Preserve meaning and tone. Return exactly one JSON object with string keys subject and body. Do not include markdown fences or other text."
+}

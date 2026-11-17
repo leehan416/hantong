@@ -7,6 +7,7 @@ import type {
   CodexGenerationResult,
   HantongApi
 } from '../../shared/ipc'
+import prompts from './ai-mail-prompts.json'
 
 type AiMailPanelApi = Pick<
   HantongApi,
@@ -56,6 +57,17 @@ export type AiMailTargetEpoch = {
   invalidate: () => void
   capture: (key: string) => AiMailTargetCapture
   isCurrent: (capture: AiMailTargetCapture) => boolean
+}
+
+export function createAiMailGenerationSequence(): { next: (composeKey: string) => number } {
+  const generationByCompose = new Map<string, number>()
+  return {
+    next(composeKey: string): number {
+      const nextGeneration = (generationByCompose.get(composeKey) ?? 0) + 1
+      generationByCompose.set(composeKey, nextGeneration)
+      return nextGeneration
+    }
+  }
 }
 
 export function isAiMailSnapshotCaptureBusy(
@@ -109,10 +121,25 @@ export async function captureAiMailTargetSnapshot<T>(
 }
 
 export type AiMailProposalOutcome =
-  | { status: 'ready'; snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>; text: string }
+  | {
+      status: 'ready'
+      snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>
+      task: AiMailTask
+      text: string
+      subject?: string
+    }
   | { status: 'unavailable'; result: Exclude<ComposeSnapshotResult, { status: 'ready' }> }
   | { status: 'stale' }
+  | { status: 'invalid_output' }
+  | { status: 'invalid_request'; reason: 'target_language_required' }
   | { status: 'failed'; result: Extract<CodexGenerationResult, { ok: false }> }
+
+export type AiMailTask = 'revise' | 'subject' | 'summary' | 'translate'
+
+export interface AiMailTaskOptions {
+  task: AiMailTask
+  targetLanguage?: string
+}
 
 export async function requestAiMailProposal(
   api: AiMailPanelApi,
@@ -120,17 +147,24 @@ export async function requestAiMailProposal(
   instruction: string,
   requestId: string,
   generation: number,
-  followUp?: string
+  followUp?: string,
+  options: AiMailTaskOptions = { task: 'revise' }
 ): Promise<AiMailProposalOutcome> {
+  if (options.task === 'translate' && !options.targetLanguage?.trim())
+    return { status: 'invalid_request', reason: 'target_language_required' }
   const snapshot = await api.getAiMailComposeSnapshot()
   if (snapshot.status !== 'ready') return { status: 'unavailable', result: snapshot }
   if (snapshot.accountId !== target.accountId || snapshot.composeId !== target.composeId)
     return { status: 'stale' }
 
   const prompt = [
-    `Request: ${instruction}`,
-    snapshot.subject ? `Subject: ${snapshot.subject}` : 'Subject: (new message)',
-    `Current draft:\n${snapshot.body}`
+    prompts[options.task],
+    ...(instruction ? [`User instruction: ${instruction}`] : []),
+    ...(options.task === 'translate'
+      ? [`Target language: ${options.targetLanguage?.trim() ?? ''}`]
+      : []),
+    `Email subject:\n${snapshot.subject}`,
+    `Email body:\n${snapshot.body}`
   ].join('\n\n')
   const generated = await api.generateAiMailDraft({
     accountId: target.accountId,
@@ -141,7 +175,31 @@ export async function requestAiMailProposal(
     ...(followUp ? { followUp } : {})
   })
   if (!generated.ok) return { status: 'failed', result: generated }
-  return { status: 'ready', snapshot, text: generated.text }
+  if (options.task === 'subject' || options.task === 'translate') {
+    try {
+      const output: unknown = JSON.parse(generated.text)
+      if (!output || typeof output !== 'object' || Array.isArray(output))
+        return { status: 'invalid_output' }
+      if (
+        Object.keys(output).sort().join(',') !== 'body,subject' ||
+        !('subject' in output) ||
+        typeof output.subject !== 'string' ||
+        !('body' in output) ||
+        typeof output.body !== 'string'
+      )
+        return { status: 'invalid_output' }
+      return {
+        status: 'ready',
+        snapshot,
+        task: options.task,
+        text: output.body,
+        subject: output.subject
+      }
+    } catch {
+      return { status: 'invalid_output' }
+    }
+  }
+  return { status: 'ready', snapshot, task: options.task, text: generated.text }
 }
 
 export function applyAiMailProposal(

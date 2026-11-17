@@ -10,7 +10,8 @@ const {
   captureAiMailTargetSnapshot,
   isAiMailSnapshotCaptureBusy,
   finishAiMailSnapshotCapture,
-  createAiMailTargetRefreshCoordinator
+  createAiMailTargetRefreshCoordinator,
+  createAiMailGenerationSequence
 } = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
 
 test('target refresh on open updates when access and a compose target become ready', async () => {
@@ -67,6 +68,19 @@ test('late target status after close or account switch is ignored', async () => 
   resolveOld(target)
   assert.equal((await oldQuery).current, false)
   assert.deepEqual(accepted, [{ status: 'none' }])
+})
+
+test('generation numbers increase per compose across actions and account switches', () => {
+  const sequence = createAiMailGenerationSequence()
+
+  assert.deepEqual(
+    [
+      sequence.next('account-a:compose-1'),
+      sequence.next('account-b:compose-2'),
+      sequence.next('account-a:compose-1')
+    ],
+    [1, 1, 2]
+  )
 })
 
 test('a snapshot started for A is invalid after switching A to B and back to A', async () => {
@@ -270,6 +284,122 @@ test('explicit request captures only its target and renders a synthetic proposal
   assert.equal(sentRequest.composeId, target.composeId)
   assert.match(sentRequest.prompt, /Synthetic draft body/)
   assert.doesNotMatch(sentRequest.prompt, /recipient@example\.test/)
+})
+
+test('subject recommendation returns separate subject and body fields and never includes JSON in the body', async () => {
+  let sentRequest
+  const outcome = await requestAiMailProposal(
+    {
+      getAiMailComposeSnapshot: async () => snapshot,
+      generateAiMailDraft: async (request) => {
+        sentRequest = request
+        return {
+          ok: true,
+          text: JSON.stringify({ subject: 'Suggested subject', body: 'Suggested body' }),
+          usage: { inputTokens: null, outputTokens: null }
+        }
+      }
+    },
+    target,
+    'subject',
+    'request-subject',
+    1,
+    undefined,
+    { task: 'subject' }
+  )
+
+  assert.equal(outcome.status, 'ready')
+  assert.equal(outcome.task, 'subject')
+  assert.equal(outcome.text, 'Suggested body')
+  assert.equal(outcome.subject, 'Suggested subject')
+  assert.match(sentRequest.prompt, /Synthetic subject/)
+  assert.match(sentRequest.prompt, /Synthetic draft body/)
+})
+
+test('summary is read-only text while translation requires an explicit target language', async () => {
+  const prompts = []
+  const api = {
+    getAiMailComposeSnapshot: async () => snapshot,
+    generateAiMailDraft: async (request) => {
+      prompts.push(request.prompt)
+      return {
+        ok: true,
+        text:
+          prompts.length === 1
+            ? 'Short summary'
+            : '{"subject":"Translated subject","body":"Translated body"}',
+        usage: { inputTokens: null, outputTokens: null }
+      }
+    }
+  }
+  const summary = await requestAiMailProposal(api, target, '', 'request-summary', 1, undefined, {
+    task: 'summary'
+  })
+  const translation = await requestAiMailProposal(
+    api,
+    target,
+    '',
+    'request-translation',
+    1,
+    undefined,
+    { task: 'translate', targetLanguage: 'Korean' }
+  )
+
+  assert.equal(summary.status, 'ready')
+  assert.equal(summary.task, 'summary')
+  assert.equal(summary.text, 'Short summary')
+  assert.equal(translation.status, 'ready')
+  assert.equal(translation.text, 'Translated body')
+  assert.equal(translation.subject, 'Translated subject')
+  assert.match(prompts[1], /Korean/)
+})
+
+test('malformed structured subject output fails closed', async () => {
+  const outcome = await requestAiMailProposal(
+    {
+      getAiMailComposeSnapshot: async () => snapshot,
+      generateAiMailDraft: async () => ({
+        ok: true,
+        text: 'subject: hi\nbody: hello',
+        usage: { inputTokens: null, outputTokens: null }
+      })
+    },
+    target,
+    '',
+    'request-invalid',
+    1,
+    undefined,
+    { task: 'subject' }
+  )
+
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'invalid_output' })
+})
+
+test('translation requires an explicit target language before capturing or generating', async () => {
+  let snapshotCalls = 0
+  const outcome = await requestAiMailProposal(
+    {
+      getAiMailComposeSnapshot: async () => {
+        snapshotCalls += 1
+        return snapshot
+      },
+      generateAiMailDraft: async () => {
+        assert.fail('translation must not generate without a target language')
+      }
+    },
+    target,
+    '',
+    'request-language-required',
+    1,
+    undefined,
+    { task: 'translate' }
+  )
+
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), {
+    status: 'invalid_request',
+    reason: 'target_language_required'
+  })
+  assert.equal(snapshotCalls, 0)
 })
 
 test('unsupported generation remains a failure and cannot create a proposal', async () => {

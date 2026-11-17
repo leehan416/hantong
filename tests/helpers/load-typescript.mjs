@@ -21,6 +21,7 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     exports: module.exports,
     module,
     URL,
+    crypto: globalThis.crypto,
     AbortController,
     TextDecoder,
     TextEncoder,
@@ -34,6 +35,9 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     require(name) {
       if (Object.hasOwn(overrides, name)) return overrides[name]
       if (name.startsWith('.')) {
+        const jsonUrl = new URL(name, fileUrl)
+        if (jsonUrl.pathname.endsWith('.json'))
+          return { default: JSON.parse(readFileSync(jsonUrl, 'utf8')) }
         const tsUrl = new URL(`${name}.ts`, fileUrl)
         const tsxUrl = new URL(`${name}.tsx`, fileUrl)
         let sourceUrl

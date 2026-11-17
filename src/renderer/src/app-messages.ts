@@ -23,15 +23,48 @@ export const messages = {
       unsupportedTarget: '이 작성 창 형식은 아직 지원하지 않습니다.',
       staleTarget: '작성 창이 닫혔거나 새로고침되었습니다. Gmail에서 다시 선택해 주세요.',
       lockedTarget: '메일 연결을 확인한 뒤 다시 시도해 주세요.',
-      capture: '현재 본문 가져오기',
-      captured: '현재 본문을 이 패널에 가져왔습니다. 메일은 전송되지 않았습니다.',
-      clearCapture: '본문 지우기',
-      capturedDraft: '가져온 본문',
+      capture: '현재 메일 가져오기',
+      captured: '현재 메일의 제목과 본문을 이 패널에 가져왔습니다. 메일은 전송되지 않았습니다.',
+      clearCapture: '가져온 메일 지우기',
+      capturedDraft: '가져온 메일',
+      subjectLabel: '제목:',
+      taskLabel: '작업',
+      taskLabels: {
+        revise: '본문 다듬기',
+        subject: '제목과 본문 추천',
+        summary: '메일 요약',
+        translate: '메일 번역'
+      },
+      taskActions: {
+        revise: '수정안 요청',
+        subject: '제목과 본문 추천',
+        summary: '요약 요청',
+        translate: '번역 요청'
+      },
+      outputLabels: {
+        revise: '본문 수정안',
+        subject: '추천 본문',
+        summary: '요약',
+        translate: '번역 본문'
+      },
+      taskPlaceholders: {
+        revise: '예: 더 짧고 따뜻한 어조로 다듬어 주세요.',
+        subject: '원하는 제목이나 어조를 선택적으로 설명해 주세요.',
+        summary: '요약할 내용을 추가로 지정할 수 있습니다.',
+        translate: '번역 방식이나 어조를 선택적으로 설명해 주세요.'
+      },
+      optionalInstruction: '추가 요청 (선택)',
+      targetLanguage: '번역 언어',
+      chooseLanguage: '언어 선택',
+      suggestedSubject: '추천 제목',
+      copySubject: '제목 복사',
+      copySummary: '요약 복사',
+      invalidOutput: '응답 형식을 확인하지 못했습니다. 다시 요청해 주세요.',
       requestLabel: '수정 요청',
       requestPlaceholder: '예: 더 짧고 따뜻한 어조로 다듬어 주세요.',
       request: '수정안 요청',
       privacy:
-        '요청을 보낼 때 현재 본문과 요청 내용이 ChatGPT로 전달됩니다. 수신자와 첨부파일은 포함하지 않습니다.',
+        '요청하면 현재 제목과 본문 및 요청 내용이 ChatGPT로 전달됩니다. 수신자와 첨부파일은 포함하지 않습니다.',
       generationBlocked:
         '계정 연결은 지원되지만, 안전한 실행 제한을 확인하는 동안 AI 생성은 사용할 수 없습니다.',
       connectFirst: 'AI 초안을 요청하려면 먼저 ChatGPT를 연결해 주세요.',
@@ -65,7 +98,15 @@ export const messages = {
       staleMutation: '대상이 바뀌어 작업을 완료하지 못했습니다. Gmail에서 다시 선택해 주세요.',
       busy: '다른 본문 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.',
       loadingSnapshot: '현재 본문을 가져오는 중…',
-      statusLoading: '작성 대상을 확인하는 중…'
+      statusLoading: '작성 대상을 확인하는 중…',
+      testResponse: '테스트 응답 요청',
+      testResponseText: '테스트 응답입니다.',
+      testSubject: '테스트 추천 제목',
+      testSuggestedBody: '테스트 추천 본문입니다.',
+      testTranslatedSubject: '테스트 번역 제목',
+      testTranslatedBody: '테스트 번역 본문입니다.',
+      testSummary: '테스트 메일 요약입니다.',
+      testResponseMode: '로컬 테스트 모드: ChatGPT 요청 없이 고정 응답을 사용합니다.'
     },
     add: '계정 추가',
     remove: '계정 삭제',
@@ -164,15 +205,48 @@ export const messages = {
       unsupportedTarget: 'This compose format is not supported yet.',
       staleTarget: 'The compose window closed or reloaded. Select it again in Gmail.',
       lockedTarget: 'Check the mail connection, then try again.',
-      capture: 'Capture current draft',
-      captured: 'The current draft is in this panel. No email was sent.',
-      clearCapture: 'Clear captured draft',
-      capturedDraft: 'Captured draft',
+      capture: 'Capture current email',
+      captured: 'The current subject and body are in this panel. No email was sent.',
+      clearCapture: 'Clear captured email',
+      capturedDraft: 'Captured email',
+      subjectLabel: 'Subject:',
+      taskLabel: 'Task',
+      taskLabels: {
+        revise: 'Revise body',
+        subject: 'Suggest subject and body',
+        summary: 'Summarize email',
+        translate: 'Translate email'
+      },
+      taskActions: {
+        revise: 'Request revision',
+        subject: 'Suggest subject and body',
+        summary: 'Request summary',
+        translate: 'Request translation'
+      },
+      outputLabels: {
+        revise: 'Revised body',
+        subject: 'Suggested body',
+        summary: 'Summary',
+        translate: 'Translated body'
+      },
+      taskPlaceholders: {
+        revise: 'For example: Make this shorter and warmer.',
+        subject: 'Optionally describe a subject or tone to use.',
+        summary: 'Optionally specify what the summary should focus on.',
+        translate: 'Optionally describe the translation style or tone.'
+      },
+      optionalInstruction: 'Additional instruction (optional)',
+      targetLanguage: 'Target language',
+      chooseLanguage: 'Choose a language',
+      suggestedSubject: 'Suggested subject',
+      copySubject: 'Copy subject',
+      copySummary: 'Copy summary',
+      invalidOutput: 'The response format could not be verified. Please try again.',
       requestLabel: 'Revision request',
       requestPlaceholder: 'For example: Make this shorter and warmer.',
       request: 'Request a revision',
       privacy:
-        'When you send a request, the current draft and your instructions are sent to ChatGPT. Recipients and attachments are excluded.',
+        'When you request a task, the current subject and body plus your instructions are sent to ChatGPT. Recipients and attachments are excluded.',
       generationBlocked:
         'Your account is connected, but AI generation is unavailable while safe execution restrictions are being verified.',
       connectFirst: 'Connect ChatGPT before requesting an AI revision.',
@@ -207,7 +281,15 @@ export const messages = {
       staleMutation: 'The target changed before this action completed. Select it again in Gmail.',
       busy: 'Another body action is in progress. Please try again shortly.',
       loadingSnapshot: 'Capturing the current draft…',
-      statusLoading: 'Checking the compose target…'
+      statusLoading: 'Checking the compose target…',
+      testResponse: 'Request test response',
+      testResponseText: 'This is a test response.',
+      testSubject: 'Test suggested subject',
+      testSuggestedBody: 'This is a test suggested body.',
+      testTranslatedSubject: 'Test translated subject',
+      testTranslatedBody: 'This is a test translated body.',
+      testSummary: 'This is a test email summary.',
+      testResponseMode: 'Local test mode: a fixed response is used without a ChatGPT request.'
     },
     add: 'Add account',
     remove: 'Remove account',

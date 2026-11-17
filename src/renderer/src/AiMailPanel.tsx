@@ -6,9 +6,11 @@ import type {
 } from '../../shared/ipc'
 import type { AppMessages } from './app-messages'
 import {
+  type AiMailTask,
   type AiMailSnapshotCapture,
   applyAiMailProposal,
   captureAiMailTargetSnapshot,
+  createAiMailGenerationSequence,
   createAiMailTargetEpoch,
   createAiMailTargetRefreshCoordinator,
   finishAiMailSnapshotCapture,
@@ -18,6 +20,7 @@ import {
 } from './ai-mail-panel-flow'
 
 const GENERATION_ENABLED = false
+const TEST_RESPONSE_MODE = true
 const TARGET_REFRESH_INTERVAL_MS = 1500
 
 type ReadySnapshot = Extract<ComposeSnapshotResult, { status: 'ready' }>
@@ -28,7 +31,9 @@ type ProposalConflict = {
   currentBody: string
 }
 type Proposal = {
+  task: AiMailTask
   text: string
+  subject?: string
   snapshot: ReadySnapshot
   applyId?: string
   applied: boolean
@@ -41,8 +46,14 @@ type PanelMessage = {
   id: string
   role: 'user' | 'assistant'
   text: string
+  task?: AiMailTask
   tone?: 'error' | 'notice'
-  retryRequest?: { instruction: string; followUp?: string }
+  retryRequest?: {
+    instruction: string
+    followUp?: string
+    task: AiMailTask
+    targetLanguage?: string
+  }
   proposal?: Proposal
 }
 type Thread = { key: string; items: PanelMessage[] }
@@ -97,6 +108,8 @@ export function AiMailPanel({
   const [snapshotStatus, setSnapshotStatus] = useState('')
   const [thread, setThread] = useState<Thread>({ key: '', items: [] })
   const [instruction, setInstruction] = useState('')
+  const [selectedTask, setSelectedTask] = useState<AiMailTask>('revise')
+  const [targetLanguage, setTargetLanguage] = useState('')
   const [pending, setPending] = useState<{ requestId: string; key: string } | null>(null)
   const [cancelError, setCancelError] = useState(false)
   const [copyErrorId, setCopyErrorId] = useState<string | null>(null)
@@ -107,7 +120,7 @@ export function AiMailPanel({
   const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
   const codexActionRevision = useRef(0)
   const conversation = useRef<{ key: string; requestId: string } | null>(null)
-  const generation = useRef(0)
+  const generation = useRef(createAiMailGenerationSequence())
   const targetRefreshSession = useRef(captureSession)
   const [acceptedTargetRefresh, setAcceptedTargetRefresh] = useState<{
     accountId: string | null
@@ -134,7 +147,8 @@ export function AiMailPanel({
   const messages = thread.key === key ? thread.items : []
   const targetReady = Boolean(target)
   const snapshotBusy = isAiMailSnapshotCaptureBusy(open, captureSession, snapshotCapture)
-  const generationAvailable = GENERATION_ENABLED && codexStatus?.state === 'connected'
+  const generationAvailable =
+    TEST_RESPONSE_MODE || (GENERATION_ENABLED && codexStatus?.state === 'connected')
 
   const acceptTargetStatus = useCallback(
     (status: ComposeTargetStatus): void => {
@@ -149,7 +163,6 @@ export function AiMailPanel({
       if (targetChanged) setInstruction('')
       if (targetChanged) {
         conversation.current = null
-        generation.current = 0
       }
       currentTargetKey.current = nextKey
       setThread((current) => (current.key === nextKey ? current : { key: nextKey, items: [] }))
@@ -308,6 +321,20 @@ export function AiMailPanel({
     }
   }
 
+  function showTestResponse(): void {
+    if (target) {
+      void runGeneration(instruction.trim(), undefined)
+      return
+    }
+    setThread((current) => ({
+      key,
+      items: [
+        ...(current.key === key ? current.items : []),
+        { id: newId(), role: 'assistant', text: text.testResponseText }
+      ]
+    }))
+  }
+
   async function disconnectCodex(): Promise<void> {
     if (codexBusy && codexStatus?.state !== 'connecting') return
     const revision = ++codexActionRevision.current
@@ -325,20 +352,32 @@ export function AiMailPanel({
     }
   }
 
-  async function runGeneration(requestText: string, followUp?: string): Promise<void> {
-    if (!target || !generationAvailable || pending) return
+  async function runGeneration(
+    requestText: string,
+    followUp?: string,
+    task: AiMailTask = selectedTask,
+    language: string = targetLanguage
+  ): Promise<void> {
+    if (!target || !generationAvailable || pending || (task === 'translate' && !language.trim()))
+      return
     const currentKey = key
-    if (conversation.current?.key !== currentKey) {
-      conversation.current = { key: currentKey, requestId: newId() }
-      generation.current = 0
+    const conversationKey = `${currentKey}:${task}:${task === 'translate' ? language : ''}`
+    if (conversation.current?.key !== conversationKey) {
+      conversation.current = { key: conversationKey, requestId: newId() }
     }
     const requestId = conversation.current.requestId
-    const requestGeneration = ++generation.current
-    const retryRequest = { instruction: requestText, ...(followUp ? { followUp } : {}) }
+    const requestGeneration = generation.current.next(currentKey)
+    const retryRequest = {
+      instruction: requestText,
+      task,
+      ...(followUp ? { followUp } : {}),
+      ...(task === 'translate' ? { targetLanguage: language } : {})
+    }
     const userMessage: PanelMessage = {
       id: newId(),
       role: 'user',
-      text: followUp ?? requestText
+      task,
+      text: followUp ?? (requestText || text.taskLabels[task])
     }
     setThread((current) => ({
       key: currentKey,
@@ -350,14 +389,36 @@ export function AiMailPanel({
     setCancelError(false)
     try {
       const outcome = await requestAiMailProposal(
-        window.api,
+        TEST_RESPONSE_MODE
+          ? {
+              ...window.api,
+              generateAiMailDraft: async () => ({
+                ok: true,
+                text:
+                  task === 'subject' || task === 'translate'
+                    ? JSON.stringify({
+                        subject: task === 'subject' ? text.testSubject : text.testTranslatedSubject,
+                        body: task === 'subject' ? text.testSuggestedBody : text.testTranslatedBody
+                      })
+                    : task === 'summary'
+                      ? text.testSummary
+                      : text.testResponseText,
+                usage: { inputTokens: null, outputTokens: null }
+              })
+            }
+          : window.api,
         target,
         requestText,
         requestId,
         requestGeneration,
-        followUp
+        followUp,
+        { task, ...(task === 'translate' ? { targetLanguage: language } : {}) }
       )
-      if (currentTargetKey.current !== currentKey) return
+      if (
+        currentTargetKey.current !== currentKey ||
+        (TEST_RESPONSE_MODE && pendingRequest.current?.requestId !== requestId)
+      )
+        return
       if (outcome.status === 'ready') {
         setThread((current) => ({
           key: currentKey,
@@ -368,7 +429,9 @@ export function AiMailPanel({
               role: 'assistant',
               text: text.proposal,
               proposal: {
+                task: outcome.task,
                 text: outcome.text,
+                ...(outcome.subject !== undefined ? { subject: outcome.subject } : {}),
                 snapshot: outcome.snapshot,
                 applied: false,
                 busy: false
@@ -378,25 +441,29 @@ export function AiMailPanel({
         }))
       } else {
         const message =
-          outcome.status === 'unavailable'
-            ? outcome.result.status === 'stale'
-              ? text.staleTarget
-              : outcome.result.status === 'access_locked'
-                ? text.lockedTarget
-                : outcome.result.status === 'unsupported'
-                  ? text.unsupportedTarget
-                  : text.noTarget
-            : outcome.status === 'stale'
-              ? text.staleTarget
-              : outcome.result.error === 'unauthenticated'
-                ? text.unauthenticated
-                : outcome.result.error === 'rate_limited'
-                  ? text.rateLimited
-                  : outcome.result.error === 'cancelled'
-                    ? text.cancelled
-                    : outcome.result.error === 'unsupported'
-                      ? text.generationUnsupported
-                      : text.generationError
+          outcome.status === 'invalid_output'
+            ? text.invalidOutput
+            : outcome.status === 'invalid_request'
+              ? text.chooseLanguage
+              : outcome.status === 'unavailable'
+                ? outcome.result.status === 'stale'
+                  ? text.staleTarget
+                  : outcome.result.status === 'access_locked'
+                    ? text.lockedTarget
+                    : outcome.result.status === 'unsupported'
+                      ? text.unsupportedTarget
+                      : text.noTarget
+                : outcome.status === 'stale'
+                  ? text.staleTarget
+                  : outcome.result.error === 'unauthenticated'
+                    ? text.unauthenticated
+                    : outcome.result.error === 'rate_limited'
+                      ? text.rateLimited
+                      : outcome.result.error === 'cancelled'
+                        ? text.cancelled
+                        : outcome.result.error === 'unsupported'
+                          ? text.generationUnsupported
+                          : text.generationError
         setThread((current) => ({
           key: currentKey,
           items: [
@@ -405,13 +472,21 @@ export function AiMailPanel({
               id: newId(),
               role: 'assistant',
               text: message,
-              tone: outcome.status === 'failed' ? 'error' : 'notice',
+              tone:
+                outcome.status === 'failed' || outcome.status === 'invalid_output'
+                  ? 'error'
+                  : 'notice',
               retryRequest
             }
           ]
         }))
       }
     } catch {
+      if (
+        currentTargetKey.current !== currentKey ||
+        (TEST_RESPONSE_MODE && pendingRequest.current?.requestId !== requestId)
+      )
+        return
       setThread((current) => ({
         key: currentKey,
         items: [
@@ -435,13 +510,39 @@ export function AiMailPanel({
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     const nextInstruction = instruction.trim()
-    if (!nextInstruction || !target || !generationAvailable) return
-    const firstRequest = messages.find((message) => message.role === 'user')?.text
-    await runGeneration(firstRequest ?? nextInstruction, firstRequest ? nextInstruction : undefined)
+    if (
+      (selectedTask === 'revise' && !nextInstruction) ||
+      (selectedTask === 'translate' && !targetLanguage) ||
+      !target ||
+      !generationAvailable
+    )
+      return
+    const firstRequest = messages.find(
+      (message) => message.role === 'user' && message.task === selectedTask
+    )?.text
+    await runGeneration(
+      firstRequest ?? nextInstruction,
+      firstRequest ? nextInstruction : undefined,
+      selectedTask,
+      targetLanguage
+    )
   }
 
   async function cancelGeneration(): Promise<void> {
     if (!pending) return
+    if (TEST_RESPONSE_MODE) {
+      pendingRequest.current = null
+      conversation.current = null
+      setPending(null)
+      setThread((current) => ({
+        ...current,
+        items: [
+          ...current.items,
+          { id: newId(), role: 'assistant', text: text.cancelled, tone: 'notice' }
+        ]
+      }))
+      return
+    }
     try {
       const result = await window.api.cancelAiMailGeneration(pending.requestId)
       if (result.cancelled) {
@@ -475,7 +576,13 @@ export function AiMailPanel({
       (message) => message.id === messageId
     )
     const proposal = item?.proposal
-    if (!proposal || proposal.busy || proposal.snapshot.accountId !== activeAccountId || !target)
+    if (
+      !proposal ||
+      proposal.task === 'summary' ||
+      proposal.busy ||
+      proposal.snapshot.accountId !== activeAccountId ||
+      !target
+    )
       return
     setProposalBusy(messageId, true)
     try {
@@ -626,7 +733,18 @@ export function AiMailPanel({
         />
         <div className="ai-mail-connection-copy">
           <strong>{codexLabel}</strong>
+          {TEST_RESPONSE_MODE && <p>{text.testResponseMode}</p>}
           {codexStatus?.state === 'connected' && <p>{text.generationBlocked}</p>}
+          <button
+            className="ai-mail-secondary"
+            type="button"
+            disabled={
+              !targetReady || Boolean(pending) || (selectedTask === 'translate' && !targetLanguage)
+            }
+            onClick={showTestResponse}
+          >
+            {text.testResponse}
+          </button>
         </div>
         {codexStatus?.state === 'connected' ? (
           <button
@@ -686,8 +804,12 @@ export function AiMailPanel({
             {capturedSnapshot &&
               capturedSnapshot.accountId === target.accountId &&
               capturedSnapshot.composeId === target.composeId && (
-                <details className="ai-mail-captured">
+                <details open className="ai-mail-captured">
                   <summary>{text.capturedDraft}</summary>
+                  <p>
+                    <strong>{text.subjectLabel}</strong>{' '}
+                    {capturedSnapshot.subject || text.newMessage}
+                  </p>
                   <pre>{capturedSnapshot.body || text.newMessage}</pre>
                   <button
                     className="ai-mail-text-button"
@@ -720,7 +842,9 @@ export function AiMailPanel({
                 onClick={() =>
                   void runGeneration(
                     message.retryRequest?.instruction ?? '',
-                    message.retryRequest?.followUp
+                    message.retryRequest?.followUp,
+                    message.retryRequest?.task,
+                    message.retryRequest?.targetLanguage
                   )
                 }
               >
@@ -729,10 +853,24 @@ export function AiMailPanel({
             )}
             {message.proposal && (
               <div className="ai-mail-proposal">
-                <h2>{text.proposal}</h2>
+                <h2>{text.taskLabels[message.proposal.task]}</h2>
+                {message.proposal.subject !== undefined && (
+                  <div className="ai-mail-suggested-subject">
+                    <strong>{text.suggestedSubject}</strong>
+                    <p>{message.proposal.subject || text.newMessage}</p>
+                    <button
+                      className="ai-mail-text-button"
+                      type="button"
+                      onClick={() => void copyProposal(message.id, message.proposal?.subject ?? '')}
+                    >
+                      {text.copySubject}
+                    </button>
+                  </div>
+                )}
+                <strong>{text.outputLabels[message.proposal.task]}</strong>
                 <pre>{message.proposal.text}</pre>
                 <div className="ai-mail-proposal-actions">
-                  {!message.proposal.applied ? (
+                  {message.proposal.task !== 'summary' && !message.proposal.applied ? (
                     <button
                       className="ai-mail-primary"
                       type="button"
@@ -746,7 +884,7 @@ export function AiMailPanel({
                     >
                       {message.proposal.busy ? text.loadingSnapshot : text.apply}
                     </button>
-                  ) : (
+                  ) : message.proposal.task !== 'summary' ? (
                     <button
                       className="ai-mail-text-button"
                       type="button"
@@ -755,14 +893,14 @@ export function AiMailPanel({
                     >
                       {text.undo}
                     </button>
-                  )}
+                  ) : null}
                   <button
                     className="ai-mail-secondary"
                     type="button"
                     disabled={message.proposal.busy}
                     onClick={() => void copyProposal(message.id, message.proposal?.text ?? '')}
                   >
-                    {text.copy}
+                    {message.proposal.task === 'summary' ? text.copySummary : text.copy}
                   </button>
                 </div>
                 {message.proposal.feedback && (
@@ -877,19 +1015,63 @@ export function AiMailPanel({
       </section>
 
       <form className="ai-mail-compose" noValidate onSubmit={(event) => void handleSubmit(event)}>
-        <label htmlFor="ai-mail-instruction">{text.requestLabel}</label>
+        <fieldset className="ai-mail-choice-group" disabled={!targetReady || Boolean(pending)}>
+          <legend>{text.taskLabel}</legend>
+          {(['revise', 'subject', 'summary', 'translate'] as const).map((task) => (
+            <label key={task}>
+              <input
+                type="radio"
+                name="ai-mail-task"
+                value={task}
+                checked={selectedTask === task}
+                onChange={() => setSelectedTask(task)}
+              />
+              <span>{text.taskLabels[task]}</span>
+            </label>
+          ))}
+        </fieldset>
+        {selectedTask === 'translate' && (
+          <fieldset className="ai-mail-choice-group" disabled={!targetReady || Boolean(pending)}>
+            <legend>{text.targetLanguage}</legend>
+            <label>
+              <input
+                type="radio"
+                name="ai-mail-language"
+                value="English"
+                checked={targetLanguage === 'English'}
+                onChange={() => setTargetLanguage('English')}
+              />
+              <span>English</span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="ai-mail-language"
+                value="Korean"
+                checked={targetLanguage === 'Korean'}
+                onChange={() => setTargetLanguage('Korean')}
+              />
+              <span>한국어</span>
+            </label>
+          </fieldset>
+        )}
+        <label htmlFor="ai-mail-instruction">
+          {selectedTask === 'revise' ? text.requestLabel : text.optionalInstruction}
+        </label>
         <textarea
           id="ai-mail-instruction"
           className="resize-none"
           value={instruction}
           maxLength={2000}
-          placeholder={targetReady ? text.requestPlaceholder : text.noTarget}
+          placeholder={targetReady ? text.taskPlaceholders[selectedTask] : text.noTarget}
           disabled={!targetReady || Boolean(pending)}
           onChange={(event) => setInstruction(event.target.value)}
         />
         <p className="ai-mail-privacy">
           {generationAvailable
-            ? text.privacy
+            ? TEST_RESPONSE_MODE
+              ? text.testResponseMode
+              : text.privacy
             : codexStatus?.state === 'connected'
               ? text.generationBlocked
               : text.connectFirst}
@@ -897,9 +1079,15 @@ export function AiMailPanel({
         <button
           className="ai-mail-primary"
           type="submit"
-          disabled={!targetReady || !instruction.trim() || !generationAvailable || Boolean(pending)}
+          disabled={
+            !targetReady ||
+            (selectedTask === 'revise' && !instruction.trim()) ||
+            (selectedTask === 'translate' && !targetLanguage) ||
+            !generationAvailable ||
+            Boolean(pending)
+          }
         >
-          {pending ? text.generating : text.request}
+          {pending ? text.generating : text.taskActions[selectedTask]}
         </button>
       </form>
     </aside>
