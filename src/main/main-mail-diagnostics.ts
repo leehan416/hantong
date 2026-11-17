@@ -24,7 +24,7 @@ export function createMainMailDiagnostics(dependencies: {
   onRelay(event: Parameters<RelayEvent>[0]): void
 } {
   function onUnread(event: Parameters<UnreadEvent>[0]): void {
-    if (event.type === 'unread.success' || event.type === 'unread.applied')
+    if (event.type === 'unread.applied')
       dependencies.notifications()?.event({
         type: 'unread',
         accountId: event.accountId,

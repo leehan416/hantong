@@ -16,6 +16,41 @@ type AiMailPanelApi = Pick<
 export type AiMailTargetCapture = { key: string; epoch: number }
 export type AiMailSnapshotCapture = AiMailTargetCapture & { session: number }
 
+export type AiMailTargetRefresh = {
+  query: () => Promise<{ status: ComposeTargetStatus; current: boolean }>
+  accept: () => boolean
+  setActive: (active: boolean) => void
+}
+
+export function createAiMailTargetRefreshCoordinator(options: {
+  query: () => Promise<ComposeTargetStatus>
+}): AiMailTargetRefresh {
+  let revision = 0
+  let active = false
+  return {
+    query: async () => {
+      const requestRevision = ++revision
+      try {
+        const status = await options.query()
+        return { status, current: active && requestRevision === revision }
+      } catch (error) {
+        if (active && requestRevision === revision) throw error
+        return { status: { status: 'stale' }, current: false }
+      }
+    },
+    accept: () => {
+      if (!active) return false
+      revision += 1
+      return true
+    },
+    setActive: (nextActive) => {
+      if (active === nextActive) return
+      active = nextActive
+      revision += 1
+    }
+  }
+}
+
 export type AiMailTargetEpoch = {
   setTarget: (nextTargetKey: string) => void
   invalidate: () => void

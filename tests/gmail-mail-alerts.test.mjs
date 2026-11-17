@@ -243,10 +243,156 @@ test('more than three arrivals collapse the rest into a generic summary alert', 
     historyId: '2',
     addedMessageIds: ['m1', 'm2', 'm3', 'm4', 'm5']
   })
-  assert.deepEqual(looked, ['m1', 'm2', 'm3'])
+  assert.deepEqual(looked, ['m1', 'm2', 'm3', 'm4', 'm5'])
   assert.equal(alerts.length, 4)
   assert.equal(alerts[0].body, '(no subject)')
   assert.deepEqual(alerts[3], { accountId: first, title: 'New mail', body: '2 more new messages' })
+})
+
+test('cutoff zero only collapses eligible unread arrivals', async () => {
+  const { module, alerts } = setup({
+    readSummary: async (_id, messageId) => ({
+      ...unread('Ann <ann@example.com>', messageId),
+      unreadInInbox: false
+    })
+  })
+  await module.onChanges(first, {
+    kind: 'changes',
+    historyId: '2',
+    addedMessageIds: ['m1', 'm2', 'm3', 'm4', 'm5']
+  })
+  assert.deepEqual(alerts, [])
+})
+
+test('cutoff zero counts only eligible arrivals after the three details', async () => {
+  const { module, alerts } = setup({
+    readSummary: async (_id, messageId) => {
+      if (messageId === 'failed') throw new Error('offline')
+      return {
+        ...unread('Ann <ann@example.com>', messageId),
+        unreadInInbox: messageId !== 'read'
+      }
+    }
+  })
+  await module.onChanges(first, {
+    kind: 'changes',
+    historyId: '2',
+    addedMessageIds: ['m1', 'm2', 'read', 'm3', 'failed', 'm4', 'm5']
+  })
+  assert.deepEqual(alerts, [
+    { accountId: first, title: 'Ann', body: 'm1' },
+    { accountId: first, title: 'Ann', body: 'm2' },
+    { accountId: first, title: 'Ann', body: 'm3' },
+    { accountId: first, title: '새 메일', body: '새 메일 2통이 더 있습니다' }
+  ])
+})
+
+test('cutoff zero reads summaries with bounded concurrency', async () => {
+  let active = 0
+  let maximum = 0
+  const finish = []
+  const { module } = setup({
+    readSummary: (_id, messageId) => {
+      active += 1
+      maximum = Math.max(maximum, active)
+      return new Promise((resolve) =>
+        finish.push(() => {
+          active -= 1
+          resolve(unread('Ann <ann@example.com>', messageId))
+        })
+      )
+    }
+  })
+  const pending = module.onChanges(first, {
+    kind: 'changes',
+    historyId: '2',
+    addedMessageIds: Array.from({ length: 10 }, (_, index) => `m${index}`)
+  })
+  let released = 0
+  while (released < 10) {
+    while (!finish.length) await new Promise((resolve) => setImmediate(resolve))
+    const chunk = finish.splice(0)
+    released += chunk.length
+    for (const resolve of chunk) resolve()
+  }
+  await pending
+  assert.equal(maximum <= 4, true)
+  assert.equal(maximum, 4)
+})
+
+test('newer unread reads fence older completions', async () => {
+  const finish = []
+  const { module, badges } = setup({
+    readUnreadCount: () => new Promise((resolve) => finish.push(resolve))
+  })
+  const older = module.onChanges(first, { kind: 'baseline', historyId: '1', addedMessageIds: [] })
+  const newer = module.onChanges(first, { kind: 'baseline', historyId: '2', addedMessageIds: [] })
+  finish[1](0)
+  await newer
+  finish[0](4)
+  await older
+  assert.deepEqual(JSON.parse(JSON.stringify([...module.unreadCounts()])), [[first, 0]])
+  assert.deepEqual(badges, [0])
+})
+
+test('failed newer unread reads still fence older completions', async () => {
+  const finish = []
+  const outcomes = []
+  const { module, badges } = setup({
+    readUnreadCount: () => new Promise((resolve, reject) => finish.push({ resolve, reject })),
+    onDiagnostic: (event) => outcomes.push(event.type)
+  })
+  const older = module.onChanges(first, { kind: 'baseline', historyId: '1', addedMessageIds: [] })
+  const newer = module.onChanges(first, { kind: 'baseline', historyId: '2', addedMessageIds: [] })
+  finish[1].reject(new Error('offline'))
+  await newer
+  finish[0].resolve(4)
+  await older
+  assert.deepEqual([...module.unreadCounts()], [])
+  assert.deepEqual(badges, [])
+  assert.deepEqual(outcomes, ['unread.failure', 'unread.stale'])
+})
+
+test('unread request sequencing is independent across accounts', async () => {
+  const finish = []
+  const { module, badges } = setup({
+    readUnreadCount: () => new Promise((resolve) => finish.push(resolve))
+  })
+  const firstRead = module.onChanges(first, {
+    kind: 'baseline',
+    historyId: '1',
+    addedMessageIds: []
+  })
+  const secondRead = module.onChanges(second, {
+    kind: 'baseline',
+    historyId: '1',
+    addedMessageIds: []
+  })
+  finish[1](7)
+  finish[0](2)
+  await Promise.all([firstRead, secondRead])
+  assert.deepEqual(JSON.parse(JSON.stringify([...module.unreadCounts()])), [
+    [first, 2],
+    [second, 7]
+  ])
+  assert.deepEqual(badges, [2, 9])
+})
+
+test('account removal fences pending unread reads independently of request sequencing', async () => {
+  const finish = []
+  const { module, badges } = setup({
+    readUnreadCount: () => new Promise((resolve) => finish.push(resolve))
+  })
+  const removedRead = module.onChanges(second, {
+    kind: 'baseline',
+    historyId: '1',
+    addedMessageIds: []
+  })
+  module.remove(second)
+  finish[0](9)
+  await removedRead
+  assert.deepEqual(JSON.parse(JSON.stringify([...module.unreadCounts()])), [])
+  assert.deepEqual(badges, [])
 })
 
 test('collapsed alert title is localized', async () => {
@@ -293,5 +439,5 @@ test('unread diagnostics separate fetch failure from stale and applied results',
   // Account removal changes the generation before the pending unread result can be applied.
   module.remove(first)
   await pending
-  assert.deepEqual(outcomes, ['unread.success', 'unread.applied', 'unread.success', 'unread.stale'])
+  assert.deepEqual(outcomes, ['unread.success', 'unread.applied', 'unread.stale'])
 })

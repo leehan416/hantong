@@ -83,6 +83,7 @@ export function AccountSettings({
                       }))
                     }
                     onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing || event.keyCode === 229) return
                       if (event.key === 'Escape') {
                         event.preventDefault()
                         nameEditCancelledRef.current = true

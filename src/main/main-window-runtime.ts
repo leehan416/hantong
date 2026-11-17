@@ -102,9 +102,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
         .windowState()
         ?.write({ bounds: window.getNormalBounds(), maximized: window.isMaximized() })
       for (const accountId of dependencies.recovery.pendingAccountIds()) {
-        dependencies.recovery.clearPending(accountId)
-        const runtime = dependencies.googleRuntime()
-        void runtime?.cancel(accountId).catch(() => undefined)
+        void dependencies.recovery.clearPending(accountId)
       }
       // Hiding keeps Main, the relay stream and notifications alive; quitting goes through before-quit.
       if (
@@ -137,9 +135,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
         if (activeId === status.accountId) {
           for (const pendingId of dependencies.recovery.pendingAccountIds()) {
             if (pendingId !== activeId) {
-              dependencies.recovery.clearPending(pendingId)
-              const runtime = dependencies.googleRuntime()
-              void runtime?.cancel(pendingId).catch(() => undefined)
+              void dependencies.recovery.clearPending(pendingId)
             }
           }
         }

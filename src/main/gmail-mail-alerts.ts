@@ -42,6 +42,8 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
   const counts = new Map<string, number>()
   // Bumped on remove so results that finish afterwards are dropped.
   const generations = new Map<string, number>()
+  // Each sync starts a newer unread read; stale reads must not overwrite it.
+  const unreadRequests = new Map<string, number>()
   const report = (
     event: Parameters<NonNullable<GmailMailAlertsDependencies['onDiagnostic']>>[0]
   ): void => {
@@ -60,19 +62,24 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
   const current = (accountId: string, generation: number): boolean =>
     (generations.get(accountId) ?? 0) === generation && dependencies.accountExists(accountId)
 
-  const refreshUnread = async (accountId: string, generation: number): Promise<void> => {
+  const refreshUnread = async (
+    accountId: string,
+    generation: number,
+    request: number
+  ): Promise<void> => {
     let count: number
     try {
       count = await dependencies.readUnreadCount(accountId)
     } catch {
+      if (!current(accountId, generation) || unreadRequests.get(accountId) !== request) return
       report({ type: 'unread.failure', accountId })
       return
     }
-    report({ type: 'unread.success', accountId })
-    if (!current(accountId, generation)) {
+    if (!current(accountId, generation) || unreadRequests.get(accountId) !== request) {
       report({ type: 'unread.stale', accountId })
       return
     }
+    report({ type: 'unread.success', accountId })
     counts.set(accountId, count)
     publishBadge()
     report({ type: 'unread.applied', accountId, count })
@@ -102,37 +109,6 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
       return true
     }
 
-    if (cutoff === 0) {
-      const detailed = messageIds.slice(0, MAX_DETAILED_ALERTS)
-      const summaries = await Promise.allSettled(
-        detailed.map((id) => dependencies.readSummary(accountId, id))
-      )
-      if (!batchCurrent()) return
-      for (const summary of summaries) {
-        // Skip mail already read or archived elsewhere, and lookups that failed.
-        if (summary.status !== 'fulfilled' || !summary.value.unreadInInbox) continue
-        const sender = senderName(summary.value.from)
-        if (
-          !sendAlert({
-            accountId,
-            title: sender || (korean ? '새 메일' : 'New mail'),
-            body: summary.value.subject.trim() || (korean ? '(제목 없음)' : '(no subject)')
-          })
-        ) {
-          return
-        }
-      }
-      const rest = messageIds.length - detailed.length
-      if (rest > 0) {
-        sendAlert({
-          accountId,
-          title: korean ? '새 메일' : 'New mail',
-          body: korean ? `새 메일 ${rest}통이 더 있습니다` : `${rest} more new messages`
-        })
-      }
-      return
-    }
-
     const eligible: GmailMessageSummary[] = []
     for (let offset = 0; offset < messageIds.length; offset += MAX_SUMMARY_CONCURRENCY) {
       if (!batchCurrent() || !dependencies.notificationsEnabled(accountId)) return
@@ -143,6 +119,10 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
       if (!batchCurrent()) return
       for (const summary of summaries) {
         if (summary.status !== 'fulfilled' || !summary.value.unreadInInbox) continue
+        if (cutoff === 0) {
+          eligible.push(summary.value)
+          continue
+        }
         const receivedAt = summary.value.receivedAt
         if (
           typeof receivedAt !== 'number' ||
@@ -182,8 +162,10 @@ export function createGmailMailAlerts(dependencies: GmailMailAlertsDependencies)
   return {
     async onChanges(accountId, result): Promise<void> {
       const generation = generations.get(accountId) ?? 0
+      const request = (unreadRequests.get(accountId) ?? 0) + 1
+      unreadRequests.set(accountId, request)
       const pauseAtArrival = dependencies.notificationPause()
-      const work = [refreshUnread(accountId, generation)]
+      const work = [refreshUnread(accountId, generation, request)]
       // A baseline is the first look at the mailbox; existing mail never notifies.
       if (result.kind === 'changes' && result.addedMessageIds.length) {
         if (!pauseAtArrival.paused && dependencies.notificationsEnabled(accountId)) {

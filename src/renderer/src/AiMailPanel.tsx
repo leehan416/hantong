@@ -10,6 +10,7 @@ import {
   applyAiMailProposal,
   captureAiMailTargetSnapshot,
   createAiMailTargetEpoch,
+  createAiMailTargetRefreshCoordinator,
   finishAiMailSnapshotCapture,
   isAiMailSnapshotCaptureBusy,
   requestAiMailProposal,
@@ -17,6 +18,7 @@ import {
 } from './ai-mail-panel-flow'
 
 const GENERATION_ENABLED = false
+const TARGET_REFRESH_INTERVAL_MS = 1500
 
 type ReadySnapshot = Extract<ComposeSnapshotResult, { status: 'ready' }>
 type ReadyTarget = Extract<ComposeTargetStatus, { status: 'ready' }>
@@ -106,12 +108,27 @@ export function AiMailPanel({
   const codexActionRevision = useRef(0)
   const conversation = useRef<{ key: string; requestId: string } | null>(null)
   const generation = useRef(0)
+  const targetRefreshSession = useRef(captureSession)
+  const [acceptedTargetRefresh, setAcceptedTargetRefresh] = useState<{
+    accountId: string | null
+    session: number
+  } | null>(null)
+  const targetRefresh = useRef(
+    createAiMailTargetRefreshCoordinator({
+      query: () => window.api.getAiMailComposeTargetStatus()
+    })
+  )
+  const targetRefreshReady =
+    acceptedTargetRefresh?.accountId === activeAccountId &&
+    acceptedTargetRefresh.session === captureSession
   const target = useMemo<ReadyTarget | null>(
     () =>
-      targetStatus.status === 'ready' && targetStatus.accountId === activeAccountId
+      targetRefreshReady &&
+      targetStatus.status === 'ready' &&
+      targetStatus.accountId === activeAccountId
         ? targetStatus
         : null,
-    [activeAccountId, targetStatus]
+    [activeAccountId, targetRefreshReady, targetStatus]
   )
   const key = targetKey(target)
   const messages = thread.key === key ? thread.items : []
@@ -126,17 +143,20 @@ export function AiMailPanel({
         status.status === 'ready' && status.accountId === activeAccountId
           ? `${status.accountId}:${status.composeId}`
           : ''
+      const targetChanged = currentTargetKey.current !== nextKey
       captureEpoch.current.setTarget(nextKey)
-      if (currentTargetKey.current !== nextKey) setSnapshotCapture(null)
-      if (currentTargetKey.current !== nextKey) setInstruction('')
-      if (currentTargetKey.current !== nextKey) {
+      if (targetChanged) setSnapshotCapture(null)
+      if (targetChanged) setInstruction('')
+      if (targetChanged) {
         conversation.current = null
         generation.current = 0
       }
       currentTargetKey.current = nextKey
       setThread((current) => (current.key === nextKey ? current : { key: nextKey, items: [] }))
-      setCapturedSnapshot(null)
-      setSnapshotStatus('')
+      if (targetChanged) {
+        setCapturedSnapshot(null)
+        setSnapshotStatus('')
+      }
       if (pendingRequest.current && pendingRequest.current.key !== nextKey) {
         void window.api
           .cancelAiMailGeneration(pendingRequest.current.requestId)
@@ -150,22 +170,24 @@ export function AiMailPanel({
 
   useEffect(() => {
     const captureEpochForEffect = captureEpoch.current
+    const targetRefreshCoordinator = targetRefresh.current
     currentTargetKey.current = ''
     let current = true
     const unsubscribeTarget = window.api.onAiMailComposeTarget((status) => {
       if (!current) return
+      if (!targetRefreshCoordinator.accept()) return
       acceptTargetStatus(status)
+      setAcceptedTargetRefresh({
+        accountId: activeAccountId,
+        session: targetRefreshSession.current
+      })
     })
     const unsubscribeCodex = window.api.onAiMailCodexStatus((status) => {
       if (current) setCodexStatus(status)
     })
-    void Promise.all([
-      window.api.getAiMailComposeTargetStatus(),
-      window.api.getAiMailCodexStatus()
-    ]).then(
-      ([nextTarget, nextCodex]) => {
+    void window.api.getAiMailCodexStatus().then(
+      (nextCodex) => {
         if (!current) return
-        acceptTargetStatus(nextTarget)
         setCodexStatus(nextCodex)
         setStatusFailed(false)
       },
@@ -180,6 +202,34 @@ export function AiMailPanel({
       unsubscribeCodex()
     }
   }, [activeAccountId, acceptTargetStatus])
+
+  useEffect(() => {
+    const targetRefreshCoordinator = targetRefresh.current
+    targetRefreshSession.current = captureSession
+    targetRefreshCoordinator.setActive(open)
+    if (!open) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let disposed = false
+    const refresh = async (): Promise<void> => {
+      try {
+        const outcome = await targetRefreshCoordinator.query()
+        if (outcome.current) {
+          acceptTargetStatus(outcome.status)
+          setAcceptedTargetRefresh({ accountId: activeAccountId, session: captureSession })
+        }
+      } catch {
+        // Keep the last known target while the bounded refresh retries.
+      } finally {
+        if (!disposed) timer = setTimeout(() => void refresh(), TARGET_REFRESH_INTERVAL_MS)
+      }
+    }
+    void refresh()
+    return () => {
+      disposed = true
+      if (timer !== undefined) clearTimeout(timer)
+      targetRefreshCoordinator.setActive(false)
+    }
+  }, [open, activeAccountId, captureSession, acceptTargetStatus])
 
   useEffect(() => {
     if (open) closeButtonRef.current?.focus()
@@ -538,8 +588,9 @@ export function AiMailPanel({
   if (!open) return null
 
   const codexLabel = statusFailed ? text.connectionError : statusText(codexStatus, text)
-  const targetMessage =
-    targetStatus.status === 'ready' && !target
+  const targetMessage = !targetRefreshReady
+    ? text.checking
+    : targetStatus.status === 'ready' && !target
       ? text.staleTarget
       : targetStatus.status === 'unsupported'
         ? text.unsupportedTarget

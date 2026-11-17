@@ -356,8 +356,7 @@ export function createMainMailRuntime(dependencies: MainMailRuntimeDependencies)
     syncNow: (id) => gmailRelaySync?.syncAll([id]),
     recover: async (id) => dependencies.recovery.request(id),
     cancelRecovery: async (id) => {
-      dependencies.recovery.clearPending(id)
-      await googleConnectionRuntime?.cancel(id)
+      await dependencies.recovery.clearPending(id)
     },
     reconnectRelay: async (id) => {
       await relayRuntime?.reconnect(id)

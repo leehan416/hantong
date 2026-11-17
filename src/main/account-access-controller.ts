@@ -64,6 +64,8 @@ export function createAccountAccessController(dependencies: AccessDependencies):
   getState(accountId: string): AccountAccessState
   onViewReady(accountId: string): void
   connect(accountId: string): Promise<AccountAccessState>
+  recover(accountId: string): Promise<AccountAccessState>
+  cancelRecovery(accountId: string): Promise<void>
   cancel(accountId: string): Promise<AccountAccessState>
   disconnect(accountId: string): Promise<AccountAccessState>
   invalidate(accountId: string): void
@@ -78,6 +80,10 @@ export function createAccountAccessController(dependencies: AccessDependencies):
   const autoSuppressed = new Set<string>()
   const controllers = new Map<string, AbortController>()
   const verificationCache = new Map<string, VerificationCacheEntry>()
+  const recoveryOperations = new Map<string, Promise<AccountAccessState>>()
+  const recoveryCancellations = new Map<string, Promise<void>>()
+  const recoveryRequestVersions = new Map<string, number>()
+  const activeRecoveries = new Map<string, Promise<AccountAccessState>>()
   const now = dependencies.now ?? Date.now
   const timer = dependencies.setTimeout ?? setTimeout
   const clear = dependencies.clearTimeout ?? clearTimeout
@@ -398,6 +404,182 @@ export function createAccountAccessController(dependencies: AccessDependencies):
     }
   }
 
+  async function performRecovery(accountId: string): Promise<AccountAccessState> {
+    if (
+      disposed ||
+      !dependencies.accountExists(accountId) ||
+      dependencies.views.getActiveAccountId() !== accountId
+    )
+      return publish(accountId, 'error', 'error')
+    const document = dependencies.views.getDocumentState(accountId)
+    if (document.kind !== 'mail' || !document.ready || document.logoutFailed)
+      return publish(accountId, 'sign_in', 'disconnected')
+    releasePrevious(accountId)
+    handledRevisions.set(accountId, document.revision)
+    autoSuppressed.delete(accountId)
+    const expectedAttempt = (attempts.get(accountId) ?? 0) + 1
+    attempts.set(accountId, expectedAttempt)
+    controllers.get(accountId)?.abort()
+    controllers.delete(accountId)
+    const previousGeneration = safeGeneration(accountId)
+    const wasValidated = verifiedGrants.has(accountId) && getState(accountId).status === 'ready'
+    publish(accountId, wasValidated ? 'ready' : 'checking', 'connecting')
+    let connected: Awaited<ReturnType<AccessRuntime['connect']>>
+    try {
+      connected = await dependencies.runtime.connect(accountId)
+    } catch {
+      connected = { status: 'error' }
+    }
+    if (!current(accountId, document.revision, expectedAttempt)) return getState(accountId)
+    if (connected.status !== 'connected') {
+      const restored = wasValidated
+        ? await restorePreviousGrant(
+            accountId,
+            document.revision,
+            expectedAttempt,
+            previousGeneration
+          )
+        : false
+      if (!current(accountId, document.revision, expectedAttempt)) return getState(accountId)
+      if (restored) publish(accountId, 'ready', 'connected')
+      else if (wasValidated) {
+        lockRecoveryAccess(accountId)
+        publish(accountId, 'error', 'reconnect_required')
+      } else
+        publish(
+          accountId,
+          connected.status === 'disconnected' ? 'required' : 'error',
+          connected.status
+        )
+      throw new Error('Notification recovery did not complete')
+    }
+    // Acceptance may have replaced the stored Google grant. Close the old document before any
+    // profile or Gmail-page identity checks await external work.
+    dependencies.views.setMailAccess(accountId, false)
+    publish(accountId, 'checking', 'connecting')
+    const valid = await validateGrant(accountId, document.revision, expectedAttempt)
+    if (!current(accountId, document.revision, expectedAttempt)) return getState(accountId)
+    if (valid) return publish(accountId, 'ready', 'connected')
+    lockRecoveryAccess(accountId)
+    return publish(accountId, 'error', 'reconnect_required')
+  }
+
+  function lockRecoveryAccess(accountId: string): void {
+    verificationCache.delete(accountId)
+    verifiedGrants.delete(accountId)
+    dependencies.views.setMailAccess(accountId, false)
+  }
+
+  async function restorePreviousGrant(
+    accountId: string,
+    revision: number,
+    expectedAttempt: number,
+    expectedGeneration: number | null
+  ): Promise<boolean> {
+    if (expectedGeneration === null || !currentDocument(accountId, revision, expectedAttempt))
+      return false
+    try {
+      const stored = await dependencies.connections.getStatus(accountId)
+      if (
+        stored.status !== 'connected' ||
+        stored.emailAddress.toLowerCase() !== verificationCache.get(accountId)?.emailAddress ||
+        safeGeneration(accountId) !== expectedGeneration ||
+        !currentDocument(accountId, revision, expectedAttempt)
+      )
+        return false
+      const restored = dependencies.views.setMailAccess(accountId, true, revision)
+      if (!restored) return false
+      const remainsCurrent =
+        currentDocument(accountId, revision, expectedAttempt) &&
+        safeGeneration(accountId) === expectedGeneration
+      if (!remainsCurrent) dependencies.views.setMailAccess(accountId, false)
+      return remainsCurrent
+    } catch {
+      return false
+    }
+  }
+
+  function recover(accountId: string): Promise<AccountAccessState> {
+    const existing = recoveryOperations.get(accountId)
+    if (existing) return existing
+    const requestVersion = (recoveryRequestVersions.get(accountId) ?? 0) + 1
+    recoveryRequestVersions.set(accountId, requestVersion)
+    const cancellation = recoveryCancellations.get(accountId)
+    let resolveOperation: (state: AccountAccessState) => void = () => {}
+    let rejectOperation: (error: Error) => void = () => {}
+    const operation = new Promise<AccountAccessState>((resolve, reject) => {
+      resolveOperation = resolve
+      rejectOperation = reject
+    })
+    recoveryOperations.set(accountId, operation)
+    const start = (): Promise<AccountAccessState> => {
+      if (
+        disposed ||
+        recoveryRequestVersions.get(accountId) !== requestVersion ||
+        recoveryOperations.get(accountId) !== operation
+      )
+        return Promise.reject(new Error('Notification recovery was cancelled'))
+      activeRecoveries.set(accountId, operation)
+      return performRecovery(accountId).finally(() => {
+        if (activeRecoveries.get(accountId) === operation) activeRecoveries.delete(accountId)
+      })
+    }
+    const work = cancellation ? cancellation.then(start) : start()
+    void work.then(resolveOperation, rejectOperation)
+    const cleanup = (): void => {
+      if (recoveryOperations.get(accountId) === operation) recoveryOperations.delete(accountId)
+    }
+    void operation.then(cleanup, cleanup)
+    return operation
+  }
+
+  async function performRecoveryCancellation(
+    accountId: string,
+    ownedOperation: Promise<AccountAccessState>
+  ): Promise<void> {
+    if (activeRecoveries.get(accountId) !== ownedOperation) return
+    const wasValidated = verifiedGrants.has(accountId) && getState(accountId).status === 'ready'
+    const generation = safeGeneration(accountId)
+    const document = dependencies.views.getDocumentState(accountId)
+    const expectedAttempt = (attempts.get(accountId) ?? 0) + 1
+    attempts.set(accountId, expectedAttempt)
+    recoveryOperations.delete(accountId)
+    controllers.get(accountId)?.abort()
+    controllers.delete(accountId)
+    try {
+      await dependencies.runtime.cancel(accountId)
+    } catch {
+      // The grant is restored only after the generation check below.
+    }
+    if (!currentDocument(accountId, document.revision, expectedAttempt)) return
+    const restored =
+      wasValidated && generation !== null && safeGeneration(accountId) === generation
+        ? await restorePreviousGrant(accountId, document.revision, expectedAttempt, generation)
+        : false
+    if (!currentDocument(accountId, document.revision, expectedAttempt)) return
+    if (restored) publish(accountId, 'ready', 'connected')
+    else if (wasValidated) {
+      lockRecoveryAccess(accountId)
+      publish(accountId, 'error', 'reconnect_required')
+    } else publish(accountId, 'required', 'disconnected')
+  }
+
+  function cancelRecovery(accountId: string): Promise<void> {
+    const existing = recoveryCancellations.get(accountId)
+    if (!existing && !recoveryOperations.has(accountId)) return Promise.resolve()
+    recoveryRequestVersions.set(accountId, (recoveryRequestVersions.get(accountId) ?? 0) + 1)
+    recoveryOperations.delete(accountId)
+    if (existing) return existing
+    const ownedOperation = activeRecoveries.get(accountId)
+    if (!ownedOperation) return Promise.resolve()
+    const cancellation = performRecoveryCancellation(accountId, ownedOperation).finally(() => {
+      if (recoveryCancellations.get(accountId) === cancellation)
+        recoveryCancellations.delete(accountId)
+    })
+    recoveryCancellations.set(accountId, cancellation)
+    return cancellation
+  }
+
   // Only the active account may hold a pending OAuth; a stale one would keep account switching locked.
   function releasePrevious(accountId: string): void {
     if (lastActiveAccountId && lastActiveAccountId !== accountId) {
@@ -506,6 +688,8 @@ export function createAccountAccessController(dependencies: AccessDependencies):
       publish(accountId, 'checking', getState(accountId).connectionStatus)
       return connectAndValidate(accountId, document.revision, expectedAttempt, true)
     },
+    recover,
+    cancelRecovery,
     async cancel(accountId) {
       autoSuppressed.add(accountId)
       revoke(accountId)

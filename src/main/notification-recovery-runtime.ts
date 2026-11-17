@@ -29,7 +29,7 @@ export interface NotificationRecoveryDependencies {
 
 export function createNotificationRecoveryRuntime(dependencies: NotificationRecoveryDependencies): {
   startPending(accountId: string): void
-  clearPending(accountId: string): void
+  clearPending(accountId: string): Promise<void>
   request(accountId: string): Promise<void>
   showDialog(accountId: string, status: 'reconnect_required' | 'storage_error'): void
   hasPending(accountId?: string): boolean
@@ -51,7 +51,7 @@ export function createNotificationRecoveryRuntime(dependencies: NotificationReco
     // Recovery reconnects through the access gate so it shows progress, can cancel, and releases
     // any other account's pending OAuth instead of leaving account switching locked.
     void access
-      .connect(accountId)
+      .recover(accountId)
       .then((state) => {
         if (state.connectionStatus !== 'connected') {
           pending.reject(new Error('Notification recovery did not complete'))
@@ -69,12 +69,16 @@ export function createNotificationRecoveryRuntime(dependencies: NotificationReco
       })
   }
 
-  function clearPending(accountId: string): void {
+  function clearPending(accountId: string): Promise<void> {
     const pending = pendingNotificationRecoveries.get(accountId)
-    if (!pending) return
+    if (!pending) return Promise.resolve()
     pendingNotificationRecoveries.delete(accountId)
     pending.reject(new Error('Notification recovery was cancelled'))
+    const cancellation = pending.started
+      ? (dependencies.accessController()?.cancelRecovery(accountId) ?? Promise.resolve())
+      : Promise.resolve()
     dependencies.notificationController()?.flushAlerts()
+    return cancellation.catch(() => undefined)
   }
 
   function showDialog(accountId: string, status: 'reconnect_required' | 'storage_error'): void {

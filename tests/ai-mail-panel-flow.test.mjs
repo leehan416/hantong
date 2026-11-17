@@ -9,8 +9,65 @@ const {
   createAiMailTargetEpoch,
   captureAiMailTargetSnapshot,
   isAiMailSnapshotCaptureBusy,
-  finishAiMailSnapshotCapture
+  finishAiMailSnapshotCapture,
+  createAiMailTargetRefreshCoordinator
 } = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
+
+test('target refresh on open updates when access and a compose target become ready', async () => {
+  let status = { status: 'access_locked' }
+  const accepted = []
+  const refresh = createAiMailTargetRefreshCoordinator({
+    query: async () => status
+  })
+  refresh.setActive(true)
+  let outcome = await refresh.query()
+  if (outcome.current) accepted.push(outcome.status)
+  status = target
+  outcome = await refresh.query()
+  if (outcome.current) accepted.push(outcome.status)
+  assert.deepEqual(
+    accepted.map((value) => value.status),
+    ['access_locked', 'ready']
+  )
+})
+
+test('late target status cannot overwrite a newer event or account refresh', async () => {
+  let resolveOld
+  const accepted = []
+  const refresh = createAiMailTargetRefreshCoordinator({
+    query: () =>
+      new Promise((resolve) => {
+        resolveOld = resolve
+      })
+  })
+  refresh.setActive(true)
+  const oldQuery = refresh.query()
+  assert.equal(refresh.accept(), true)
+  accepted.push(target)
+  resolveOld({ status: 'none' })
+  assert.equal((await oldQuery).current, false)
+  assert.deepEqual(accepted, [target])
+})
+
+test('late target status after close or account switch is ignored', async () => {
+  let resolveOld
+  const accepted = []
+  const refresh = createAiMailTargetRefreshCoordinator({
+    query: () =>
+      new Promise((resolve) => {
+        resolveOld = resolve
+      })
+  })
+  refresh.setActive(true)
+  const oldQuery = refresh.query()
+  refresh.setActive(false)
+  refresh.setActive(true)
+  assert.equal(refresh.accept(), true)
+  accepted.push({ status: 'none' })
+  resolveOld(target)
+  assert.equal((await oldQuery).current, false)
+  assert.deepEqual(accepted, [{ status: 'none' }])
+})
 
 test('a snapshot started for A is invalid after switching A to B and back to A', async () => {
   const epoch = createAiMailTargetEpoch()

@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { app, BrowserWindow } from 'electron'
+import { assertAllowedApiOperations } from './helpers/api-contract.mjs'
 
 // Keep the smoke run separate from the user's application data.
 app.setPath('userData', mkdtempSync(join(tmpdir(), 'hantong-smoke-')))
@@ -56,23 +57,7 @@ async function verify(window) {
   assert.equal(result.node, 'undefined')
   assert.equal(result.process, 'undefined')
   assert.equal(result.genericBridge, 'undefined')
-  assert.deepEqual(result.operations, [
-    'getAppInfo',
-    'getGoogleConnectionStatus',
-    'connectGoogleAccount',
-    'cancelGoogleConnection',
-    'disconnectGoogleAccount',
-    'getAccounts',
-    'addAccount',
-    'activateAccount',
-    'setAccountDisplayName',
-    'moveAccount',
-    'retryAccount',
-    'removeAccount',
-    'onAccountViewStatus',
-    'getAccountAccessState',
-    'onAccountAccessState'
-  ])
+  assertAllowedApiOperations(result.operations)
   assert.equal(result.info.name, 'Hantong')
   assert.equal(typeof result.info.version, 'string')
   assert.ok(['ko', 'en'].includes(result.info.locale))
