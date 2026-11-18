@@ -14,7 +14,7 @@ export function useAppSettings(): {
   settingsButtonRef: React.RefObject<HTMLButtonElement | null>
   openSettings: () => Promise<void>
   closeSettings: () => Promise<void>
-  changeSettings: (patch: AppSettingsPatch) => Promise<void>
+  changeSettings: (patch: AppSettingsPatch) => Promise<boolean>
   setSettings: (settings: AppSettings) => void
   setSettingsOpen: (open: boolean) => void
   setSettingsSection: (section: SettingsSection) => void
@@ -32,6 +32,7 @@ export function useAppSettings(): {
   const settingsReturnFocusRef = useRef<HTMLElement | null>(null)
   const settingsWasOpenRef = useRef(false)
   const settingsOpeningRef = useRef(false)
+  const settingsRevision = useRef(0)
 
   const openSettings = useCallback(async (): Promise<void> => {
     if (settingsDialogRef.current?.open || settingsOpeningRef.current) return
@@ -75,7 +76,10 @@ export function useAppSettings(): {
     let unsubscribeOpen = (): void => {}
     try {
       unsubscribe = window.api.onSettings((next) => {
-        if (active) setSettings(next)
+        if (active) {
+          settingsRevision.current += 1
+          setSettings(next)
+        }
       })
       unsubscribeOpen = window.api.onOpenSettings(() => {
         if (active) void openSettings()
@@ -85,7 +89,7 @@ export function useAppSettings(): {
     }
     void window.api.getSettings().then(
       (next) => {
-        if (active) setSettings(next)
+        if (active && settingsRevision.current === 0) setSettings(next)
       },
       () => undefined
     )
@@ -135,12 +139,16 @@ export function useAppSettings(): {
     }
   }
 
-  async function changeSettings(patch: AppSettingsPatch): Promise<void> {
+  async function changeSettings(patch: AppSettingsPatch): Promise<boolean> {
     setSettingsFailed(false)
+    const revision = ++settingsRevision.current
     try {
-      setSettings(await window.api.updateSettings(patch))
+      const next = await window.api.updateSettings(patch)
+      if (settingsRevision.current === revision) setSettings(next)
+      return true
     } catch {
       setSettingsFailed(true)
+      return false
     }
   }
 

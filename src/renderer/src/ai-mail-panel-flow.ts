@@ -6,7 +6,6 @@ import type {
   AiMailSubjectUndoRequest,
   ComposeSnapshotResult,
   ComposeTargetStatus,
-  CodexGenerationResult,
   HantongApi,
   ReadMailSnapshotResult
 } from '../../shared/ipc'
@@ -40,6 +39,7 @@ type AiMailPanelApi = Pick<
   | 'getAiMailReadSnapshot'
   | 'isAiMailReadSnapshotCurrent'
   | 'generateAiMailDraft'
+  | 'generateAiMailWithOllama'
   | 'applyAiMailDraft'
   | 'undoAiMailDraft'
   | 'applyAiMailSubject'
@@ -199,7 +199,7 @@ export type AiMailProposalOutcome =
     }
   | { status: 'stale' }
   | { status: 'invalid_output' }
-  | { status: 'failed'; result: Extract<CodexGenerationResult, { ok: false }> }
+  | { status: 'failed'; result: { error: string } }
 
 export type AiMailContext = {
   accountId: string
@@ -326,6 +326,7 @@ export async function requestAiMailProposal(
   instruction: string,
   requestId: string,
   generation: number,
+  provider: 'codex' | 'ollama',
   followUp?: string
 ): Promise<AiMailProposalOutcome> {
   if (context.accountId !== target?.accountId && target) return { status: 'stale' }
@@ -352,15 +353,24 @@ export async function requestAiMailProposal(
     compose = currentCompose
   } else if (compose) return { status: 'stale' }
 
-  const generated = await api.generateAiMailDraft({
+  const request = {
     accountId: context.accountId,
     composeId: compose?.composeId ?? context.read?.captureId ?? 'read-only',
     requestId,
     generation,
     prompt: buildAiMailConversationPrompt(instruction, { ...context, compose }),
     ...(followUp ? { followUp } : {})
-  })
-  if (!generated.ok) return { status: 'failed', result: generated }
+  }
+  let generatedText: string
+  if (provider === 'ollama') {
+    const generated = await api.generateAiMailWithOllama(request)
+    if (!generated.ok) return { status: 'failed', result: generated }
+    generatedText = JSON.stringify(generated.output)
+  } else {
+    const generated = await api.generateAiMailDraft(request)
+    if (!generated.ok) return { status: 'failed', result: generated }
+    generatedText = generated.text
+  }
   if (context.read && !(await api.isAiMailReadSnapshotCurrent(context.read.captureId)))
     return { status: 'stale' }
   if (compose) {
@@ -375,7 +385,7 @@ export async function requestAiMailProposal(
     )
       return { status: 'stale' }
   }
-  const output = parseAiMailConversationOutput(generated.text)
+  const output = parseAiMailConversationOutput(generatedText)
   if (!output) return { status: 'invalid_output' }
   if (output.kind === 'proposal' && !compose)
     return {

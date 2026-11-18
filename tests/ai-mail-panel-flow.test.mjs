@@ -54,7 +54,8 @@ test('automatic received-mail context can produce a read-only answer without a c
     { accountId: 'account-a', compose: null, read },
     'Summarize this email',
     'request-1',
-    1
+    1,
+    'codex'
   )
   assert.equal(outcome.status, 'ready')
   assert.equal(outcome.owner, 'read')
@@ -84,9 +85,34 @@ test('read-only context is transmitted only when the user sends a message', asyn
     { accountId: 'account-a', compose: null, read },
     'Translate this',
     'request-2',
-    1
+    1,
+    'codex'
   )
   assert.equal(generationCalls, 1)
+})
+
+test('Ollama generation uses the Ollama contract and parses its structured output', async () => {
+  const sent = []
+  const api = {
+    isAiMailReadSnapshotCurrent: async () => true,
+    generateAiMailWithOllama: async (request) => {
+      sent.push(request)
+      return { ok: true, output: { kind: 'answer', text: 'Local answer' } }
+    },
+    generateAiMailDraft: async () => assert.fail('Codex must not run for Ollama')
+  }
+  const outcome = await requestAiMailProposal(
+    api,
+    null,
+    { accountId: 'account-a', compose: null, read },
+    'Summarize this email',
+    'ollama-request',
+    1,
+    'ollama'
+  )
+  assert.equal(outcome.status, 'ready')
+  assert.equal(outcome.output.text, 'Local answer')
+  assert.match(sent[0].prompt, /Received body/)
 })
 
 test('compose proposal binds to captured compose and edited value is the applied value', async () => {
@@ -107,7 +133,8 @@ test('compose proposal binds to captured compose and edited value is the applied
     { accountId: 'account-a', compose, read: null },
     'Suggest a clearer subject and body',
     'request-3',
-    1
+    1,
+    'codex'
   )
   assert.equal(outcome.status, 'ready')
   assert.equal(outcome.owner, 'compose')
@@ -138,7 +165,8 @@ test('late read result after lease change is rejected', async () => {
     { accountId: 'account-a', compose: null, read },
     'Summarize',
     'request-4',
-    1
+    1,
+    'codex'
   )
   assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
 })
@@ -158,7 +186,8 @@ test('late compose result after document version change is rejected', async () =
     { accountId: 'account-a', compose, read: null },
     'Rewrite',
     'request-5',
-    1
+    1,
+    'codex'
   )
   assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
 })
@@ -186,7 +215,8 @@ test('request refreshes an edited compose before generation rather than transmit
     { accountId: 'account-a', compose, read: null },
     'Please rewrite',
     'request-stale-compose',
-    1
+    1,
+    'codex'
   )
   assert.equal(outcome.status, 'ready')
   assert.equal(outcome.snapshot.snapshotId, 'snapshot-current')
@@ -214,7 +244,8 @@ test('request uses the latest body and subject even when the compose document le
     { accountId: 'account-a', compose, read: null },
     'Rewrite this',
     'request-latest-compose',
-    1
+    1,
+    'codex'
   )
   assert.equal(outcome.status, 'ready')
   assert.equal(outcome.snapshot.snapshotId, 'snapshot-request-time')
@@ -234,7 +265,8 @@ test('proposal output without a compose is converted to non-applicable guidance'
     { accountId: 'account-a', compose: null, read },
     'Draft a reply',
     'request-6',
-    1
+    1,
+    'codex'
   )
   assert.equal(outcome.status, 'ready')
   assert.equal(outcome.owner, 'none')

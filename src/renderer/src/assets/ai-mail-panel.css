@@ -263,6 +263,69 @@
   padding: 12px 16px;
 }
 
+.ai-mail-provider {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 10px 16px;
+}
+
+.ai-mail-provider .ai-mail-choice-group {
+  margin: 0;
+}
+
+.ai-mail-provider .ai-mail-choice-group legend,
+.ai-mail-model-label {
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ai-mail-provider select {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.ai-mail-provider select:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-accent-soft);
+  outline-offset: 1px;
+}
+
+.ai-mail-provider-status {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.ai-mail-provider-status .ai-mail-connection-dot {
+  flex: 0 0 auto;
+}
+
+.ai-mail-provider-status .ai-mail-text-button {
+  margin-left: auto;
+}
+
+.ai-mail-provider-note {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .ai-mail-connection-dot {
   width: 7px;
   height: 7px;

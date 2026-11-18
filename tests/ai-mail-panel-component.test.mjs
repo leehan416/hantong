@@ -143,6 +143,11 @@ test('opening automatically captures received mail without a compose and display
     onAiMailComposeTarget: () => () => undefined,
     onAiMailCodexStatus: () => () => undefined,
     getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'unavailable', cloudDisabled: false }),
+    getOllamaModels: async () => [],
+    getCodexModels: async () => ({ state: 'unavailable', reason: 'not_connected' }),
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
     getAiMailReadSnapshot: async () => {
       reads += 1
       return read
@@ -184,6 +189,14 @@ test('unsupported generation is stated honestly and the composer remains disable
     onAiMailComposeTarget: () => () => undefined,
     onAiMailCodexStatus: () => () => undefined,
     getAiMailCodexStatus: async () => ({ state: 'connected' }),
+    getOllamaStatus: async () => ({ state: 'unavailable', cloudDisabled: false }),
+    getOllamaModels: async () => [],
+    getCodexModels: async () => ({
+      state: 'available',
+      models: [{ id: 'fixture', model: 'fixture', displayName: 'Fixture' }]
+    }),
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
     getAiMailReadSnapshot: async () => read,
     isAiMailReadSnapshotCurrent: async () => true,
     getAiMailComposeSnapshot: async () => ({ status: 'none' })
@@ -200,8 +213,270 @@ test('unsupported generation is stated honestly and the composer remains disable
     findElement(
       tree,
       (node) =>
-        node.type === 'p' && node.props.children === app.messages.en.aiMail.generationBlocked
+        node.type === 'p' &&
+        node.props.children === app.messages.en.aiMail.codexGenerationUnavailable
     )
+  )
+})
+
+test('provider and model selectors use independent catalogs and preserve a missing saved choice', async () => {
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'available', cloudDisabled: true }),
+    getOllamaModels: async () => [{ name: 'qwen3:8b', size: 10 }],
+    getCodexModels: async () => ({
+      state: 'available',
+      models: [{ id: 'gpt-one', model: 'gpt-one', displayName: 'GPT One' }]
+    }),
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
+    getAiMailReadSnapshot: async () => read,
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
+  }
+  const app = setup(api)
+  app.setProps({
+    open: true,
+    settings: {
+      version: 1,
+      language: 'en',
+      theme: 'system',
+      closeAction: 'hide',
+      hideGmailLogo: false,
+      hideHeaderButtons: false,
+      hideSidePanel: false,
+      hideStoragePromo: false,
+      accountSelectorPosition: 'top',
+      sidebarCollapsed: false,
+      aiMailProvider: 'ollama',
+      ollamaModel: 'qwen3:8b',
+      codexModel: 'gpt-one'
+    },
+    onChangeSettings: async () => true
+  })
+  app.render()
+  await new Promise(setImmediate)
+  const tree = app.render()
+  const composer = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  assert.equal(composer.props.disabled, false)
+  const select = findElement(
+    tree,
+    (node) => node.type === 'select' && node.props.id === 'ai-mail-model'
+  )
+  assert.equal(select.props.value, 'qwen3:8b')
+  assert.ok(findElement(tree, (node) => node.type === 'option' && node.props.value === 'qwen3:8b'))
+  assert.equal(
+    findElement(tree, (node) => node.type === 'option' && node.props.value === 'gpt-one'),
+    null
+  )
+})
+
+test('account A-B-A invalidation clears pending UI and fences the cancelled response from a newer turn', async () => {
+  let activeAccount = 'account-a'
+  let generationCalls = 0
+  const pendingResolvers = []
+  const currentRead = () => ({
+    ...read,
+    accountId: activeAccount,
+    captureId: `read-${activeAccount}`
+  })
+  const listeners = []
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: (listener) => {
+      listeners.push(listener)
+      return () => undefined
+    },
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'available', cloudDisabled: true }),
+    getOllamaModels: async () => [{ name: 'qwen3:8b', size: 10 }],
+    getCodexModels: async () => ({ state: 'unavailable', reason: 'not_connected' }),
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
+    getAiMailReadSnapshot: async () => currentRead(),
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' }),
+    generateAiMailWithOllama: () => {
+      generationCalls += 1
+      return new Promise((resolve) => pendingResolvers.push(resolve))
+    }
+  }
+  const app = setup(api)
+  app.setProps({
+    open: true,
+    settings: {
+      version: 1,
+      language: 'en',
+      theme: 'system',
+      closeAction: 'hide',
+      hideGmailLogo: false,
+      hideHeaderButtons: false,
+      hideSidePanel: false,
+      hideStoragePromo: false,
+      accountSelectorPosition: 'top',
+      sidebarCollapsed: false,
+      aiMailProvider: 'ollama',
+      ollamaModel: 'qwen3:8b',
+      codexModel: null
+    },
+    onChangeSettings: async () => true
+  })
+  app.render()
+  await new Promise(setImmediate)
+  let tree = app.render()
+  let textarea = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  textarea.props.onChange({ target: { value: 'Summarize this email' } })
+  tree = app.render()
+  let form = findElement(
+    tree,
+    (node) => node.type === 'form' && node.props.className === 'ai-mail-compose'
+  )
+  form.props.onSubmit({ preventDefault: () => undefined })
+  await new Promise(setImmediate)
+  assert.equal(generationCalls, 1)
+  assert.ok(findElement(app.render(), (node) => node.props?.className === 'ai-mail-pending'))
+
+  activeAccount = 'account-b'
+  app.setProps({ activeAccountId: activeAccount })
+  app.render()
+  await new Promise(setImmediate)
+  activeAccount = 'account-a'
+  app.setProps({ activeAccountId: activeAccount })
+  for (let index = 0; index < 4; index += 1) {
+    await new Promise(setImmediate)
+    tree = app.render()
+  }
+  assert.equal(
+    findElement(tree, (node) => node.props?.className === 'ai-mail-pending'),
+    null
+  )
+
+  textarea = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  assert.equal(textarea.props.disabled, false, 'A-B-A context must permit another request')
+  textarea.props.onChange({ target: { value: 'A new request' } })
+  tree = app.render()
+  form = findElement(
+    tree,
+    (node) => node.type === 'form' && node.props.className === 'ai-mail-compose'
+  )
+  form.props.onSubmit({ preventDefault: () => undefined })
+  await new Promise(setImmediate)
+  assert.equal(generationCalls, 2)
+
+  pendingResolvers[0]({ ok: true, output: { kind: 'answer', text: 'Old response' } })
+  await new Promise(setImmediate)
+  assert.ok(findElement(app.render(), (node) => node.props?.className === 'ai-mail-pending'))
+  pendingResolvers[1]({ ok: true, output: { kind: 'answer', text: 'New response' } })
+})
+
+test('retry keeps send disabled until the fresh Ollama inventory completes', async () => {
+  let statusCalls = 0
+  let finishRefresh
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => {
+      statusCalls += 1
+      if (statusCalls === 1) throw new Error('fixture unavailable')
+      return new Promise((resolve) => {
+        finishRefresh = () => resolve({ state: 'available', cloudDisabled: true })
+      })
+    },
+    getOllamaModels: async () => {
+      return [{ name: 'qwen3:8b', size: 10 }]
+    },
+    getCodexModels: async () => ({ state: 'unavailable', reason: 'not_connected' }),
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
+    getAiMailReadSnapshot: async () => read,
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
+  }
+  const app = setup(api)
+  app.setProps({
+    open: true,
+    settings: {
+      version: 1,
+      language: 'en',
+      theme: 'system',
+      closeAction: 'hide',
+      hideGmailLogo: false,
+      hideHeaderButtons: false,
+      hideSidePanel: false,
+      hideStoragePromo: false,
+      accountSelectorPosition: 'top',
+      sidebarCollapsed: false,
+      aiMailProvider: 'ollama',
+      ollamaModel: 'qwen3:8b',
+      codexModel: null
+    },
+    onChangeSettings: async () => true
+  })
+  app.render()
+  await new Promise(setImmediate)
+  let tree = app.render()
+  let textarea = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  assert.equal(textarea.props.disabled, true)
+  findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === 'Try again'
+  ).props.onClick()
+  tree = app.render()
+  textarea = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  assert.equal(textarea.props.disabled, true)
+  finishRefresh()
+  await new Promise(setImmediate)
+  tree = app.render()
+  textarea = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  assert.equal(textarea.props.disabled, false)
+})
+
+test('Codex catalog refreshes when connection becomes available', async () => {
+  let catalogCalls = 0
+  let codexStatusListener
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: (listener) => {
+      codexStatusListener = listener
+      return () => undefined
+    },
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'unavailable', cloudDisabled: false }),
+    getOllamaModels: async () => [],
+    getCodexModels: async () => {
+      catalogCalls += 1
+      return catalogCalls === 1
+        ? { state: 'unavailable', reason: 'not_connected' }
+        : {
+            state: 'available',
+            models: [{ id: 'gpt-two', model: 'gpt-two', displayName: 'GPT Two' }]
+          }
+    },
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
+    getAiMailReadSnapshot: async () => ({ status: 'none' }),
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
+  }
+  const app = setup(api)
+  app.setProps({ open: true })
+  app.render()
+  await new Promise(setImmediate)
+  assert.equal(catalogCalls, 1)
+  codexStatusListener({ state: 'connected' })
+  app.render()
+  await new Promise(setImmediate)
+  const tree = app.render()
+  assert.equal(catalogCalls, 2)
+  assert.ok(
+    findElement(tree, (node) => node.type === 'option' && node.props.children === 'GPT Two')
   )
 })
 
@@ -226,6 +501,11 @@ test('read navigation after an empty open capture is detected with a coalesced t
     onAiMailComposeTarget: () => () => undefined,
     onAiMailCodexStatus: () => () => undefined,
     getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'unavailable', cloudDisabled: false }),
+    getOllamaModels: async () => [],
+    getCodexModels: async () => ({ state: 'unavailable', reason: 'not_connected' }),
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
     getAiMailReadSnapshot: async () => {
       reads += 1
       return currentRead

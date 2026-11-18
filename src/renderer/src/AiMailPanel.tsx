@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import type {
   CodexConnectionStatus,
+  CodexModelInventory,
   ComposeSnapshotResult,
   ComposeTargetStatus,
+  OllamaConnectionStatus,
+  OllamaModel,
   ReadMailSnapshotResult
 } from '../../shared/ipc'
+import type { AppSettings, AppSettingsPatch } from '../../shared/settings'
 import type { AppMessages } from './app-messages'
 import { AiMailChatLayout } from './AiMailChatLayout'
 import {
@@ -15,7 +19,6 @@ import {
   aiMailFieldFeedback
 } from './ai-mail-panel-flow'
 
-const GENERATION_ENABLED = false
 const TARGET_REFRESH_INTERVAL_MS = 1500
 const READ_TARGET_REFRESH_INTERVAL_MS = 5000
 
@@ -50,6 +53,8 @@ type Props = {
   open: boolean
   captureSession: number
   text: AppMessages['aiMail']
+  settings: AppSettings | null
+  onChangeSettings: (patch: AppSettingsPatch) => Promise<boolean>
   onClose: () => void
 }
 
@@ -83,6 +88,8 @@ export function AiMailPanel({
   open,
   captureSession,
   text,
+  settings,
+  onChangeSettings,
   onClose
 }: Props): React.JSX.Element | null {
   const [targetStatus, setTargetStatus] = useState<ComposeTargetStatus>({ status: 'none' })
@@ -93,6 +100,18 @@ export function AiMailPanel({
   const [codexStatus, setCodexStatus] = useState<CodexConnectionStatus | null>(null)
   const [codexBusy, setCodexBusy] = useState(false)
   const [statusFailed, setStatusFailed] = useState(false)
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus | null>(null)
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[] | null>(null)
+  const [codexModels, setCodexModels] = useState<CodexModelInventory | null>(null)
+  const [inventoryFailed, setInventoryFailed] = useState(false)
+  const [inventoryLoadedKey, setInventoryLoadedKey] = useState('')
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const settingsSavingRef = useRef(false)
+  const [settingsFailed, setSettingsFailed] = useState(false)
+  const [settingsRetryPatch, setSettingsRetryPatch] = useState<AppSettingsPatch | null>(null)
+  const [inventoryRevision, setInventoryRevision] = useState(0)
+  const [codexStatusRevision, setCodexStatusRevision] = useState(0)
+  const codexInventoryRequest = useRef(0)
   const [composeSnapshot, setComposeSnapshot] = useState<ReadySnapshot | null>(null)
   const [readSnapshot, setReadSnapshot] = useState<ReadyReadSnapshot | null>(null)
   const [contextStatus, setContextStatus] = useState('')
@@ -113,6 +132,7 @@ export function AiMailPanel({
   const lastCaptureKey = useRef('')
   const captureSequence = useRef(0)
   const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
+  const requestCancel = useRef<((id: string) => Promise<unknown>) | null>(null)
   const codexActionRevision = useRef(0)
   const generation = useRef(createAiMailGenerationSequence())
   const fieldMutations = useRef(createAiMailFieldMutationCoordinator(window.api))
@@ -135,7 +155,33 @@ export function AiMailPanel({
       ? composeSnapshot
       : null
   const contextKey = `${activeAccountId ?? 'none'}:${targetKey(target)}:${currentReadSnapshot?.captureId ?? 'no-read'}:${captureSession}`
-  const generationAvailable = GENERATION_ENABLED && codexStatus?.state === 'connected'
+  const provider = settings?.aiMailProvider ?? 'codex'
+  const providerRef = useRef(provider)
+  const inventoryRequestKey = `${open ? 'open' : 'closed'}:${captureSession}:${inventoryRevision}`
+  const inventoryLoading = open && inventoryLoadedKey !== inventoryRequestKey
+  const selectedModel = provider === 'ollama' ? settings?.ollamaModel : settings?.codexModel
+  const ollamaReady = ollamaStatus?.state === 'available'
+  const selectedOllamaAvailable = ollamaModels?.some((model) => model.name === selectedModel)
+  // Codex model selection is available, but its mail execution remains fixture-only by policy.
+  const generationAvailable =
+    provider === 'ollama'
+      ? Boolean(!inventoryLoading && ollamaStatus?.state === 'available' && selectedOllamaAvailable)
+      : false
+
+  const invalidatePendingGeneration = useCallback((): void => {
+    const request = pendingRequest.current
+    if (request)
+      void (requestCancel.current?.(request.requestId) ?? Promise.resolve()).catch(() => undefined)
+    pendingRequest.current = null
+    requestCancel.current = null
+    void Promise.resolve().then(() => {
+      if (!pendingRequest.current) {
+        setPending(false)
+        setPendingContext('')
+        setCancelError(false)
+      }
+    })
+  }, [])
 
   useEffect(() => {
     activeAccountRef.current = activeAccountId
@@ -199,9 +245,16 @@ export function AiMailPanel({
       setReadSnapshot(nextRead)
       setComposeSnapshot(nextCompose)
       setContextStatus(nextRead || nextCompose ? '' : text.noTarget)
+      invalidatePendingGeneration()
       setMessages([])
     },
-    [composeSnapshot, readSnapshot, text.loadingSnapshot, text.noTarget]
+    [
+      composeSnapshot,
+      readSnapshot,
+      text.loadingSnapshot,
+      text.noTarget,
+      invalidatePendingGeneration
+    ]
   )
 
   useEffect(() => {
@@ -218,17 +271,16 @@ export function AiMailPanel({
           ? `${status.accountId}:${status.composeId}`
           : ''
       if (currentTargetKey.current !== nextKey) {
-        const request = pendingRequest.current
-        if (request)
-          void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
-        pendingRequest.current = null
+        invalidatePendingGeneration()
         currentTargetKey.current = nextKey
         setComposeSnapshot(null)
         setMessages([])
         lastCaptureKey.current = ''
       }
     })
-    const unsubscribeCodex = window.api.onAiMailCodexStatus(setCodexStatus)
+    const unsubscribeCodex = window.api.onAiMailCodexStatus((status) => {
+      if (current) setCodexStatus(status)
+    })
     void window.api.getAiMailCodexStatus().then(
       (status) => {
         if (current) {
@@ -244,20 +296,24 @@ export function AiMailPanel({
       current = false
       captureSequence.current += 1
       const request = pendingRequest.current
-      if (request) void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
+      if (request) {
+        const cancel =
+          providerRef.current === 'ollama'
+            ? (id: string) => window.api.cancelAiMailOllamaGeneration(id)
+            : (id: string) => window.api.cancelAiMailGeneration(id)
+        void cancel(request.requestId).catch(() => undefined)
+      }
       unsubscribeTarget()
       unsubscribeCodex()
     }
-  }, [activeAccountId])
+  }, [activeAccountId, codexStatusRevision, invalidatePendingGeneration])
 
   useEffect(() => {
     const coordinator = targetRefresh.current
     coordinator.setActive(open)
     if (!open) {
       captureSequence.current += 1
-      const request = pendingRequest.current
-      if (request) void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
-      pendingRequest.current = null
+      invalidatePendingGeneration()
       return
     }
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -274,10 +330,7 @@ export function AiMailPanel({
               ? `${result.status.accountId}:${result.status.composeId}`
               : ''
           if (nextKey !== currentTargetKey.current) {
-            const request = pendingRequest.current
-            if (request)
-              void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
-            pendingRequest.current = null
+            invalidatePendingGeneration()
             currentTargetKey.current = nextKey
             setComposeSnapshot(null)
             setMessages([])
@@ -297,25 +350,79 @@ export function AiMailPanel({
       if (timer !== undefined) clearTimeout(timer)
       coordinator.setActive(false)
     }
-  }, [open, activeAccountId, captureSession, captureCurrentContext])
+  }, [open, activeAccountId, captureSession, captureCurrentContext, invalidatePendingGeneration])
 
   useEffect(() => {
     if (open) closeButtonRef.current?.focus()
   }, [open])
 
   useEffect(() => {
+    if (!open) return
     lastCaptureKey.current = ''
-    const request = pendingRequest.current
-    if (request) void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
-    pendingRequest.current = null
-  }, [activeAccountId, captureSession])
+    invalidatePendingGeneration()
+  }, [activeAccountId, captureSession, open, invalidatePendingGeneration])
 
   useEffect(() => {
     const request = pendingRequest.current
     if (!request || request.key === contextKey) return
-    void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
-    pendingRequest.current = null
-  }, [contextKey])
+    invalidatePendingGeneration()
+  }, [contextKey, open, invalidatePendingGeneration])
+
+  useEffect(() => {
+    providerRef.current = provider
+  }, [provider])
+
+  useEffect(() => {
+    if (!open) return
+    let current = true
+    const codexRequest = ++codexInventoryRequest.current
+    void Promise.allSettled([
+      window.api.getOllamaStatus(),
+      window.api.getOllamaModels(),
+      window.api.getCodexModels()
+    ]).then((results) => {
+      if (!current) return
+      if (results[0].status === 'fulfilled') setOllamaStatus(results[0].value)
+      else setOllamaStatus({ state: 'unavailable', cloudDisabled: false })
+      if (results[1].status === 'fulfilled') setOllamaModels(results[1].value)
+      else setOllamaModels([])
+      if (codexInventoryRequest.current === codexRequest) {
+        if (results[2].status === 'fulfilled') setCodexModels(results[2].value)
+        else setCodexModels({ state: 'unavailable', reason: 'discovery_failed' })
+      }
+      setInventoryFailed(results.some((result) => result.status === 'rejected'))
+      setInventoryLoadedKey(inventoryRequestKey)
+    })
+    return () => {
+      current = false
+    }
+  }, [open, captureSession, inventoryRevision, inventoryRequestKey])
+
+  useEffect(() => {
+    if (codexStatus?.state !== 'connected') return
+    const request = ++codexInventoryRequest.current
+    let current = true
+    void window.api.getCodexModels().then(
+      (inventory) => {
+        if (current && codexInventoryRequest.current === request) setCodexModels(inventory)
+      },
+      () => {
+        if (current && codexInventoryRequest.current === request) {
+          setCodexModels({ state: 'unavailable', reason: 'discovery_failed' })
+          setInventoryFailed(true)
+        }
+      }
+    )
+    return () => {
+      current = false
+    }
+  }, [codexStatus?.state])
+
+  useEffect(() => {
+    const request = pendingRequest.current
+    if (!request) return
+    invalidatePendingGeneration()
+  }, [provider, selectedModel, invalidatePendingGeneration])
 
   useEffect(() => {
     if (!open) return
@@ -381,6 +488,36 @@ export function AiMailPanel({
     }
   }
 
+  async function retryProviderData(): Promise<void> {
+    setStatusFailed(false)
+    setInventoryFailed(false)
+    setInventoryRevision((value) => value + 1)
+    if (provider === 'codex') {
+      setCodexStatusRevision((value) => value + 1)
+    }
+  }
+
+  async function retryLastSave(): Promise<void> {
+    if (settingsRetryPatch) await saveProvider(settingsRetryPatch)
+  }
+
+  async function saveProvider(patch: AppSettingsPatch): Promise<void> {
+    if (settingsSavingRef.current) return
+    settingsSavingRef.current = true
+    setSettingsSaving(true)
+    setSettingsFailed(false)
+    setSettingsRetryPatch(patch)
+    try {
+      if (await onChangeSettings(patch)) setSettingsRetryPatch(null)
+      else setSettingsFailed(true)
+    } catch {
+      setSettingsFailed(true)
+    } finally {
+      settingsSavingRef.current = false
+      setSettingsSaving(false)
+    }
+  }
+
   async function disconnectCodex(): Promise<void> {
     if (codexBusy && codexStatus?.state !== 'connecting') return
     const revision = ++codexActionRevision.current
@@ -410,6 +547,10 @@ export function AiMailPanel({
       `${account}:${targetKey(capturedTarget) || capturedRead?.captureId || 'read'}`
     )
     pendingRequest.current = { requestId, key }
+    requestCancel.current =
+      provider === 'ollama'
+        ? (id) => window.api.cancelAiMailOllamaGeneration(id)
+        : (id) => window.api.cancelAiMailGeneration(id)
     setPending(true)
     setPendingContext(key)
     setCancelError(false)
@@ -427,12 +568,14 @@ export function AiMailPanel({
         },
         userText,
         requestId,
-        requestGeneration
+        requestGeneration,
+        provider
       )
       if (
         pendingRequest.current?.requestId !== requestId ||
         activeAccountRef.current !== account ||
-        contextKey !== key
+        contextKey !== key ||
+        providerRef.current !== provider
       )
         return
       if (outcome.status === 'ready') {
@@ -506,6 +649,7 @@ export function AiMailPanel({
     } finally {
       if (pendingRequest.current?.requestId === requestId) {
         pendingRequest.current = null
+        requestCancel.current = null
         setPending(false)
         setPendingContext('')
       }
@@ -535,9 +679,11 @@ export function AiMailPanel({
     const pendingInfo = pendingRequest.current
     if (!pendingInfo) return
     try {
-      const result = await window.api.cancelAiMailGeneration(pendingInfo.requestId)
+      const result = (await (requestCancel.current?.(pendingInfo.requestId) ??
+        Promise.resolve({ cancelled: false }))) as { cancelled: boolean }
       if (result.cancelled) {
         pendingRequest.current = null
+        requestCancel.current = null
         setPending(false)
         setPendingContext('')
         setMessages((current) => [
@@ -654,7 +800,29 @@ export function AiMailPanel({
   }
 
   if (!open) return null
-  const statusLabel = statusFailed ? text.connectionError : statusText(codexStatus, text)
+  const statusLabel =
+    provider === 'ollama'
+      ? inventoryLoading
+        ? text.providerLoading
+        : inventoryFailed
+          ? text.providerError
+          : !ollamaReady
+            ? text.ollamaUnavailable
+            : !selectedOllamaAvailable
+              ? text.modelUnavailable
+              : text.ollamaReady
+      : statusFailed
+        ? text.connectionError
+        : statusText(codexStatus, text)
+  const selectedCatalog =
+    provider === 'ollama'
+      ? (ollamaModels ?? []).map((model) => ({ id: model.name, label: model.name }))
+      : codexModels?.state === 'available'
+        ? codexModels.models.map((model) => ({ id: model.id, label: model.displayName }))
+        : []
+  const modelUnavailable = Boolean(
+    selectedModel && !selectedCatalog.some((model) => model.id === selectedModel)
+  )
   const contextDetails = [
     currentReadSnapshot
       ? `${text.receivedEmailChip}: ${currentReadSnapshot.subject || text.newMessage}`
@@ -681,53 +849,132 @@ export function AiMailPanel({
           <span aria-hidden="true">×</span>
         </button>
       </div>
-      <section className="ai-mail-connection" aria-label={text.codex}>
-        <span
-          className={`ai-mail-connection-dot ai-mail-state-${codexStatus?.state ?? 'checking'}`}
-          aria-hidden="true"
-        />
-        <div className="ai-mail-connection-copy">
-          <strong>{statusLabel}</strong>
-          <p>
-            {generationAvailable
-              ? text.privacy
-              : codexStatus?.state === 'connected'
-                ? text.generationBlocked
-                : text.connectFirst}
-          </p>
+      <section className="ai-mail-provider" aria-label={text.provider}>
+        <fieldset className="ai-mail-choice-group" disabled={settingsSaving || !settings}>
+          <legend>{text.provider}</legend>
+          {(['codex', 'ollama'] as const).map((value) => (
+            <label key={value}>
+              <input
+                type="radio"
+                name="ai-mail-provider"
+                value={value}
+                checked={provider === value}
+                onChange={() => void saveProvider({ aiMailProvider: value })}
+              />
+              <span>{value === 'codex' ? text.codexProvider : text.ollamaProvider}</span>
+            </label>
+          ))}
+        </fieldset>
+        <label className="ai-mail-model-label" htmlFor="ai-mail-model">
+          {text.model}
+        </label>
+        <select
+          id="ai-mail-model"
+          value={selectedModel ?? ''}
+          disabled={inventoryLoading || settingsSaving || !settings}
+          aria-describedby="ai-mail-provider-status"
+          onChange={(event) =>
+            void saveProvider(
+              provider === 'ollama'
+                ? { ollamaModel: event.target.value || null }
+                : { codexModel: event.target.value || null }
+            )
+          }
+        >
+          {!selectedModel && <option value="">{text.chooseModel}</option>}
+          {modelUnavailable && selectedModel && (
+            <option value={selectedModel}>{`${selectedModel} — ${text.modelUnavailable}`}</option>
+          )}
+          {!selectedCatalog.length && !modelUnavailable && (
+            <option value="">{inventoryLoading ? text.providerLoading : text.noModels}</option>
+          )}
+          {selectedCatalog.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label}
+            </option>
+          ))}
+        </select>
+        <div className="ai-mail-provider-status" id="ai-mail-provider-status" role="status">
+          <span
+            className={`ai-mail-connection-dot ai-mail-state-${provider === 'ollama' ? (ollamaReady ? 'connected' : 'error') : (codexStatus?.state ?? 'checking')}`}
+            aria-hidden="true"
+          />
+          <span>{statusLabel}</span>
+          {(inventoryFailed || statusFailed || (provider === 'ollama' && !ollamaReady)) && (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              onClick={() => void retryProviderData()}
+            >
+              {text.retry}
+            </button>
+          )}
         </div>
-        {codexStatus?.state === 'connected' ? (
-          <button
-            className="ai-mail-text-button"
-            type="button"
-            disabled={codexBusy}
-            onClick={() => void disconnectCodex()}
-          >
-            {text.disconnect}
-          </button>
-        ) : codexStatus?.state === 'connecting' ? (
-          <button
-            className="ai-mail-text-button"
-            type="button"
-            onClick={() => void disconnectCodex()}
-          >
-            {text.cancelLogin}
-          </button>
-        ) : (
-          <button
-            className="ai-mail-text-button"
-            type="button"
-            disabled={codexBusy}
-            onClick={() => void connectCodex()}
-          >
-            {codexBusy
-              ? text.checking
-              : codexStatus?.state === 'error'
-                ? text.reconnect
-                : text.connect}
-          </button>
+        {provider === 'codex' && (
+          <p className="ai-mail-provider-note">{text.codexGenerationUnavailable}</p>
+        )}
+        {settingsFailed && (
+          <p className="ai-mail-error" role="alert">
+            {text.providerSaveError}
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              onClick={() => void retryLastSave()}
+            >
+              {text.retry}
+            </button>
+          </p>
         )}
       </section>
+      {provider === 'codex' && (
+        <section className="ai-mail-connection" aria-label={text.codex}>
+          <span
+            className={`ai-mail-connection-dot ai-mail-state-${codexStatus?.state ?? 'checking'}`}
+            aria-hidden="true"
+          />
+          <div className="ai-mail-connection-copy">
+            <strong>{statusLabel}</strong>
+            <p>
+              {generationAvailable
+                ? text.privacy
+                : codexStatus?.state === 'connected'
+                  ? text.codexGenerationUnavailable
+                  : text.connectFirst}
+            </p>
+          </div>
+          {codexStatus?.state === 'connected' ? (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              disabled={codexBusy}
+              onClick={() => void disconnectCodex()}
+            >
+              {text.disconnect}
+            </button>
+          ) : codexStatus?.state === 'connecting' ? (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              onClick={() => void disconnectCodex()}
+            >
+              {text.cancelLogin}
+            </button>
+          ) : (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              disabled={codexBusy}
+              onClick={() => void connectCodex()}
+            >
+              {codexBusy
+                ? text.checking
+                : codexStatus?.state === 'error'
+                  ? text.reconnect
+                  : text.connect}
+            </button>
+          )}
+        </section>
+      )}
     </>
   )
   const context = (
@@ -759,6 +1006,7 @@ export function AiMailPanel({
   const composer = (
     <form className="ai-mail-compose" noValidate onSubmit={handleSubmit}>
       <textarea
+        className="resize-none"
         ref={textareaRef}
         value={instruction}
         maxLength={2000}
@@ -781,9 +1029,9 @@ export function AiMailPanel({
       <div className="ai-mail-chat-composer-actions">
         <span>
           {!generationAvailable
-            ? codexStatus?.state === 'connected'
-              ? text.generationBlocked
-              : text.connectFirst
+            ? provider === 'codex'
+              ? text.codexGenerationUnavailable
+              : statusLabel
             : text.sendContextNotice}
         </span>
         <button
@@ -846,6 +1094,7 @@ export function AiMailPanel({
                 <label>
                   {text.outputLabels.revise}
                   <textarea
+                    className="resize-none"
                     value={message.proposal.body.value}
                     disabled={message.proposal.body.busy}
                     onChange={(event) =>

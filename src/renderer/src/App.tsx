@@ -370,6 +370,10 @@ function App(): React.JSX.Element {
         open={aiMailPanelOpen}
         captureSession={aiMailPanelCaptureSession}
         text={text.aiMail}
+        settings={settings}
+        onChangeSettings={async (patch): Promise<boolean> => {
+          return changeSettings(patch)
+        }}
         onClose={() => void changeAiMailPanel(false)}
       />
       {settingsBackground && snapshotBounds && (
