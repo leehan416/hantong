@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import type {
   CodexConnectionStatus,
   ComposeSnapshotResult,
-  ComposeTargetStatus
+  ComposeTargetStatus,
+  ReadMailSnapshotResult
 } from '../../shared/ipc'
 import type { AppMessages } from './app-messages'
 import {
   type AiMailTask,
   type AiMailSnapshotCapture,
   applyAiMailProposal,
+  applyAiMailSubjectProposal,
   captureAiMailTargetSnapshot,
   createAiMailGenerationSequence,
   createAiMailTargetEpoch,
@@ -16,7 +18,8 @@ import {
   finishAiMailSnapshotCapture,
   isAiMailSnapshotCaptureBusy,
   requestAiMailProposal,
-  undoAiMailProposal
+  undoAiMailProposal,
+  undoAiMailSubjectProposal
 } from './ai-mail-panel-flow'
 
 const GENERATION_ENABLED = false
@@ -24,24 +27,36 @@ const TEST_RESPONSE_MODE = true
 const TARGET_REFRESH_INTERVAL_MS = 1500
 
 type ReadySnapshot = Extract<ComposeSnapshotResult, { status: 'ready' }>
+type ReadyReadSnapshot = Extract<ReadMailSnapshotResult, { status: 'ready' }>
 type ReadyTarget = Extract<ComposeTargetStatus, { status: 'ready' }>
 type ProposalConflict = {
   operation: 'apply' | 'undo'
   currentVersion: string
   currentBody: string
 }
-type Proposal = {
-  task: AiMailTask
-  text: string
-  subject?: string
-  snapshot: ReadySnapshot
-  applyId?: string
+type ProposalBase = {
   applied: boolean
   busy: boolean
+  applyId?: string
   feedback?: 'applied' | 'undone' | 'error' | 'stale' | 'busy'
   feedbackOperation?: 'apply' | 'undo'
   conflict?: ProposalConflict
+  subject?: string
+  text: string
 }
+type Proposal =
+  | (ProposalBase & {
+      owner: 'compose'
+      task: 'revise' | 'subject'
+      field: 'body' | 'subject'
+      snapshot: ReadySnapshot
+    })
+  | (ProposalBase & {
+      owner: 'read'
+      task: 'summary' | 'translate'
+      field: 'read'
+      snapshot: ReadyReadSnapshot
+    })
 type PanelMessage = {
   id: string
   role: 'user' | 'assistant'
@@ -105,6 +120,10 @@ export function AiMailPanel({
   const [statusFailed, setStatusFailed] = useState(false)
   const [snapshotCapture, setSnapshotCapture] = useState<AiMailSnapshotCapture | null>(null)
   const [capturedSnapshot, setCapturedSnapshot] = useState<ReadySnapshot | null>(null)
+  const [capturedReadSnapshot, setCapturedReadSnapshot] = useState<ReadyReadSnapshot | null>(null)
+  const [readSnapshotSession, setReadSnapshotSession] = useState<number | null>(null)
+  const [readSnapshotStatus, setReadSnapshotStatus] = useState('')
+  const [readSnapshotBusy, setReadSnapshotBusy] = useState(false)
   const [snapshotStatus, setSnapshotStatus] = useState('')
   const [thread, setThread] = useState<Thread>({ key: '', items: [] })
   const [instruction, setInstruction] = useState('')
@@ -115,7 +134,10 @@ export function AiMailPanel({
   const [copyErrorId, setCopyErrorId] = useState<string | null>(null)
   const [copySuccessId, setCopySuccessId] = useState<string | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const activeAccountIdRef = useRef(activeAccountId)
+  activeAccountIdRef.current = activeAccountId
   const currentTargetKey = useRef('')
+  const readCaptureSequence = useRef(0)
   const captureEpoch = useRef(createAiMailTargetEpoch())
   const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
   const codexActionRevision = useRef(0)
@@ -143,7 +165,11 @@ export function AiMailPanel({
         : null,
     [activeAccountId, targetRefreshReady, targetStatus]
   )
-  const key = targetKey(target)
+  const composeKey = targetKey(target)
+  const key =
+    selectedTask === 'summary' || selectedTask === 'translate'
+      ? `read:${activeAccountId ?? 'none'}`
+      : `compose:${composeKey}`
   const messages = thread.key === key ? thread.items : []
   const targetReady = Boolean(target)
   const snapshotBusy = isAiMailSnapshotCaptureBusy(open, captureSession, snapshotCapture)
@@ -165,12 +191,20 @@ export function AiMailPanel({
         conversation.current = null
       }
       currentTargetKey.current = nextKey
-      setThread((current) => (current.key === nextKey ? current : { key: nextKey, items: [] }))
+      setThread((current) =>
+        current.key.startsWith('compose:') && current.key !== `compose:${nextKey}`
+          ? { key: `compose:${nextKey}`, items: [] }
+          : current
+      )
       if (targetChanged) {
         setCapturedSnapshot(null)
         setSnapshotStatus('')
       }
-      if (pendingRequest.current && pendingRequest.current.key !== nextKey) {
+      if (
+        targetChanged &&
+        pendingRequest.current?.key.startsWith('compose:') &&
+        pendingRequest.current.key !== `compose:${nextKey}`
+      ) {
         void window.api
           .cancelAiMailGeneration(pendingRequest.current.requestId)
           .catch(() => setCancelError(true))
@@ -215,6 +249,38 @@ export function AiMailPanel({
       unsubscribeCodex()
     }
   }, [activeAccountId, acceptTargetStatus])
+
+  useEffect(() => {
+    readCaptureSequence.current += 1
+  }, [activeAccountId, captureSession])
+
+  useEffect(() => {
+    if (
+      !capturedReadSnapshot ||
+      capturedReadSnapshot.accountId !== activeAccountId ||
+      readSnapshotSession !== captureSession
+    )
+      return
+    let current = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const validate = async (): Promise<void> => {
+      const valid = await window.api
+        .isAiMailReadSnapshotCurrent(capturedReadSnapshot.captureId)
+        .catch(() => false)
+      if (!current) return
+      if (!valid) {
+        setCapturedReadSnapshot(null)
+        setReadSnapshotStatus(text.staleTarget)
+        return
+      }
+      timer = setTimeout(() => void validate(), TARGET_REFRESH_INTERVAL_MS)
+    }
+    timer = setTimeout(() => void validate(), TARGET_REFRESH_INTERVAL_MS)
+    return () => {
+      current = false
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [activeAccountId, captureSession, capturedReadSnapshot, readSnapshotSession, text.staleTarget])
 
   useEffect(() => {
     const targetRefreshCoordinator = targetRefresh.current
@@ -303,6 +369,54 @@ export function AiMailPanel({
     setSnapshotCapture((current) => finishAiMailSnapshotCapture(current, capture))
   }
 
+  async function captureOpenedMail(): Promise<void> {
+    if (!activeAccountId || readSnapshotBusy) return
+    const sequence = ++readCaptureSequence.current
+    setReadSnapshotBusy(true)
+    setReadSnapshotStatus(text.loadingReadSnapshot)
+    try {
+      const result = await window.api.getAiMailReadSnapshot()
+      if (
+        sequence !== readCaptureSequence.current ||
+        activeAccountIdRef.current !== activeAccountId
+      )
+        return
+      if (result.status !== 'ready' || result.accountId !== activeAccountId) {
+        setCapturedReadSnapshot(null)
+        setReadSnapshotStatus(
+          result.status === 'access_locked'
+            ? text.lockedTarget
+            : result.status === 'unsupported'
+              ? text.unsupportedTarget
+              : result.status === 'stale'
+                ? text.staleTarget
+                : text.noTarget
+        )
+      } else if (
+        !(await window.api.isAiMailReadSnapshotCurrent(result.captureId)) ||
+        sequence !== readCaptureSequence.current ||
+        activeAccountIdRef.current !== activeAccountId
+      ) {
+        setCapturedReadSnapshot(null)
+        setReadSnapshotStatus(text.staleTarget)
+      } else {
+        setCapturedReadSnapshot(result)
+        setReadSnapshotSession(captureSession)
+        setReadSnapshotStatus(text.captured)
+      }
+    } catch {
+      if (
+        sequence === readCaptureSequence.current &&
+        activeAccountIdRef.current === activeAccountId
+      ) {
+        setCapturedReadSnapshot(null)
+        setReadSnapshotStatus(text.staleTarget)
+      }
+    } finally {
+      if (sequence === readCaptureSequence.current) setReadSnapshotBusy(false)
+    }
+  }
+
   async function connectCodex(): Promise<void> {
     if (codexBusy) return
     const revision = ++codexActionRevision.current
@@ -322,7 +436,7 @@ export function AiMailPanel({
   }
 
   function showTestResponse(): void {
-    if (target) {
+    if (target || selectedTask === 'summary' || selectedTask === 'translate') {
       void runGeneration(instruction.trim(), undefined)
       return
     }
@@ -358,15 +472,24 @@ export function AiMailPanel({
     task: AiMailTask = selectedTask,
     language: string = targetLanguage
   ): Promise<void> {
-    if (!target || !generationAvailable || pending || (task === 'translate' && !language.trim()))
+    const readTask = task === 'summary' || task === 'translate'
+    if (
+      (!target && !readTask) ||
+      !generationAvailable ||
+      pending ||
+      (task === 'translate' && !language.trim())
+    )
       return
-    const currentKey = key
-    const conversationKey = `${currentKey}:${task}:${task === 'translate' ? language : ''}`
+    const currentKey = readTask
+      ? `read:${activeAccountId ?? 'none'}`
+      : `compose:${targetKey(target)}`
+    const taskTargetKey = currentKey
+    const conversationKey = `${taskTargetKey}:${task}:${task === 'translate' ? language : ''}`
     if (conversation.current?.key !== conversationKey) {
       conversation.current = { key: conversationKey, requestId: newId() }
     }
     const requestId = conversation.current.requestId
-    const requestGeneration = generation.current.next(currentKey)
+    const requestGeneration = generation.current.next(taskTargetKey)
     const retryRequest = {
       instruction: requestText,
       task,
@@ -392,6 +515,7 @@ export function AiMailPanel({
         TEST_RESPONSE_MODE
           ? {
               ...window.api,
+              isAiMailReadSnapshotCurrent: async () => true,
               generateAiMailDraft: async () => ({
                 ok: true,
                 text:
@@ -407,19 +531,43 @@ export function AiMailPanel({
               })
             }
           : window.api,
-        target,
+        readTask ? null : target,
         requestText,
         requestId,
         requestGeneration,
         followUp,
-        { task, ...(task === 'translate' ? { targetLanguage: language } : {}) }
+        { task, ...(task === 'translate' ? { targetLanguage: language } : {}) },
+        activeAccountId ?? undefined
       )
       if (
-        currentTargetKey.current !== currentKey ||
+        (!readTask && currentTargetKey.current !== targetKey(target)) ||
+        (readTask && activeAccountIdRef.current !== activeAccountId) ||
         (TEST_RESPONSE_MODE && pendingRequest.current?.requestId !== requestId)
       )
         return
       if (outcome.status === 'ready') {
+        const proposal: Proposal =
+          outcome.owner === 'compose'
+            ? {
+                owner: 'compose',
+                task: outcome.task,
+                field: outcome.task === 'subject' ? 'subject' : 'body',
+                text: outcome.text,
+                ...(outcome.subject !== undefined ? { subject: outcome.subject } : {}),
+                snapshot: outcome.snapshot,
+                applied: false,
+                busy: false
+              }
+            : {
+                owner: 'read',
+                task: outcome.task,
+                field: 'read',
+                text: outcome.text,
+                ...(outcome.subject !== undefined ? { subject: outcome.subject } : {}),
+                snapshot: outcome.snapshot,
+                applied: false,
+                busy: false
+              }
         setThread((current) => ({
           key: currentKey,
           items: [
@@ -428,14 +576,7 @@ export function AiMailPanel({
               id: newId(),
               role: 'assistant',
               text: text.proposal,
-              proposal: {
-                task: outcome.task,
-                text: outcome.text,
-                ...(outcome.subject !== undefined ? { subject: outcome.subject } : {}),
-                snapshot: outcome.snapshot,
-                applied: false,
-                busy: false
-              }
+              proposal
             }
           ]
         }))
@@ -483,7 +624,8 @@ export function AiMailPanel({
       }
     } catch {
       if (
-        currentTargetKey.current !== currentKey ||
+        (!readTask && currentTargetKey.current !== targetKey(target)) ||
+        (readTask && activeAccountIdRef.current !== activeAccountId) ||
         (TEST_RESPONSE_MODE && pendingRequest.current?.requestId !== requestId)
       )
         return
@@ -578,7 +720,7 @@ export function AiMailPanel({
     const proposal = item?.proposal
     if (
       !proposal ||
-      proposal.task === 'summary' ||
+      proposal.owner !== 'compose' ||
       proposal.busy ||
       proposal.snapshot.accountId !== activeAccountId ||
       !target
@@ -588,19 +730,33 @@ export function AiMailPanel({
     try {
       const result =
         operation === 'apply'
-          ? await applyAiMailProposal(
-              window.api,
-              proposal.snapshot,
-              proposal.text,
-              confirmedCurrentVersion
-            )
-          : proposal.applyId
-            ? await undoAiMailProposal(
+          ? proposal.field === 'subject'
+            ? await applyAiMailSubjectProposal(
                 window.api,
                 proposal.snapshot,
-                proposal.applyId,
+                proposal.subject ?? '',
                 confirmedCurrentVersion
               )
+            : await applyAiMailProposal(
+                window.api,
+                proposal.snapshot,
+                proposal.text,
+                confirmedCurrentVersion
+              )
+          : proposal.applyId
+            ? proposal.field === 'subject'
+              ? await undoAiMailSubjectProposal(
+                  window.api,
+                  proposal.snapshot,
+                  proposal.applyId,
+                  confirmedCurrentVersion
+                )
+              : await undoAiMailProposal(
+                  window.api,
+                  proposal.snapshot,
+                  proposal.applyId,
+                  confirmedCurrentVersion
+                )
             : { status: 'failed' as const }
       if (result.status === 'conflict') {
         updateMessage(messageId, (message) =>
@@ -739,7 +895,9 @@ export function AiMailPanel({
             className="ai-mail-secondary"
             type="button"
             disabled={
-              !targetReady || Boolean(pending) || (selectedTask === 'translate' && !targetLanguage)
+              (!targetReady && selectedTask !== 'summary' && selectedTask !== 'translate') ||
+              Boolean(pending) ||
+              (selectedTask === 'translate' && !targetLanguage)
             }
             onClick={showTestResponse}
           >
@@ -831,6 +989,45 @@ export function AiMailPanel({
         )}
       </section>
 
+      <section className="ai-mail-target" aria-labelledby="ai-mail-read-target-title">
+        <h2 id="ai-mail-read-target-title">{text.readTargetTitle}</h2>
+        <div className="ai-mail-target-card">
+          <button
+            className="ai-mail-text-button"
+            type="button"
+            disabled={!activeAccountId || readSnapshotBusy}
+            onClick={() => void captureOpenedMail()}
+          >
+            {readSnapshotBusy ? text.loadingReadSnapshot : text.captureReceivedMail}
+          </button>
+          {readSnapshotStatus && (
+            <p className="ai-mail-inline-status" role="status">
+              {readSnapshotStatus}
+            </p>
+          )}
+          {capturedReadSnapshot?.accountId === activeAccountId &&
+            readSnapshotSession === captureSession && (
+              <details open className="ai-mail-captured">
+                <summary>{text.capturedReceivedMail}</summary>
+                <p>
+                  <strong>{text.subjectLabel}</strong> {capturedReadSnapshot.subject}
+                </p>
+                <pre>{capturedReadSnapshot.body}</pre>
+                <button
+                  className="ai-mail-text-button"
+                  type="button"
+                  onClick={() => {
+                    setCapturedReadSnapshot(null)
+                    setReadSnapshotStatus('')
+                  }}
+                >
+                  {text.clearReadCapture}
+                </button>
+              </details>
+            )}
+        </div>
+      </section>
+
       <section className="ai-mail-conversation" aria-label={text.title} aria-live="polite">
         {messages.map((message) => (
           <article key={message.id} className={`ai-mail-message ai-mail-message-${message.role}`}>
@@ -870,7 +1067,7 @@ export function AiMailPanel({
                 <strong>{text.outputLabels[message.proposal.task]}</strong>
                 <pre>{message.proposal.text}</pre>
                 <div className="ai-mail-proposal-actions">
-                  {message.proposal.task !== 'summary' && !message.proposal.applied ? (
+                  {message.proposal.owner === 'compose' && !message.proposal.applied ? (
                     <button
                       className="ai-mail-primary"
                       type="button"
@@ -884,7 +1081,7 @@ export function AiMailPanel({
                     >
                       {message.proposal.busy ? text.loadingSnapshot : text.apply}
                     </button>
-                  ) : message.proposal.task !== 'summary' ? (
+                  ) : message.proposal.owner === 'compose' ? (
                     <button
                       className="ai-mail-text-button"
                       type="button"
@@ -1080,7 +1277,7 @@ export function AiMailPanel({
           className="ai-mail-primary"
           type="submit"
           disabled={
-            !targetReady ||
+            (!targetReady && selectedTask !== 'summary' && selectedTask !== 'translate') ||
             (selectedTask === 'revise' && !instruction.trim()) ||
             (selectedTask === 'translate' && !targetLanguage) ||
             !generationAvailable ||

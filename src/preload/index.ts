@@ -40,6 +40,10 @@ import {
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
   AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT,
+  AI_MAIL_READ_SNAPSHOT_CHANNEL,
+  AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL,
+  AI_MAIL_SUBJECT_APPLY_CHANNEL,
+  AI_MAIL_SUBJECT_UNDO_CHANNEL,
   NOTIFICATION_CONNECTIONS_CHANNEL,
   NOTIFICATION_CONNECTIONS_EVENT,
   NOTIFICATION_RECOVER_CHANNEL,
@@ -59,6 +63,11 @@ if (!process.contextIsolated) throw new Error('Context isolation is required')
 
 // Expose operations rather than a generic channel sender or Electron objects.
 const api: HantongApi = Object.freeze({
+  getAiMailReadSnapshot: () => ipcRenderer.invoke(AI_MAIL_READ_SNAPSHOT_CHANNEL),
+  isAiMailReadSnapshotCurrent: (captureId) =>
+    ipcRenderer.invoke(AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL, captureId),
+  applyAiMailSubject: (request) => ipcRenderer.invoke(AI_MAIL_SUBJECT_APPLY_CHANNEL, request),
+  undoAiMailSubject: (request) => ipcRenderer.invoke(AI_MAIL_SUBJECT_UNDO_CHANNEL, request),
   getAiMailComposeTargetStatus: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL),
   getAiMailComposeSnapshot: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL),
   applyAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_APPLY_CHANNEL, request),

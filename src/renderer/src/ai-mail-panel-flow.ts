@@ -2,16 +2,26 @@ import type {
   AiMailComposeApplyRequest,
   AiMailComposeMutationResult,
   AiMailComposeUndoRequest,
+  AiMailSubjectApplyRequest,
+  AiMailSubjectUndoRequest,
   ComposeSnapshotResult,
   ComposeTargetStatus,
   CodexGenerationResult,
-  HantongApi
+  HantongApi,
+  ReadMailSnapshotResult
 } from '../../shared/ipc'
 import prompts from './ai-mail-prompts.json'
 
 type AiMailPanelApi = Pick<
   HantongApi,
-  'getAiMailComposeSnapshot' | 'generateAiMailDraft' | 'applyAiMailDraft' | 'undoAiMailDraft'
+  | 'getAiMailComposeSnapshot'
+  | 'getAiMailReadSnapshot'
+  | 'isAiMailReadSnapshotCurrent'
+  | 'generateAiMailDraft'
+  | 'applyAiMailDraft'
+  | 'undoAiMailDraft'
+  | 'applyAiMailSubject'
+  | 'undoAiMailSubject'
 >
 
 export type AiMailTargetCapture = { key: string; epoch: number }
@@ -123,12 +133,26 @@ export async function captureAiMailTargetSnapshot<T>(
 export type AiMailProposalOutcome =
   | {
       status: 'ready'
+      owner: 'compose'
       snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>
-      task: AiMailTask
+      task: 'revise' | 'subject'
       text: string
       subject?: string
     }
-  | { status: 'unavailable'; result: Exclude<ComposeSnapshotResult, { status: 'ready' }> }
+  | {
+      status: 'ready'
+      owner: 'read'
+      snapshot: Extract<ReadMailSnapshotResult, { status: 'ready' }>
+      task: 'summary' | 'translate'
+      text: string
+      subject?: string
+    }
+  | {
+      status: 'unavailable'
+      result:
+        | Exclude<ComposeSnapshotResult, { status: 'ready' }>
+        | Exclude<ReadMailSnapshotResult, { status: 'ready' }>
+    }
   | { status: 'stale' }
   | { status: 'invalid_output' }
   | { status: 'invalid_request'; reason: 'target_language_required' }
@@ -143,63 +167,98 @@ export interface AiMailTaskOptions {
 
 export async function requestAiMailProposal(
   api: AiMailPanelApi,
-  target: Extract<ComposeTargetStatus, { status: 'ready' }>,
+  target: Extract<ComposeTargetStatus, { status: 'ready' }> | null,
   instruction: string,
   requestId: string,
   generation: number,
   followUp?: string,
-  options: AiMailTaskOptions = { task: 'revise' }
+  options: AiMailTaskOptions = { task: 'revise' },
+  activeAccountId?: string
 ): Promise<AiMailProposalOutcome> {
   if (options.task === 'translate' && !options.targetLanguage?.trim())
     return { status: 'invalid_request', reason: 'target_language_required' }
+  const readTask = options.task === 'summary' || options.task === 'translate'
+  const promptFor = (subject: string, body: string): string =>
+    [
+      prompts[options.task],
+      ...(instruction ? [`User instruction: ${instruction}`] : []),
+      ...(options.task === 'translate'
+        ? [`Target language: ${options.targetLanguage?.trim() ?? ''}`]
+        : []),
+      `Email subject:\n${subject}`,
+      `Email body:\n${body}`
+    ].join('\n\n')
+
+  if (readTask) {
+    const snapshot = await api.getAiMailReadSnapshot()
+    if (snapshot.status !== 'ready') return { status: 'unavailable', result: snapshot }
+    if (snapshot.accountId !== activeAccountId) return { status: 'stale' }
+    const generated = await api.generateAiMailDraft({
+      accountId: snapshot.accountId,
+      composeId: snapshot.captureId,
+      requestId,
+      generation,
+      prompt: promptFor(snapshot.subject, snapshot.body),
+      ...(followUp ? { followUp } : {})
+    })
+    if (!generated.ok) return { status: 'failed', result: generated }
+    if (!(await api.isAiMailReadSnapshotCurrent(snapshot.captureId))) return { status: 'stale' }
+    if (options.task === 'summary')
+      return { status: 'ready', owner: 'read', snapshot, task: 'summary', text: generated.text }
+    const output = parseStructuredProposal(generated.text)
+    return output
+      ? {
+          status: 'ready',
+          owner: 'read',
+          snapshot,
+          task: 'translate',
+          text: output.body,
+          subject: output.subject
+        }
+      : { status: 'invalid_output' }
+  }
+
   const snapshot = await api.getAiMailComposeSnapshot()
   if (snapshot.status !== 'ready') return { status: 'unavailable', result: snapshot }
-  if (snapshot.accountId !== target.accountId || snapshot.composeId !== target.composeId)
+  if (!target || snapshot.accountId !== target.accountId || snapshot.composeId !== target.composeId)
     return { status: 'stale' }
-
-  const prompt = [
-    prompts[options.task],
-    ...(instruction ? [`User instruction: ${instruction}`] : []),
-    ...(options.task === 'translate'
-      ? [`Target language: ${options.targetLanguage?.trim() ?? ''}`]
-      : []),
-    `Email subject:\n${snapshot.subject}`,
-    `Email body:\n${snapshot.body}`
-  ].join('\n\n')
   const generated = await api.generateAiMailDraft({
     accountId: target.accountId,
     composeId: target.composeId,
     requestId,
     generation,
-    prompt,
+    prompt: promptFor(snapshot.subject, snapshot.body),
     ...(followUp ? { followUp } : {})
   })
   if (!generated.ok) return { status: 'failed', result: generated }
-  if (options.task === 'subject' || options.task === 'translate') {
-    try {
-      const output: unknown = JSON.parse(generated.text)
-      if (!output || typeof output !== 'object' || Array.isArray(output))
-        return { status: 'invalid_output' }
-      if (
-        Object.keys(output).sort().join(',') !== 'body,subject' ||
-        !('subject' in output) ||
-        typeof output.subject !== 'string' ||
-        !('body' in output) ||
-        typeof output.body !== 'string'
-      )
-        return { status: 'invalid_output' }
-      return {
+  if (options.task === 'revise')
+    return { status: 'ready', owner: 'compose', snapshot, task: 'revise', text: generated.text }
+  const output = parseStructuredProposal(generated.text)
+  return output
+    ? {
         status: 'ready',
+        owner: 'compose',
         snapshot,
-        task: options.task,
+        task: 'subject',
         text: output.body,
         subject: output.subject
       }
-    } catch {
-      return { status: 'invalid_output' }
-    }
+    : { status: 'invalid_output' }
+}
+
+function parseStructuredProposal(text: string): { subject: string; body: string } | null {
+  try {
+    const output: unknown = JSON.parse(text)
+    if (!output || typeof output !== 'object' || Array.isArray(output)) return null
+    const value = output as Record<string, unknown>
+    return Object.keys(value).sort().join(',') === 'body,subject' &&
+      typeof value.body === 'string' &&
+      typeof value.subject === 'string'
+      ? { subject: value.subject, body: value.body }
+      : null
+  } catch {
+    return null
   }
-  return { status: 'ready', snapshot, task: options.task, text: generated.text }
 }
 
 export function applyAiMailProposal(
@@ -233,4 +292,37 @@ export function undoAiMailProposal(
     ...(confirmedCurrentVersion ? { confirmedCurrentVersion } : {})
   }
   return api.undoAiMailDraft(request)
+}
+
+export function applyAiMailSubjectProposal(
+  api: AiMailPanelApi,
+  snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>,
+  replacement: string,
+  confirmedCurrentVersion?: string
+): Promise<AiMailComposeMutationResult> {
+  const request: AiMailSubjectApplyRequest = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement,
+    ...(confirmedCurrentVersion ? { confirmedCurrentVersion } : {})
+  }
+  return api.applyAiMailSubject(request)
+}
+
+export function undoAiMailSubjectProposal(
+  api: AiMailPanelApi,
+  snapshot: Extract<ComposeSnapshotResult, { status: 'ready' }>,
+  applyId: string,
+  confirmedCurrentVersion?: string
+): Promise<AiMailComposeMutationResult> {
+  const request: AiMailSubjectUndoRequest = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    applyId,
+    ...(confirmedCurrentVersion ? { confirmedCurrentVersion } : {})
+  }
+  return api.undoAiMailSubject(request)
 }

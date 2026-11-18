@@ -143,6 +143,35 @@ export function isAllowedAiMailComposeMutationRequest(
   )
 }
 
+export function isAllowedAiMailReadRequest(request: AppInfoRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    request.args.length === 0 &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
+export function isAllowedAiMailReadLeaseRequest(request: AppInfoRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    request.args.length === 1 &&
+    isBoundedId(request.args[0]) &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
+export function isAllowedAiMailSubjectMutationRequest(
+  request: AiMailComposeMutationRequest
+): boolean {
+  if (!isAllowedAiMailComposeMutationRequest(request)) return false
+  const value = request.args[0] as Record<string, unknown>
+  return request.operation === 'apply' ? isBoundedId(value.snapshotId) : isBoundedId(value.applyId)
+}
+
 export function isTrustedRendererUrl(candidate: string, rendererUrl: string): boolean {
   try {
     const actual = new URL(candidate)

@@ -336,6 +336,9 @@ test('reopen hides the old target and capture until the fresh access status reso
 test('test response renders subject separately and summary has no body mutation action', async () => {
   const hooks = createHooks()
   const applied = []
+  const subjectApplied = []
+  const subjectUndone = []
+  let subjectAttempt = 0
   const fakeWindow = {
     api: {
       getAiMailComposeTargetStatus: async () => targetA,
@@ -343,9 +346,29 @@ test('test response renders subject separately and summary has no body mutation 
       onAiMailCodexStatus: () => () => {},
       getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
       getAiMailComposeSnapshot: async () => captured,
+      getAiMailReadSnapshot: async () => ({
+        status: 'ready',
+        accountId: 'account-a',
+        accountLabel: 'A',
+        captureId: 'read-capture-1',
+        subject: 'Read subject',
+        body: 'Read body'
+      }),
+      isAiMailReadSnapshotCurrent: async () => true,
       applyAiMailDraft: async (request) => {
         applied.push(request)
         return { status: 'applied', applyId: 'apply-1' }
+      },
+      applyAiMailSubject: async (request) => {
+        subjectApplied.push(request)
+        subjectAttempt += 1
+        return subjectAttempt === 1
+          ? { status: 'conflict', currentVersion: 'subject-v2', currentBody: 'Current subject' }
+          : { status: 'applied', applyId: 'subject-apply-1' }
+      },
+      undoAiMailSubject: async (request) => {
+        subjectUndone.push(request)
+        return { status: 'undone' }
       }
     }
   }
@@ -380,6 +403,16 @@ test('test response renders subject separately and summary has no body mutation 
   render()
   await flush()
   let tree = render()
+  const receivedCaptureButton = findElement(
+    tree,
+    (node) =>
+      node.type === 'button' && node.props.children === messages.en.aiMail.captureReceivedMail
+  )
+  assert.ok(receivedCaptureButton)
+  receivedCaptureButton.props.onClick()
+  await flush()
+  tree = render()
+  assert.ok(findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Read body'))
   const subjectTask = findElement(
     tree,
     (node) =>
@@ -408,14 +441,30 @@ test('test response renders subject separately and summary has no body mutation 
       (node) => node.type === 'pre' && node.props.children === messages.en.aiMail.testSuggestedBody
     )
   )
-  const applyButton = findElement(
+  const subjectProposal = findElement(
     tree,
+    (node) => node.type === 'h2' && node.props.children === messages.en.aiMail.taskLabels.subject
+  )
+  assert.ok(subjectProposal)
+  const proposalArticle = findElement(
+    tree,
+    (node) =>
+      node.type === 'article' &&
+      node.props.className === 'ai-mail-message ai-mail-message-assistant'
+  )
+  const applyButton = findElement(
+    proposalArticle,
     (node) => node.type === 'button' && node.props.children === messages.en.aiMail.apply
   )
   assert.ok(applyButton)
   applyButton.props.onClick()
   await flush()
-  assert.equal(applied[0].replacement, messages.en.aiMail.testSuggestedBody)
+  assert.equal(subjectApplied[0].replacement, messages.en.aiMail.testSubject)
+  const undoButton = findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.undo
+  )
+  assert.equal(undoButton, null)
 
   const summaryTask = findElement(
     tree,
@@ -428,6 +477,7 @@ test('test response renders subject separately and summary has no body mutation 
     tree,
     (node) => node.type === 'button' && node.props.children === messages.en.aiMail.testResponse
   )
+  const appliedBeforeReadTask = applied.length
   summaryButton.props.onClick()
   await flush()
   tree = render()
@@ -437,11 +487,114 @@ test('test response renders subject separately and summary has no body mutation 
       (node) => node.type === 'pre' && node.props.children === messages.en.aiMail.testSummary
     )
   )
+  const readProposal = findElement(
+    tree,
+    (node) => node.type === 'h2' && node.props.children === messages.en.aiMail.taskLabels.summary
+  )
+  assert.ok(readProposal)
+  const summaryArticle = findElement(
+    tree,
+    (node) =>
+      node.type === 'article' &&
+      node.props.className === 'ai-mail-message ai-mail-message-assistant' &&
+      findElement(
+        node,
+        (child) =>
+          child.type === 'h2' && child.props.children === messages.en.aiMail.taskLabels.summary
+      )
+  )
+  assert.ok(summaryArticle)
   assert.equal(
     findElement(
-      tree,
+      summaryArticle,
       (node) => node.type === 'button' && node.props.children === messages.en.aiMail.apply
     ),
     null
   )
+  assert.equal(applied.length, appliedBeforeReadTask)
+})
+
+test('subject proposal applies directly, confirms version conflicts, then supports undo', async () => {
+  const hooks = createHooks()
+  const subjectRequests = []
+  let attempt = 0
+  const fakeWindow = {
+    api: {
+      getAiMailComposeTargetStatus: async () => targetA,
+      onAiMailComposeTarget: () => () => {},
+      onAiMailCodexStatus: () => () => {},
+      getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+      getAiMailComposeSnapshot: async () => captured,
+      applyAiMailSubject: async (request) => {
+        subjectRequests.push(request)
+        attempt += 1
+        return attempt === 1
+          ? { status: 'conflict', currentVersion: 'subject-v2', currentBody: 'Current subject' }
+          : { status: 'applied', applyId: 'subject-1' }
+      },
+      undoAiMailSubject: async (request) => {
+        subjectRequests.push(request)
+        return { status: 'undone' }
+      }
+    }
+  }
+  const { AiMailPanel } = loadTypeScript(
+    new URL('../src/renderer/src/AiMailPanel.tsx', import.meta.url),
+    { react: hooks, window: fakeWindow, setTimeout: () => 1, clearTimeout: () => undefined }
+  )
+  const { messages } = loadTypeScript(
+    new URL('../src/renderer/src/app-messages.ts', import.meta.url)
+  )
+  let props = {
+    activeAccountId: 'account-a',
+    layoutMode: 'right',
+    open: true,
+    captureSession: 0,
+    text: messages.en.aiMail,
+    onClose: () => undefined
+  }
+  const render = () => {
+    hooks.beginRender()
+    const tree = AiMailPanel(props)
+    hooks.flushEffects()
+    return tree
+  }
+  const flush = () => new Promise(setImmediate)
+  render()
+  await flush()
+  let tree = render()
+  findElement(
+    tree,
+    (node) => node.type === 'input' && node.props.value === 'subject'
+  ).props.onChange()
+  tree = render()
+  findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.testResponse
+  ).props.onClick()
+  await flush()
+  tree = render()
+  findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.apply
+  ).props.onClick()
+  await flush()
+  tree = render()
+  assert.equal(subjectRequests[0].replacement, messages.en.aiMail.testSubject)
+  assert.equal(subjectRequests[0].composeId, targetA.composeId)
+  const confirm = findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.confirmApply
+  )
+  assert.ok(confirm)
+  confirm.props.onClick()
+  await flush()
+  tree = render()
+  assert.equal(subjectRequests[1].confirmedCurrentVersion, 'subject-v2')
+  findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.undo
+  ).props.onClick()
+  await flush()
+  assert.equal(subjectRequests[2].applyId, 'subject-1')
 })

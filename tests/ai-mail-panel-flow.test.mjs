@@ -11,7 +11,9 @@ const {
   isAiMailSnapshotCaptureBusy,
   finishAiMailSnapshotCapture,
   createAiMailTargetRefreshCoordinator,
-  createAiMailGenerationSequence
+  createAiMailGenerationSequence,
+  applyAiMailSubjectProposal,
+  undoAiMailSubjectProposal
 } = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
 
 test('target refresh on open updates when access and a compose target become ready', async () => {
@@ -316,10 +318,26 @@ test('subject recommendation returns separate subject and body fields and never 
   assert.match(sentRequest.prompt, /Synthetic draft body/)
 })
 
-test('summary is read-only text while translation requires an explicit target language', async () => {
+test('summary and translation capture the currently opened received email, separately from compose', async () => {
   const prompts = []
+  let composeReads = 0
+  let readReads = 0
   const api = {
-    getAiMailComposeSnapshot: async () => snapshot,
+    getAiMailComposeSnapshot: async () => {
+      composeReads += 1
+      return snapshot
+    },
+    getAiMailReadSnapshot: async () => {
+      readReads += 1
+      return {
+        status: 'ready',
+        accountId: 'account-a',
+        captureId: 'capture-1',
+        subject: 'Received message subject',
+        body: 'Received message body'
+      }
+    },
+    isAiMailReadSnapshotCurrent: async () => true,
     generateAiMailDraft: async (request) => {
       prompts.push(request.prompt)
       return {
@@ -332,26 +350,105 @@ test('summary is read-only text while translation requires an explicit target la
       }
     }
   }
-  const summary = await requestAiMailProposal(api, target, '', 'request-summary', 1, undefined, {
-    task: 'summary'
-  })
+  const summary = await requestAiMailProposal(
+    api,
+    null,
+    '',
+    'request-summary',
+    1,
+    undefined,
+    {
+      task: 'summary'
+    },
+    'account-a'
+  )
   const translation = await requestAiMailProposal(
     api,
-    target,
+    null,
     '',
     'request-translation',
     1,
     undefined,
-    { task: 'translate', targetLanguage: 'Korean' }
+    { task: 'translate', targetLanguage: 'Korean' },
+    'account-a'
   )
+  assert.equal(summary.status, 'ready', JSON.stringify(summary))
+  assert.equal(translation.status, 'ready', JSON.stringify(translation))
 
   assert.equal(summary.status, 'ready')
+  assert.equal(summary.owner, 'read')
+  assert.equal(summary.snapshot.captureId, 'capture-1')
+  assert.equal('composeId' in summary.snapshot, false)
   assert.equal(summary.task, 'summary')
   assert.equal(summary.text, 'Short summary')
   assert.equal(translation.status, 'ready')
+  assert.equal(translation.owner, 'read')
   assert.equal(translation.text, 'Translated body')
   assert.equal(translation.subject, 'Translated subject')
+  assert.match(prompts[0], /Received message subject/)
+  assert.match(prompts[0], /Received message body/)
   assert.match(prompts[1], /Korean/)
+  assert.equal(readReads, 2)
+  assert.equal(composeReads, 0)
+})
+
+test('received-mail generation discards a result after its capture lease changes', async () => {
+  const outcome = await requestAiMailProposal(
+    {
+      getAiMailReadSnapshot: async () => ({
+        status: 'ready',
+        accountId: 'account-a',
+        accountLabel: 'A',
+        captureId: 'read-lease',
+        subject: 'Read',
+        body: 'Body'
+      }),
+      isAiMailReadSnapshotCurrent: async () => false,
+      getAiMailComposeSnapshot: async () => snapshot,
+      generateAiMailDraft: async () => ({
+        ok: true,
+        text: 'Summary',
+        usage: { inputTokens: null, outputTokens: null }
+      })
+    },
+    null,
+    '',
+    'read-stale',
+    1,
+    undefined,
+    { task: 'summary' },
+    'account-a'
+  )
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
+})
+
+test('subject recommendation has a versioned direct apply and undo path', async () => {
+  const calls = []
+  const api = {
+    applyAiMailSubject: async (request) => {
+      calls.push({ operation: 'apply', request })
+      return { status: 'applied', applyId: 'subject-apply-1' }
+    },
+    undoAiMailSubject: async (request) => {
+      calls.push({ operation: 'undo', request })
+      return { status: 'undone' }
+    }
+  }
+  const applied = await applyAiMailSubjectProposal(api, snapshot, 'New subject')
+  assert.deepEqual(applied, { status: 'applied', applyId: 'subject-apply-1' })
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), {
+    operation: 'apply',
+    request: {
+      accountId: snapshot.accountId,
+      composeId: snapshot.composeId,
+      documentVersion: snapshot.documentVersion,
+      snapshotId: snapshot.snapshotId,
+      replacement: 'New subject'
+    }
+  })
+  assert.deepEqual(await undoAiMailSubjectProposal(api, snapshot, 'subject-apply-1'), {
+    status: 'undone'
+  })
 })
 
 test('malformed structured subject output fails closed', async () => {

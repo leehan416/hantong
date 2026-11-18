@@ -3,6 +3,7 @@ import { createAccountViewManager } from './account-view-manager'
 import { createAccountAccessController } from './account-access-controller'
 import { createGmailComposeProbeRuntime, isGmailComposeProbeOptedIn } from './gmail-compose-probe'
 import { createGmailComposeTargetService } from './gmail-compose-target'
+import { createGmailReadTargetService } from './gmail-read-target'
 import { createGoogleConnectionRuntime } from './google-connection-runtime'
 import { createGoogleConnectionManager } from './google-connection-manager'
 import { createAccountStore } from './account-store'
@@ -42,6 +43,9 @@ export interface MainWindowRuntimeDependencies {
   readonly requireGoogleManager: () => ReturnType<typeof createGoogleConnectionManager>
   readonly setComposeTargetService: (
     service: ReturnType<typeof createGmailComposeTargetService> | null
+  ) => void
+  readonly setReadTargetService: (
+    service: ReturnType<typeof createGmailReadTargetService> | null
   ) => void
   readonly settings: () => ReturnType<typeof createSettingsStore> | null
   readonly windowState: () => ReturnType<typeof createWindowStateStore> | null
@@ -126,6 +130,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
     let windowAccessController: AccessController | null = null
     let gmailComposeProbe: ReturnType<typeof createGmailComposeProbeRuntime> | null = null
     let composeTargetService: ReturnType<typeof createGmailComposeTargetService> | null = null
+    let readTargetService: ReturnType<typeof createGmailReadTargetService> | null = null
     const windowViewManager = createAccountViewManager(
       window,
       dependencies.requireAccountStore(),
@@ -196,6 +201,7 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       publish: (state) => {
         gmailComposeProbe?.onAccessState(state)
         composeTargetService?.onAccessState(state)
+        readTargetService?.onAccessState(state)
         if (!window.isDestroyed()) window.webContents.send(ACCOUNT_ACCESS_STATE_EVENT, state)
       },
       onWebIdentity: (accountId, emailAddress) => {
@@ -220,6 +226,13 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
       access: windowAccessController,
       getAccounts: () => dependencies.requireAccountStore().getState().accounts
     })
+    readTargetService = createGmailReadTargetService({
+      window,
+      views: windowViewManager,
+      access: windowAccessController,
+      getAccounts: () => dependencies.requireAccountStore().getState().accounts
+    })
+    dependencies.setReadTargetService(readTargetService)
     dependencies.setComposeTargetService(composeTargetService)
     dependencies.setAccessController(windowAccessController, windowAccessController)
     if (process.argv.includes('--gmail-compose-probe') && app.isPackaged)
@@ -262,6 +275,8 @@ export function createMainWindowRuntime(dependencies: MainWindowRuntimeDependenc
     window.once('closed', () => {
       gmailComposeProbe?.dispose()
       composeTargetService?.dispose()
+      readTargetService?.dispose()
+      dependencies.setReadTargetService(null)
       dependencies.setComposeTargetService(null)
       if (!dependencies.isQuitting() && dependencies.settings()?.get().closeAction === 'quit')
         app.quit()

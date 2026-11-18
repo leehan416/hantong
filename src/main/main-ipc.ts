@@ -50,6 +50,10 @@ import {
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
   AI_MAIL_COMPOSE_UNDO_CHANNEL,
+  AI_MAIL_READ_SNAPSHOT_CHANNEL,
+  AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL,
+  AI_MAIL_SUBJECT_APPLY_CHANNEL,
+  AI_MAIL_SUBJECT_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT
 } from '../shared/ipc'
 import {
@@ -62,11 +66,15 @@ import {
   isAllowedLoginLaunchRequest,
   isAllowedAiMailCodexRequest,
   isAllowedAiMailComposeTargetRequest,
-  isAllowedAiMailComposeMutationRequest
+  isAllowedAiMailComposeMutationRequest,
+  isAllowedAiMailReadRequest,
+  isAllowedAiMailReadLeaseRequest,
+  isAllowedAiMailSubjectMutationRequest
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
 import type { createAiMailCodexService } from './ai-mail-codex-service'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
+import type { createGmailReadTargetService } from './gmail-read-target'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -90,9 +98,110 @@ export interface MainIpcDependencies {
   readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
   readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
   readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
+  readonly readTarget: () => ReturnType<typeof createGmailReadTargetService> | null
 }
 
 export function registerMainIpc(dependencies: MainIpcDependencies): void {
+  ipcMain.handle(AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL, async (event, ...args: unknown[]) => {
+    const owner = dependencies.window()
+    const request = {
+      ownerAlive: Boolean(owner && !owner.isDestroyed()),
+      senderMatches: Boolean(owner && event.sender === owner.webContents),
+      mainFrameMatches: event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+      senderUrl: event.senderFrame?.url ?? '',
+      rendererUrl: dependencies.rendererUrl,
+      args
+    }
+    if (!owner || !isAllowedAiMailReadLeaseRequest(request)) throw new Error('Request rejected')
+    const service = dependencies.readTarget()
+    const current = service ? await service.isSnapshotCurrent(args[0] as string) : false
+    if (
+      dependencies.window() !== owner ||
+      owner.isDestroyed() ||
+      !isAllowedAiMailReadLeaseRequest({
+        ...request,
+        ownerAlive: true,
+        senderMatches: event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? ''
+      })
+    )
+      throw new Error('Request rejected')
+    return current
+  })
+  ipcMain.handle(AI_MAIL_READ_SNAPSHOT_CHANNEL, async (event, ...args: unknown[]) => {
+    const owner = dependencies.window()
+    const trusted = isAllowedAiMailReadRequest({
+      ownerAlive: Boolean(owner && !owner.isDestroyed()),
+      senderMatches: Boolean(owner && event.sender === owner.webContents),
+      mainFrameMatches: event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+      senderUrl: event.senderFrame?.url ?? '',
+      rendererUrl: dependencies.rendererUrl,
+      args
+    })
+    if (!trusted || !owner) throw new Error('Request rejected')
+    const service = dependencies.readTarget()
+    if (!service) return { status: 'access_locked' }
+    const result = await service.getSnapshot()
+    const stillCurrent =
+      result.status !== 'ready' || (await service.isSnapshotCurrent(result.captureId))
+    if (
+      dependencies.window() !== owner ||
+      owner.isDestroyed() ||
+      !isAllowedAiMailReadRequest({
+        ownerAlive: true,
+        senderMatches: event.sender === owner.webContents,
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        args
+      })
+    )
+      throw new Error('Request rejected')
+    return stillCurrent ? result : { status: 'stale' }
+  })
+  for (const [channel, operation] of [
+    [AI_MAIL_SUBJECT_APPLY_CHANNEL, 'apply'],
+    [AI_MAIL_SUBJECT_UNDO_CHANNEL, 'undo']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const request = {
+        ownerAlive: Boolean(owner && !owner.isDestroyed()),
+        senderMatches: Boolean(owner && event.sender === owner.webContents),
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        operation,
+        args
+      }
+      if (!owner || !isAllowedAiMailSubjectMutationRequest(request))
+        throw new Error('Request rejected')
+      const service = dependencies.composeTarget()
+      if (!service) return { status: 'stale_target' }
+      const result =
+        operation === 'apply'
+          ? await service.applySubject(args[0] as import('../shared/ipc').AiMailComposeApplyRequest)
+          : await service.undoSubject(args[0] as import('../shared/ipc').AiMailComposeUndoRequest)
+      if (
+        dependencies.window() !== owner ||
+        owner.isDestroyed() ||
+        !isAllowedAiMailSubjectMutationRequest({
+          ...request,
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? ''
+        })
+      )
+        throw new Error('Request rejected')
+      return result
+    })
+  }
   for (const [channel, operation] of [
     [AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL, 'status'],
     [AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL, 'snapshot']
