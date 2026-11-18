@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import type {
   CodexConnectionStatus,
   ComposeSnapshotResult,
@@ -6,72 +6,43 @@ import type {
   ReadMailSnapshotResult
 } from '../../shared/ipc'
 import type { AppMessages } from './app-messages'
+import { AiMailChatLayout } from './AiMailChatLayout'
 import {
-  type AiMailTask,
-  type AiMailSnapshotCapture,
-  applyAiMailProposal,
-  applyAiMailSubjectProposal,
-  captureAiMailTargetSnapshot,
   createAiMailGenerationSequence,
-  createAiMailTargetEpoch,
+  createAiMailFieldMutationCoordinator,
   createAiMailTargetRefreshCoordinator,
-  finishAiMailSnapshotCapture,
-  isAiMailSnapshotCaptureBusy,
   requestAiMailProposal,
-  undoAiMailProposal,
-  undoAiMailSubjectProposal
+  aiMailFieldFeedback
 } from './ai-mail-panel-flow'
 
 const GENERATION_ENABLED = false
-const TEST_RESPONSE_MODE = true
 const TARGET_REFRESH_INTERVAL_MS = 1500
+const READ_TARGET_REFRESH_INTERVAL_MS = 5000
 
 type ReadySnapshot = Extract<ComposeSnapshotResult, { status: 'ready' }>
 type ReadyReadSnapshot = Extract<ReadMailSnapshotResult, { status: 'ready' }>
 type ReadyTarget = Extract<ComposeTargetStatus, { status: 'ready' }>
-type ProposalConflict = {
-  operation: 'apply' | 'undo'
-  currentVersion: string
-  currentBody: string
-}
-type ProposalBase = {
+type FieldState = {
+  value: string
   applied: boolean
-  busy: boolean
   applyId?: string
-  feedback?: 'applied' | 'undone' | 'error' | 'stale' | 'busy'
-  feedbackOperation?: 'apply' | 'undo'
-  conflict?: ProposalConflict
-  subject?: string
-  text: string
+  busy: boolean
+  feedback?: 'applied' | 'undone' | 'error' | 'stale' | 'busy' | 'unsupported'
+  lastOperation?: 'apply' | 'undo'
+  conflict?: { currentVersion: string; currentBody: string; operation: 'apply' | 'undo' }
 }
-type Proposal =
-  | (ProposalBase & {
-      owner: 'compose'
-      task: 'revise' | 'subject'
-      field: 'body' | 'subject'
-      snapshot: ReadySnapshot
-    })
-  | (ProposalBase & {
-      owner: 'read'
-      task: 'summary' | 'translate'
-      field: 'read'
-      snapshot: ReadyReadSnapshot
-    })
+type Proposal = {
+  snapshot: ReadySnapshot
+  subject?: FieldState
+  body: FieldState
+}
 type PanelMessage = {
   id: string
   role: 'user' | 'assistant'
   text: string
-  task?: AiMailTask
   tone?: 'error' | 'notice'
-  retryRequest?: {
-    instruction: string
-    followUp?: string
-    task: AiMailTask
-    targetLanguage?: string
-  }
   proposal?: Proposal
 }
-type Thread = { key: string; items: PanelMessage[] }
 
 type Props = {
   activeAccountId: string | null
@@ -80,10 +51,6 @@ type Props = {
   captureSession: number
   text: AppMessages['aiMail']
   onClose: () => void
-}
-
-function targetKey(target: ReadyTarget | null): string {
-  return target ? `${target.accountId}:${target.composeId}` : ''
 }
 
 function newId(): string {
@@ -106,6 +73,10 @@ function statusText(status: CodexConnectionStatus | null, text: Props['text']): 
   }
 }
 
+function targetKey(target: ReadyTarget | null): string {
+  return target ? `${target.accountId}:${target.composeId}` : ''
+}
+
 export function AiMailPanel({
   activeAccountId,
   layoutMode,
@@ -115,128 +86,155 @@ export function AiMailPanel({
   onClose
 }: Props): React.JSX.Element | null {
   const [targetStatus, setTargetStatus] = useState<ComposeTargetStatus>({ status: 'none' })
-  const [codexStatus, setCodexStatus] = useState<CodexConnectionStatus | null>(null)
-  const [codexBusy, setCodexBusy] = useState(false)
-  const [statusFailed, setStatusFailed] = useState(false)
-  const [snapshotCapture, setSnapshotCapture] = useState<AiMailSnapshotCapture | null>(null)
-  const [capturedSnapshot, setCapturedSnapshot] = useState<ReadySnapshot | null>(null)
-  const [capturedReadSnapshot, setCapturedReadSnapshot] = useState<ReadyReadSnapshot | null>(null)
-  const [readSnapshotSession, setReadSnapshotSession] = useState<number | null>(null)
-  const [readSnapshotStatus, setReadSnapshotStatus] = useState('')
-  const [readSnapshotBusy, setReadSnapshotBusy] = useState(false)
-  const [snapshotStatus, setSnapshotStatus] = useState('')
-  const [thread, setThread] = useState<Thread>({ key: '', items: [] })
-  const [instruction, setInstruction] = useState('')
-  const [selectedTask, setSelectedTask] = useState<AiMailTask>('revise')
-  const [targetLanguage, setTargetLanguage] = useState('')
-  const [pending, setPending] = useState<{ requestId: string; key: string } | null>(null)
-  const [cancelError, setCancelError] = useState(false)
-  const [copyErrorId, setCopyErrorId] = useState<string | null>(null)
-  const [copySuccessId, setCopySuccessId] = useState<string | null>(null)
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const activeAccountIdRef = useRef(activeAccountId)
-  activeAccountIdRef.current = activeAccountId
-  const currentTargetKey = useRef('')
-  const readCaptureSequence = useRef(0)
-  const captureEpoch = useRef(createAiMailTargetEpoch())
-  const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
-  const codexActionRevision = useRef(0)
-  const conversation = useRef<{ key: string; requestId: string } | null>(null)
-  const generation = useRef(createAiMailGenerationSequence())
-  const targetRefreshSession = useRef(captureSession)
-  const [acceptedTargetRefresh, setAcceptedTargetRefresh] = useState<{
+  const [readyTargetContext, setReadyTargetContext] = useState<{
     accountId: string | null
     session: number
   } | null>(null)
+  const [codexStatus, setCodexStatus] = useState<CodexConnectionStatus | null>(null)
+  const [codexBusy, setCodexBusy] = useState(false)
+  const [statusFailed, setStatusFailed] = useState(false)
+  const [composeSnapshot, setComposeSnapshot] = useState<ReadySnapshot | null>(null)
+  const [readSnapshot, setReadSnapshot] = useState<ReadyReadSnapshot | null>(null)
+  const [contextStatus, setContextStatus] = useState('')
+  const [messages, setMessages] = useState<PanelMessage[]>([])
+  const [messagesContext, setMessagesContext] = useState('')
+  const [instruction, setInstruction] = useState('')
+  const [pending, setPending] = useState(false)
+  const [pendingContext, setPendingContext] = useState('')
+  const [cancelError, setCancelError] = useState(false)
+  const [copyFeedback, setCopyFeedback] = useState('')
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const composing = useRef(false)
+  const activeAccountRef = useRef(activeAccountId)
+  const sessionRef = useRef(captureSession)
+  const currentTargetKey = useRef('')
+  const targetStatusRef = useRef<ComposeTargetStatus>({ status: 'none' })
+  const lastCaptureKey = useRef('')
+  const captureSequence = useRef(0)
+  const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
+  const codexActionRevision = useRef(0)
+  const generation = useRef(createAiMailGenerationSequence())
+  const fieldMutations = useRef(createAiMailFieldMutationCoordinator(window.api))
   const targetRefresh = useRef(
     createAiMailTargetRefreshCoordinator({
       query: () => window.api.getAiMailComposeTargetStatus()
     })
   )
-  const targetRefreshReady =
-    acceptedTargetRefresh?.accountId === activeAccountId &&
-    acceptedTargetRefresh.session === captureSession
-  const target = useMemo<ReadyTarget | null>(
-    () =>
-      targetRefreshReady &&
-      targetStatus.status === 'ready' &&
-      targetStatus.accountId === activeAccountId
-        ? targetStatus
-        : null,
-    [activeAccountId, targetRefreshReady, targetStatus]
-  )
-  const composeKey = targetKey(target)
-  const key =
-    selectedTask === 'summary' || selectedTask === 'translate'
-      ? `read:${activeAccountId ?? 'none'}`
-      : `compose:${composeKey}`
-  const messages = thread.key === key ? thread.items : []
-  const targetReady = Boolean(target)
-  const snapshotBusy = isAiMailSnapshotCaptureBusy(open, captureSession, snapshotCapture)
-  const generationAvailable =
-    TEST_RESPONSE_MODE || (GENERATION_ENABLED && codexStatus?.state === 'connected')
+  const targetReady =
+    readyTargetContext?.accountId === activeAccountId &&
+    readyTargetContext.session === captureSession
+  const target =
+    targetReady && targetStatus.status === 'ready' && targetStatus.accountId === activeAccountId
+      ? targetStatus
+      : null
+  const currentReadSnapshot = readSnapshot?.accountId === activeAccountId ? readSnapshot : null
+  const currentComposeSnapshot =
+    composeSnapshot?.accountId === activeAccountId &&
+    target?.composeId === composeSnapshot.composeId
+      ? composeSnapshot
+      : null
+  const contextKey = `${activeAccountId ?? 'none'}:${targetKey(target)}:${currentReadSnapshot?.captureId ?? 'no-read'}:${captureSession}`
+  const generationAvailable = GENERATION_ENABLED && codexStatus?.state === 'connected'
 
-  const acceptTargetStatus = useCallback(
-    (status: ComposeTargetStatus): void => {
+  useEffect(() => {
+    activeAccountRef.current = activeAccountId
+    sessionRef.current = captureSession
+  }, [activeAccountId, captureSession])
+
+  const visibleMessages = messagesContext === contextKey ? messages : []
+  const requestPending = pending && pendingContext === contextKey
+
+  const captureCurrentContext = useCallback(
+    async (force = false): Promise<void> => {
+      const sequence = ++captureSequence.current
+      const account = activeAccountRef.current
+      const session = sessionRef.current
+      if (!account) {
+        setComposeSnapshot(null)
+        setReadSnapshot(null)
+        setContextStatus(text.noTarget)
+        return
+      }
+      const currentStatus = targetStatusRef.current
+      const activeTarget =
+        currentStatus.status === 'ready' && currentStatus.accountId === account
+          ? currentStatus
+          : null
+      const captureKey = `${account}:${activeTarget ? `${activeTarget.accountId}:${activeTarget.composeId}` : ''}:${session}`
+      if (!force && captureKey === lastCaptureKey.current && (readSnapshot || composeSnapshot))
+        return
+      lastCaptureKey.current = captureKey
+      setContextStatus(text.loadingSnapshot)
+      const [readResult, composeResult] = await Promise.all([
+        window.api.getAiMailReadSnapshot().catch(() => ({ status: 'stale' as const })),
+        window.api.getAiMailComposeSnapshot().catch(() => ({ status: 'stale' as const }))
+      ])
+      if (
+        sequence !== captureSequence.current ||
+        activeAccountRef.current !== account ||
+        sessionRef.current !== session
+      )
+        return
+      let nextRead: ReadyReadSnapshot | null = null
+      if (readResult.status === 'ready' && readResult.accountId === account) {
+        const current = await window.api
+          .isAiMailReadSnapshotCurrent(readResult.captureId)
+          .catch(() => false)
+        if (
+          sequence !== captureSequence.current ||
+          activeAccountRef.current !== account ||
+          sessionRef.current !== session
+        )
+          return
+        if (current) nextRead = readResult
+      }
+      const nextCompose =
+        composeResult.status === 'ready' &&
+        activeTarget &&
+        composeResult.accountId === account &&
+        composeResult.composeId === activeTarget.composeId
+          ? composeResult
+          : null
+      setReadSnapshot(nextRead)
+      setComposeSnapshot(nextCompose)
+      setContextStatus(nextRead || nextCompose ? '' : text.noTarget)
+      setMessages([])
+    },
+    [composeSnapshot, readSnapshot, text.loadingSnapshot, text.noTarget]
+  )
+
+  useEffect(() => {
+    const coordinator = targetRefresh.current
+    currentTargetKey.current = ''
+    let current = true
+    const unsubscribeTarget = window.api.onAiMailComposeTarget((status) => {
+      if (!current || !coordinator.accept()) return
       setTargetStatus(status)
+      targetStatusRef.current = status
+      setReadyTargetContext({ accountId: activeAccountId, session: sessionRef.current })
       const nextKey =
         status.status === 'ready' && status.accountId === activeAccountId
           ? `${status.accountId}:${status.composeId}`
           : ''
-      const targetChanged = currentTargetKey.current !== nextKey
-      captureEpoch.current.setTarget(nextKey)
-      if (targetChanged) setSnapshotCapture(null)
-      if (targetChanged) setInstruction('')
-      if (targetChanged) {
-        conversation.current = null
-      }
-      currentTargetKey.current = nextKey
-      setThread((current) =>
-        current.key.startsWith('compose:') && current.key !== `compose:${nextKey}`
-          ? { key: `compose:${nextKey}`, items: [] }
-          : current
-      )
-      if (targetChanged) {
-        setCapturedSnapshot(null)
-        setSnapshotStatus('')
-      }
-      if (
-        targetChanged &&
-        pendingRequest.current?.key.startsWith('compose:') &&
-        pendingRequest.current.key !== `compose:${nextKey}`
-      ) {
-        void window.api
-          .cancelAiMailGeneration(pendingRequest.current.requestId)
-          .catch(() => setCancelError(true))
+      if (currentTargetKey.current !== nextKey) {
+        const request = pendingRequest.current
+        if (request)
+          void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
         pendingRequest.current = null
-        setPending(null)
+        currentTargetKey.current = nextKey
+        setComposeSnapshot(null)
+        setMessages([])
+        lastCaptureKey.current = ''
       }
-    },
-    [activeAccountId]
-  )
-
-  useEffect(() => {
-    const captureEpochForEffect = captureEpoch.current
-    const targetRefreshCoordinator = targetRefresh.current
-    currentTargetKey.current = ''
-    let current = true
-    const unsubscribeTarget = window.api.onAiMailComposeTarget((status) => {
-      if (!current) return
-      if (!targetRefreshCoordinator.accept()) return
-      acceptTargetStatus(status)
-      setAcceptedTargetRefresh({
-        accountId: activeAccountId,
-        session: targetRefreshSession.current
-      })
     })
-    const unsubscribeCodex = window.api.onAiMailCodexStatus((status) => {
-      if (current) setCodexStatus(status)
-    })
+    const unsubscribeCodex = window.api.onAiMailCodexStatus(setCodexStatus)
     void window.api.getAiMailCodexStatus().then(
-      (nextCodex) => {
-        if (!current) return
-        setCodexStatus(nextCodex)
-        setStatusFailed(false)
+      (status) => {
+        if (current) {
+          setCodexStatus(status)
+          setStatusFailed(false)
+        }
       },
       () => {
         if (current) setStatusFailed(true)
@@ -244,60 +242,51 @@ export function AiMailPanel({
     )
     return () => {
       current = false
-      captureEpochForEffect.invalidate()
+      captureSequence.current += 1
+      const request = pendingRequest.current
+      if (request) void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
       unsubscribeTarget()
       unsubscribeCodex()
     }
-  }, [activeAccountId, acceptTargetStatus])
+  }, [activeAccountId])
 
   useEffect(() => {
-    readCaptureSequence.current += 1
-  }, [activeAccountId, captureSession])
-
-  useEffect(() => {
-    if (
-      !capturedReadSnapshot ||
-      capturedReadSnapshot.accountId !== activeAccountId ||
-      readSnapshotSession !== captureSession
-    )
+    const coordinator = targetRefresh.current
+    coordinator.setActive(open)
+    if (!open) {
+      captureSequence.current += 1
+      const request = pendingRequest.current
+      if (request) void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
+      pendingRequest.current = null
       return
-    let current = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const validate = async (): Promise<void> => {
-      const valid = await window.api
-        .isAiMailReadSnapshotCurrent(capturedReadSnapshot.captureId)
-        .catch(() => false)
-      if (!current) return
-      if (!valid) {
-        setCapturedReadSnapshot(null)
-        setReadSnapshotStatus(text.staleTarget)
-        return
-      }
-      timer = setTimeout(() => void validate(), TARGET_REFRESH_INTERVAL_MS)
     }
-    timer = setTimeout(() => void validate(), TARGET_REFRESH_INTERVAL_MS)
-    return () => {
-      current = false
-      if (timer !== undefined) clearTimeout(timer)
-    }
-  }, [activeAccountId, captureSession, capturedReadSnapshot, readSnapshotSession, text.staleTarget])
-
-  useEffect(() => {
-    const targetRefreshCoordinator = targetRefresh.current
-    targetRefreshSession.current = captureSession
-    targetRefreshCoordinator.setActive(open)
-    if (!open) return
     let timer: ReturnType<typeof setTimeout> | undefined
     let disposed = false
     const refresh = async (): Promise<void> => {
       try {
-        const outcome = await targetRefreshCoordinator.query()
-        if (outcome.current) {
-          acceptTargetStatus(outcome.status)
-          setAcceptedTargetRefresh({ accountId: activeAccountId, session: captureSession })
+        const result = await coordinator.query()
+        if (result.current) {
+          setTargetStatus(result.status)
+          targetStatusRef.current = result.status
+          setReadyTargetContext({ accountId: activeAccountId, session: captureSession })
+          const nextKey =
+            result.status.status === 'ready' && result.status.accountId === activeAccountId
+              ? `${result.status.accountId}:${result.status.composeId}`
+              : ''
+          if (nextKey !== currentTargetKey.current) {
+            const request = pendingRequest.current
+            if (request)
+              void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
+            pendingRequest.current = null
+            currentTargetKey.current = nextKey
+            setComposeSnapshot(null)
+            setMessages([])
+            lastCaptureKey.current = ''
+          }
+          if (!lastCaptureKey.current) void captureCurrentContext()
         }
       } catch {
-        // Keep the last known target while the bounded refresh retries.
+        /* bounded refresh retries while open */
       } finally {
         if (!disposed) timer = setTimeout(() => void refresh(), TARGET_REFRESH_INTERVAL_MS)
       }
@@ -306,125 +295,82 @@ export function AiMailPanel({
     return () => {
       disposed = true
       if (timer !== undefined) clearTimeout(timer)
-      targetRefreshCoordinator.setActive(false)
+      coordinator.setActive(false)
     }
-  }, [open, activeAccountId, captureSession, acceptTargetStatus])
+  }, [open, activeAccountId, captureSession, captureCurrentContext])
 
   useEffect(() => {
     if (open) closeButtonRef.current?.focus()
-    else captureEpoch.current.invalidate()
   }, [open])
 
-  const updateMessage = useCallback(
-    (messageId: string, update: (message: PanelMessage) => PanelMessage) => {
-      setThread((current) => ({
-        ...current,
-        items: current.items.map((message) =>
-          message.id === messageId ? update(message) : message
-        )
-      }))
-    },
-    []
-  )
+  useEffect(() => {
+    lastCaptureKey.current = ''
+    const request = pendingRequest.current
+    if (request) void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
+    pendingRequest.current = null
+  }, [activeAccountId, captureSession])
 
-  async function captureDraft(): Promise<void> {
-    if (!target || snapshotBusy) return
-    const targetKeyAtStart = targetKey(target)
-    const capture: AiMailSnapshotCapture = {
-      ...captureEpoch.current.capture(targetKeyAtStart),
-      session: captureSession
+  useEffect(() => {
+    const request = pendingRequest.current
+    if (!request || request.key === contextKey) return
+    void window.api.cancelAiMailGeneration(request.requestId).catch(() => undefined)
+    pendingRequest.current = null
+  }, [contextKey])
+
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    let timer: ReturnType<typeof setTimeout>
+    const check = async (): Promise<void> => {
+      const account = activeAccountId
+      const session = captureSession
+      if (readSnapshot) {
+        const valid = await window.api
+          .isAiMailReadSnapshotCurrent(readSnapshot.captureId)
+          .catch(() => false)
+        if (!active) return
+        if (!valid) setReadSnapshot(null)
+        else {
+          timer = setTimeout(() => void check(), TARGET_REFRESH_INTERVAL_MS)
+          return
+        }
+      }
+      const result = await window.api
+        .getAiMailReadSnapshot()
+        .catch(() => ({ status: 'stale' as const }))
+      if (!active || activeAccountRef.current !== account || sessionRef.current !== session) return
+      if (result.status === 'ready' && result.accountId === account) {
+        const valid = await window.api
+          .isAiMailReadSnapshotCurrent(result.captureId)
+          .catch(() => false)
+        if (
+          active &&
+          valid &&
+          activeAccountRef.current === account &&
+          sessionRef.current === session
+        ) {
+          setReadSnapshot(result)
+          setContextStatus('')
+        }
+      }
+      if (active) timer = setTimeout(() => void check(), READ_TARGET_REFRESH_INTERVAL_MS)
     }
-    setSnapshotCapture(capture)
-    setSnapshotStatus(text.loadingSnapshot)
-    const outcome = await captureAiMailTargetSnapshot(captureEpoch.current, capture, () =>
-      window.api.getAiMailComposeSnapshot()
+    timer = setTimeout(
+      () => void check(),
+      readSnapshot ? TARGET_REFRESH_INTERVAL_MS : READ_TARGET_REFRESH_INTERVAL_MS
     )
-    if (outcome.status === 'stale') {
-      setSnapshotCapture((current) => finishAiMailSnapshotCapture(current, capture))
-      return
+    return () => {
+      active = false
+      clearTimeout(timer)
     }
-    if (outcome.status === 'error') {
-      setSnapshotStatus(text.staleTarget)
-    } else {
-      const result = outcome.result
-      if (result.status !== 'ready') {
-        setCapturedSnapshot(null)
-        setSnapshotStatus(
-          result.status === 'stale'
-            ? text.staleTarget
-            : result.status === 'access_locked'
-              ? text.lockedTarget
-              : result.status === 'unsupported'
-                ? text.unsupportedTarget
-                : text.noTarget
-        )
-      } else if (result.accountId !== target.accountId || result.composeId !== target.composeId) {
-        setCapturedSnapshot(null)
-        setSnapshotStatus(text.staleTarget)
-      } else {
-        setCapturedSnapshot(result)
-        setSnapshotStatus(text.captured)
-      }
-    }
-    setSnapshotCapture((current) => finishAiMailSnapshotCapture(current, capture))
-  }
-
-  async function captureOpenedMail(): Promise<void> {
-    if (!activeAccountId || readSnapshotBusy) return
-    const sequence = ++readCaptureSequence.current
-    setReadSnapshotBusy(true)
-    setReadSnapshotStatus(text.loadingReadSnapshot)
-    try {
-      const result = await window.api.getAiMailReadSnapshot()
-      if (
-        sequence !== readCaptureSequence.current ||
-        activeAccountIdRef.current !== activeAccountId
-      )
-        return
-      if (result.status !== 'ready' || result.accountId !== activeAccountId) {
-        setCapturedReadSnapshot(null)
-        setReadSnapshotStatus(
-          result.status === 'access_locked'
-            ? text.lockedTarget
-            : result.status === 'unsupported'
-              ? text.unsupportedTarget
-              : result.status === 'stale'
-                ? text.staleTarget
-                : text.noTarget
-        )
-      } else if (
-        !(await window.api.isAiMailReadSnapshotCurrent(result.captureId)) ||
-        sequence !== readCaptureSequence.current ||
-        activeAccountIdRef.current !== activeAccountId
-      ) {
-        setCapturedReadSnapshot(null)
-        setReadSnapshotStatus(text.staleTarget)
-      } else {
-        setCapturedReadSnapshot(result)
-        setReadSnapshotSession(captureSession)
-        setReadSnapshotStatus(text.captured)
-      }
-    } catch {
-      if (
-        sequence === readCaptureSequence.current &&
-        activeAccountIdRef.current === activeAccountId
-      ) {
-        setCapturedReadSnapshot(null)
-        setReadSnapshotStatus(text.staleTarget)
-      }
-    } finally {
-      if (sequence === readCaptureSequence.current) setReadSnapshotBusy(false)
-    }
-  }
+  }, [open, activeAccountId, captureSession, readSnapshot])
 
   async function connectCodex(): Promise<void> {
     if (codexBusy) return
     const revision = ++codexActionRevision.current
     setCodexBusy(true)
-    setStatusFailed(false)
     try {
-      const status = await window.api.connectAiMailCodex()
-      if (codexActionRevision.current === revision) setCodexStatus(status)
+      setCodexStatus(await window.api.connectAiMailCodex())
     } catch {
       if (codexActionRevision.current === revision) {
         setStatusFailed(true)
@@ -433,20 +379,6 @@ export function AiMailPanel({
     } finally {
       if (codexActionRevision.current === revision) setCodexBusy(false)
     }
-  }
-
-  function showTestResponse(): void {
-    if (target || selectedTask === 'summary' || selectedTask === 'translate') {
-      void runGeneration(instruction.trim(), undefined)
-      return
-    }
-    setThread((current) => ({
-      key,
-      items: [
-        ...(current.key === key ? current.items : []),
-        { id: newId(), role: 'assistant', text: text.testResponseText }
-      ]
-    }))
   }
 
   async function disconnectCodex(): Promise<void> {
@@ -454,8 +386,7 @@ export function AiMailPanel({
     const revision = ++codexActionRevision.current
     setCodexBusy(true)
     try {
-      const status = await window.api.disconnectAiMailCodex()
-      if (codexActionRevision.current === revision) setCodexStatus(status)
+      setCodexStatus(await window.api.disconnectAiMailCodex())
     } catch {
       if (codexActionRevision.current === revision) {
         setStatusFailed(true)
@@ -466,406 +397,275 @@ export function AiMailPanel({
     }
   }
 
-  async function runGeneration(
-    requestText: string,
-    followUp?: string,
-    task: AiMailTask = selectedTask,
-    language: string = targetLanguage
-  ): Promise<void> {
-    const readTask = task === 'summary' || task === 'translate'
-    if (
-      (!target && !readTask) ||
-      !generationAvailable ||
-      pending ||
-      (task === 'translate' && !language.trim())
+  async function runGeneration(userText: string): Promise<void> {
+    const account = activeAccountId
+    const capturedRead = currentReadSnapshot
+    const capturedCompose = currentComposeSnapshot
+    const capturedTarget = target
+    if (!account || !generationAvailable || requestPending || !userText.trim()) return
+    if (!capturedRead && !capturedCompose) return
+    const key = contextKey
+    const requestId = newId()
+    const requestGeneration = generation.current.next(
+      `${account}:${targetKey(capturedTarget) || capturedRead?.captureId || 'read'}`
     )
-      return
-    const currentKey = readTask
-      ? `read:${activeAccountId ?? 'none'}`
-      : `compose:${targetKey(target)}`
-    const taskTargetKey = currentKey
-    const conversationKey = `${taskTargetKey}:${task}:${task === 'translate' ? language : ''}`
-    if (conversation.current?.key !== conversationKey) {
-      conversation.current = { key: conversationKey, requestId: newId() }
-    }
-    const requestId = conversation.current.requestId
-    const requestGeneration = generation.current.next(taskTargetKey)
-    const retryRequest = {
-      instruction: requestText,
-      task,
-      ...(followUp ? { followUp } : {}),
-      ...(task === 'translate' ? { targetLanguage: language } : {})
-    }
-    const userMessage: PanelMessage = {
-      id: newId(),
-      role: 'user',
-      task,
-      text: followUp ?? (requestText || text.taskLabels[task])
-    }
-    setThread((current) => ({
-      key: currentKey,
-      items: current.key === currentKey ? [...current.items, userMessage] : [userMessage]
-    }))
-    setInstruction('')
-    setPending({ requestId, key: currentKey })
-    pendingRequest.current = { requestId, key: currentKey }
+    pendingRequest.current = { requestId, key }
+    setPending(true)
+    setPendingContext(key)
     setCancelError(false)
+    setMessagesContext(key)
+    setMessages((current) => [...current, { id: newId(), role: 'user', text: userText }])
+    setInstruction('')
     try {
       const outcome = await requestAiMailProposal(
-        TEST_RESPONSE_MODE
-          ? {
-              ...window.api,
-              isAiMailReadSnapshotCurrent: async () => true,
-              generateAiMailDraft: async () => ({
-                ok: true,
-                text:
-                  task === 'subject' || task === 'translate'
-                    ? JSON.stringify({
-                        subject: task === 'subject' ? text.testSubject : text.testTranslatedSubject,
-                        body: task === 'subject' ? text.testSuggestedBody : text.testTranslatedBody
-                      })
-                    : task === 'summary'
-                      ? text.testSummary
-                      : text.testResponseText,
-                usage: { inputTokens: null, outputTokens: null }
-              })
-            }
-          : window.api,
-        readTask ? null : target,
-        requestText,
+        window.api,
+        capturedTarget,
+        {
+          accountId: account,
+          compose: capturedCompose,
+          read: capturedRead
+        },
+        userText,
         requestId,
-        requestGeneration,
-        followUp,
-        { task, ...(task === 'translate' ? { targetLanguage: language } : {}) },
-        activeAccountId ?? undefined
+        requestGeneration
       )
       if (
-        (!readTask && currentTargetKey.current !== targetKey(target)) ||
-        (readTask && activeAccountIdRef.current !== activeAccountId) ||
-        (TEST_RESPONSE_MODE && pendingRequest.current?.requestId !== requestId)
+        pendingRequest.current?.requestId !== requestId ||
+        activeAccountRef.current !== account ||
+        contextKey !== key
       )
         return
       if (outcome.status === 'ready') {
-        const proposal: Proposal =
-          outcome.owner === 'compose'
-            ? {
-                owner: 'compose',
-                task: outcome.task,
-                field: outcome.task === 'subject' ? 'subject' : 'body',
-                text: outcome.text,
-                ...(outcome.subject !== undefined ? { subject: outcome.subject } : {}),
-                snapshot: outcome.snapshot,
-                applied: false,
-                busy: false
-              }
-            : {
-                owner: 'read',
-                task: outcome.task,
-                field: 'read',
-                text: outcome.text,
-                ...(outcome.subject !== undefined ? { subject: outcome.subject } : {}),
-                snapshot: outcome.snapshot,
-                applied: false,
-                busy: false
-              }
-        setThread((current) => ({
-          key: currentKey,
-          items: [
-            ...(current.key === currentKey ? current.items : []),
+        if (outcome.output.kind === 'answer')
+          setMessages((current) => [
+            ...current,
             {
               id: newId(),
               role: 'assistant',
-              text: text.proposal,
-              proposal
+              text:
+                outcome.owner === 'none'
+                  ? `${outcome.output.text}\n\n${text.replyNeedsCompose}`
+                  : outcome.output.text
             }
-          ]
-        }))
+          ])
+        else if (outcome.owner === 'compose' && outcome.snapshot) {
+          const proposal: Proposal = {
+            snapshot: outcome.snapshot,
+            body: { value: outcome.output.text, applied: false, busy: false },
+            ...(outcome.output.field === 'subject'
+              ? { subject: { value: outcome.output.subject ?? '', applied: false, busy: false } }
+              : {})
+          }
+          setMessages((current) => [
+            ...current,
+            { id: newId(), role: 'assistant', text: text.proposal, proposal }
+          ])
+        } else
+          setMessages((current) => [
+            ...current,
+            { id: newId(), role: 'assistant', text: outcome.output.text }
+          ])
       } else {
-        const message =
-          outcome.status === 'invalid_output'
-            ? text.invalidOutput
-            : outcome.status === 'invalid_request'
-              ? text.chooseLanguage
-              : outcome.status === 'unavailable'
-                ? outcome.result.status === 'stale'
-                  ? text.staleTarget
-                  : outcome.result.status === 'access_locked'
-                    ? text.lockedTarget
-                    : outcome.result.status === 'unsupported'
-                      ? text.unsupportedTarget
-                      : text.noTarget
-                : outcome.status === 'stale'
-                  ? text.staleTarget
-                  : outcome.result.error === 'unauthenticated'
-                    ? text.unauthenticated
-                    : outcome.result.error === 'rate_limited'
-                      ? text.rateLimited
-                      : outcome.result.error === 'cancelled'
-                        ? text.cancelled
-                        : outcome.result.error === 'unsupported'
-                          ? text.generationUnsupported
-                          : text.generationError
-        setThread((current) => ({
-          key: currentKey,
-          items: [
-            ...(current.key === currentKey ? current.items : []),
-            {
-              id: newId(),
-              role: 'assistant',
-              text: message,
-              tone:
-                outcome.status === 'failed' || outcome.status === 'invalid_output'
-                  ? 'error'
-                  : 'notice',
-              retryRequest
-            }
-          ]
-        }))
-      }
-    } catch {
-      if (
-        (!readTask && currentTargetKey.current !== targetKey(target)) ||
-        (readTask && activeAccountIdRef.current !== activeAccountId) ||
-        (TEST_RESPONSE_MODE && pendingRequest.current?.requestId !== requestId)
-      )
-        return
-      setThread((current) => ({
-        key: currentKey,
-        items: [
-          ...(current.key === currentKey ? current.items : []),
+        const failure =
+          outcome.status === 'unavailable'
+            ? outcome.result.status === 'unsupported'
+              ? text.unsupportedTarget
+              : outcome.result.status === 'access_locked'
+                ? text.lockedTarget
+                : text.staleTarget
+            : outcome.status === 'failed'
+              ? outcome.result.error === 'unauthenticated'
+                ? text.unauthenticated
+                : outcome.result.error === 'unsupported'
+                  ? text.generationUnsupported
+                  : outcome.result.error === 'cancelled'
+                    ? text.cancelled
+                    : text.generationError
+              : outcome.status === 'invalid_output'
+                ? text.invalidOutput
+                : text.staleTarget
+        setMessages((current) => [
+          ...current,
           {
             id: newId(),
             role: 'assistant',
-            text: text.generationError,
-            tone: 'error',
-            retryRequest
+            text: failure,
+            tone:
+              outcome.status === 'failed' || outcome.status === 'invalid_output'
+                ? 'error'
+                : 'notice'
           }
-        ]
-      }))
+        ])
+      }
+    } catch {
+      if (pendingRequest.current?.requestId === requestId)
+        setMessages((current) => [
+          ...current,
+          { id: newId(), role: 'assistant', text: text.generationError, tone: 'error' }
+        ])
     } finally {
-      pendingRequest.current =
-        pendingRequest.current?.requestId === requestId ? null : pendingRequest.current
-      setPending((current) => (current?.requestId === requestId ? null : current))
+      if (pendingRequest.current?.requestId === requestId) {
+        pendingRequest.current = null
+        setPending(false)
+        setPendingContext('')
+      }
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
-    const nextInstruction = instruction.trim()
+    if (composing.current) return
+    const value = instruction.trim()
+    if (value) void runGeneration(value)
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     if (
-      (selectedTask === 'revise' && !nextInstruction) ||
-      (selectedTask === 'translate' && !targetLanguage) ||
-      !target ||
-      !generationAvailable
-    )
-      return
-    const firstRequest = messages.find(
-      (message) => message.role === 'user' && message.task === selectedTask
-    )?.text
-    await runGeneration(
-      firstRequest ?? nextInstruction,
-      firstRequest ? nextInstruction : undefined,
-      selectedTask,
-      targetLanguage
-    )
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing &&
+      !composing.current
+    ) {
+      event.preventDefault()
+      textareaRef.current?.form?.requestSubmit()
+    }
   }
 
   async function cancelGeneration(): Promise<void> {
-    if (!pending) return
-    if (TEST_RESPONSE_MODE) {
-      pendingRequest.current = null
-      conversation.current = null
-      setPending(null)
-      setThread((current) => ({
-        ...current,
-        items: [
-          ...current.items,
-          { id: newId(), role: 'assistant', text: text.cancelled, tone: 'notice' }
-        ]
-      }))
-      return
-    }
+    const pendingInfo = pendingRequest.current
+    if (!pendingInfo) return
     try {
-      const result = await window.api.cancelAiMailGeneration(pending.requestId)
+      const result = await window.api.cancelAiMailGeneration(pendingInfo.requestId)
       if (result.cancelled) {
-        setPending(null)
         pendingRequest.current = null
-        setThread((current) => ({
+        setPending(false)
+        setPendingContext('')
+        setMessages((current) => [
           ...current,
-          items: [
-            ...current.items,
-            { id: newId(), role: 'assistant', text: text.cancelled, tone: 'notice' }
-          ]
-        }))
+          { id: newId(), role: 'assistant', text: text.cancelled, tone: 'notice' }
+        ])
       } else setCancelError(true)
     } catch {
       setCancelError(true)
     }
   }
 
-  function setProposalBusy(messageId: string, busy: boolean): void {
-    updateMessage(messageId, (message) =>
-      message.proposal ? { ...message, proposal: { ...message.proposal, busy } } : message
-    )
-  }
-
-  async function mutateProposal(
+  async function mutateField(
     messageId: string,
+    field: 'body' | 'subject',
     operation: 'apply' | 'undo',
-    confirmedCurrentVersion?: string
+    confirmedVersion?: string
   ): Promise<void> {
-    const item = (thread.key === key ? thread.items : []).find(
-      (message) => message.id === messageId
-    )
-    const proposal = item?.proposal
+    const message = messages.find((item) => item.id === messageId)
+    const proposal = message?.proposal
+    const fieldState = field === 'body' ? proposal?.body : proposal?.subject
     if (
       !proposal ||
-      proposal.owner !== 'compose' ||
-      proposal.busy ||
+      !fieldState ||
       proposal.snapshot.accountId !== activeAccountId ||
-      !target
+      !target ||
+      target.composeId !== proposal.snapshot.composeId
     )
       return
-    setProposalBusy(messageId, true)
-    try {
-      const result =
-        operation === 'apply'
-          ? proposal.field === 'subject'
-            ? await applyAiMailSubjectProposal(
-                window.api,
-                proposal.snapshot,
-                proposal.subject ?? '',
-                confirmedCurrentVersion
-              )
-            : await applyAiMailProposal(
-                window.api,
-                proposal.snapshot,
-                proposal.text,
-                confirmedCurrentVersion
-              )
-          : proposal.applyId
-            ? proposal.field === 'subject'
-              ? await undoAiMailSubjectProposal(
-                  window.api,
-                  proposal.snapshot,
-                  proposal.applyId,
-                  confirmedCurrentVersion
-                )
-              : await undoAiMailProposal(
-                  window.api,
-                  proposal.snapshot,
-                  proposal.applyId,
-                  confirmedCurrentVersion
-                )
-            : { status: 'failed' as const }
-      if (result.status === 'conflict') {
-        updateMessage(messageId, (message) =>
-          message.proposal
-            ? {
-                ...message,
-                proposal: {
-                  ...message.proposal,
-                  busy: false,
-                  conflict: {
-                    operation,
-                    currentVersion: result.currentVersion,
-                    currentBody: result.currentBody
-                  }
-                }
-              }
-            : message
-        )
-      } else if (result.status === 'applied') {
-        updateMessage(messageId, (message) =>
-          message.proposal
-            ? {
-                ...message,
-                proposal: {
-                  ...message.proposal,
-                  applyId: result.applyId,
-                  applied: true,
-                  busy: false,
-                  feedback: 'applied',
-                  feedbackOperation: 'apply',
-                  conflict: undefined
-                }
-              }
-            : message
-        )
-      } else if (result.status === 'undone') {
-        updateMessage(messageId, (message) =>
-          message.proposal
-            ? {
-                ...message,
-                proposal: {
-                  ...message.proposal,
-                  applied: false,
-                  busy: false,
-                  feedback: 'undone',
-                  feedbackOperation: 'undo',
-                  conflict: undefined
-                }
-              }
-            : message
-        )
-      } else {
-        updateMessage(messageId, (message) =>
-          message.proposal
-            ? {
-                ...message,
-                proposal: {
-                  ...message.proposal,
-                  busy: false,
-                  feedback:
-                    result.status === 'busy'
-                      ? 'busy'
-                      : result.status === 'stale_target'
-                        ? 'stale'
-                        : 'error',
-                  feedbackOperation: operation,
-                  conflict: undefined
-                }
-              }
-            : message
-        )
-      }
-    } catch {
-      updateMessage(messageId, (message) =>
-        message.proposal
-          ? { ...message, proposal: { ...message.proposal, busy: false, feedback: 'error' } }
-          : message
+    const capturedAccountId = activeAccountId
+    const capturedSession = captureSession
+    const expectedTargetKey = `${proposal.snapshot.accountId}:${proposal.snapshot.composeId}`
+    const setField = (update: (state: FieldState) => FieldState): void =>
+      setMessages((current) =>
+        current.map((item) => {
+          if (item.id !== messageId || !item.proposal) return item
+          const state = field === 'body' ? item.proposal.body : item.proposal.subject
+          if (!state) return item
+          const updated = update(state)
+          return { ...item, proposal: { ...item.proposal, [field]: updated } }
+        })
       )
-    }
+    const result = await fieldMutations.current.mutate({
+      lockKey: `${messageId}:${field}`,
+      snapshot: proposal.snapshot,
+      field,
+      operation,
+      replacement: fieldState.value,
+      ...(fieldState.applyId ? { applyId: fieldState.applyId } : {}),
+      ...(confirmedVersion ? { confirmedCurrentVersion: confirmedVersion } : {}),
+      isCurrent: () =>
+        activeAccountRef.current === capturedAccountId &&
+        sessionRef.current === capturedSession &&
+        currentTargetKey.current === expectedTargetKey,
+      onStart: () =>
+        setField((state) => ({
+          ...state,
+          busy: true,
+          feedback: undefined,
+          lastOperation: operation
+        }))
+    })
+    setField((state) => {
+      if (result.status === 'conflict')
+        return {
+          ...state,
+          busy: false,
+          feedback: undefined,
+          conflict: {
+            operation,
+            currentVersion: result.currentVersion,
+            currentBody: result.currentBody
+          }
+        }
+      if (result.status === 'applied')
+        return {
+          ...state,
+          busy: false,
+          applied: true,
+          applyId: result.applyId,
+          feedback: 'applied',
+          conflict: undefined
+        }
+      if (result.status === 'undone')
+        return {
+          ...state,
+          busy: false,
+          applied: false,
+          applyId: undefined,
+          feedback: 'undone',
+          conflict: undefined
+        }
+      if (result.status === 'busy') return { ...state, busy: true, feedback: 'busy' }
+      return {
+        ...state,
+        busy: false,
+        feedback:
+          result.status === 'unsupported'
+            ? 'unsupported'
+            : result.status === 'stale' || result.status === 'stale_target'
+              ? 'stale'
+              : 'error'
+      }
+    })
   }
 
-  async function copyProposal(messageId: string, value: string): Promise<void> {
+  async function copy(value: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(value)
-      setCopyErrorId(null)
-      setCopySuccessId(messageId)
+      setCopyFeedback(text.copied)
     } catch {
-      setCopyErrorId(messageId)
+      setCopyFeedback(text.copyError)
     }
   }
 
   if (!open) return null
-
-  const codexLabel = statusFailed ? text.connectionError : statusText(codexStatus, text)
-  const targetMessage = !targetRefreshReady
-    ? text.checking
-    : targetStatus.status === 'ready' && !target
-      ? text.staleTarget
-      : targetStatus.status === 'unsupported'
-        ? text.unsupportedTarget
-        : targetStatus.status === 'stale'
-          ? text.staleTarget
-          : targetStatus.status === 'access_locked'
-            ? text.lockedTarget
-            : text.noTarget
-
-  return (
-    <aside className={`ai-mail-panel ai-mail-panel-${layoutMode}`} aria-labelledby="ai-mail-title">
-      <header className="ai-mail-heading">
+  const statusLabel = statusFailed ? text.connectionError : statusText(codexStatus, text)
+  const contextDetails = [
+    currentReadSnapshot
+      ? `${text.receivedEmailChip}: ${currentReadSnapshot.subject || text.newMessage}`
+      : '',
+    currentComposeSnapshot
+      ? `${text.draftChip}: ${currentComposeSnapshot.subject || text.newMessage}`
+      : ''
+  ].filter(Boolean)
+  const header = (
+    <>
+      <div className="ai-mail-heading">
         <div>
           <h1 id="ai-mail-title">{text.title}</h1>
           <p>{text.caption}</p>
@@ -880,29 +680,21 @@ export function AiMailPanel({
         >
           <span aria-hidden="true">×</span>
         </button>
-      </header>
-
+      </div>
       <section className="ai-mail-connection" aria-label={text.codex}>
         <span
           className={`ai-mail-connection-dot ai-mail-state-${codexStatus?.state ?? 'checking'}`}
           aria-hidden="true"
         />
         <div className="ai-mail-connection-copy">
-          <strong>{codexLabel}</strong>
-          {TEST_RESPONSE_MODE && <p>{text.testResponseMode}</p>}
-          {codexStatus?.state === 'connected' && <p>{text.generationBlocked}</p>}
-          <button
-            className="ai-mail-secondary"
-            type="button"
-            disabled={
-              (!targetReady && selectedTask !== 'summary' && selectedTask !== 'translate') ||
-              Boolean(pending) ||
-              (selectedTask === 'translate' && !targetLanguage)
-            }
-            onClick={showTestResponse}
-          >
-            {text.testResponse}
-          </button>
+          <strong>{statusLabel}</strong>
+          <p>
+            {generationAvailable
+              ? text.privacy
+              : codexStatus?.state === 'connected'
+                ? text.generationBlocked
+                : text.connectFirst}
+          </p>
         </div>
         {codexStatus?.state === 'connected' ? (
           <button
@@ -936,268 +728,229 @@ export function AiMailPanel({
           </button>
         )}
       </section>
-
-      <section className="ai-mail-target" aria-labelledby="ai-mail-target-title">
-        <h2 id="ai-mail-target-title">{text.targetTitle}</h2>
-        {target ? (
-          <div className="ai-mail-target-card">
-            <strong>{target.accountLabel}</strong>
-            <span>{target.subject.trim() || text.newMessage}</span>
-            {target.recipients.length > 0 && (
-              <span className="ai-mail-target-recipients">{target.recipients.join(', ')}</span>
-            )}
-            <button
-              className="ai-mail-text-button"
-              type="button"
-              disabled={snapshotBusy}
-              onClick={() => void captureDraft()}
-            >
-              {snapshotBusy ? text.loadingSnapshot : text.capture}
-            </button>
-            {snapshotStatus && (
-              <p className="ai-mail-inline-status" role="status">
-                {snapshotStatus}
-              </p>
-            )}
-            {capturedSnapshot &&
-              capturedSnapshot.accountId === target.accountId &&
-              capturedSnapshot.composeId === target.composeId && (
-                <details open className="ai-mail-captured">
-                  <summary>{text.capturedDraft}</summary>
-                  <p>
-                    <strong>{text.subjectLabel}</strong>{' '}
-                    {capturedSnapshot.subject || text.newMessage}
-                  </p>
-                  <pre>{capturedSnapshot.body || text.newMessage}</pre>
-                  <button
-                    className="ai-mail-text-button"
-                    type="button"
-                    onClick={() => {
-                      setCapturedSnapshot(null)
-                      setSnapshotStatus('')
-                    }}
-                  >
-                    {text.clearCapture}
-                  </button>
-                </details>
-              )}
-          </div>
-        ) : (
-          <p className="ai-mail-empty-target" role="status">
-            {targetMessage}
-          </p>
-        )}
-      </section>
-
-      <section className="ai-mail-target" aria-labelledby="ai-mail-read-target-title">
-        <h2 id="ai-mail-read-target-title">{text.readTargetTitle}</h2>
-        <div className="ai-mail-target-card">
-          <button
-            className="ai-mail-text-button"
-            type="button"
-            disabled={!activeAccountId || readSnapshotBusy}
-            onClick={() => void captureOpenedMail()}
-          >
-            {readSnapshotBusy ? text.loadingReadSnapshot : text.captureReceivedMail}
-          </button>
-          {readSnapshotStatus && (
-            <p className="ai-mail-inline-status" role="status">
-              {readSnapshotStatus}
-            </p>
-          )}
-          {capturedReadSnapshot?.accountId === activeAccountId &&
-            readSnapshotSession === captureSession && (
-              <details open className="ai-mail-captured">
-                <summary>{text.capturedReceivedMail}</summary>
-                <p>
-                  <strong>{text.subjectLabel}</strong> {capturedReadSnapshot.subject}
-                </p>
-                <pre>{capturedReadSnapshot.body}</pre>
-                <button
-                  className="ai-mail-text-button"
-                  type="button"
-                  onClick={() => {
-                    setCapturedReadSnapshot(null)
-                    setReadSnapshotStatus('')
-                  }}
-                >
-                  {text.clearReadCapture}
-                </button>
-              </details>
-            )}
-        </div>
-      </section>
-
-      <section className="ai-mail-conversation" aria-label={text.title} aria-live="polite">
-        {messages.map((message) => (
+    </>
+  )
+  const context = (
+    <div className="ai-mail-context-chips">
+      {contextDetails.map((detail) => (
+        <details key={detail} className="ai-mail-captured">
+          <summary className="ai-mail-context-chip">
+            <strong>{detail}</strong>
+          </summary>
+          <pre>
+            {detail.startsWith(text.receivedEmailChip)
+              ? currentReadSnapshot?.body
+              : currentComposeSnapshot?.body}
+          </pre>
+        </details>
+      ))}
+      {!contextDetails.length && (
+        <span className="ai-mail-inline-status" role="status">
+          {contextStatus ||
+            (targetStatus.status === 'unsupported'
+              ? text.unsupportedTarget
+              : targetStatus.status === 'access_locked'
+                ? text.lockedTarget
+                : text.noTarget)}
+        </span>
+      )}
+    </div>
+  )
+  const composer = (
+    <form className="ai-mail-compose" noValidate onSubmit={handleSubmit}>
+      <textarea
+        ref={textareaRef}
+        value={instruction}
+        maxLength={2000}
+        aria-label={text.requestLabel}
+        placeholder={text.requestPlaceholder}
+        disabled={
+          !generationAvailable ||
+          (!currentReadSnapshot && !currentComposeSnapshot) ||
+          requestPending
+        }
+        onChange={(event) => setInstruction(event.target.value)}
+        onKeyDown={handleKeyDown}
+        onCompositionStart={() => {
+          composing.current = true
+        }}
+        onCompositionEnd={() => {
+          composing.current = false
+        }}
+      />
+      <div className="ai-mail-chat-composer-actions">
+        <span>
+          {!generationAvailable
+            ? codexStatus?.state === 'connected'
+              ? text.generationBlocked
+              : text.connectFirst
+            : text.sendContextNotice}
+        </span>
+        <button
+          className="ai-mail-primary"
+          type="submit"
+          disabled={
+            !generationAvailable ||
+            (!currentReadSnapshot && !currentComposeSnapshot) ||
+            !instruction.trim() ||
+            requestPending
+          }
+        >
+          {text.send}
+        </button>
+      </div>
+    </form>
+  )
+  return (
+    <aside className={`ai-mail-panel ai-mail-panel-${layoutMode}`} aria-labelledby="ai-mail-title">
+      <AiMailChatLayout header={header} context={context} composer={composer}>
+        {visibleMessages.map((message) => (
           <article key={message.id} className={`ai-mail-message ai-mail-message-${message.role}`}>
             <p className={message.tone === 'error' ? 'ai-mail-error' : undefined}>{message.text}</p>
-            {message.retryRequest && generationAvailable && (
+            {message.role === 'assistant' && !message.proposal && (
               <button
                 className="ai-mail-text-button"
                 type="button"
-                onClick={() =>
-                  void runGeneration(
-                    message.retryRequest?.instruction ?? '',
-                    message.retryRequest?.followUp,
-                    message.retryRequest?.task,
-                    message.retryRequest?.targetLanguage
-                  )
-                }
+                onClick={() => void copy(message.text)}
               >
-                {text.retry}
+                {text.copy}
               </button>
             )}
             {message.proposal && (
               <div className="ai-mail-proposal">
-                <h2>{text.taskLabels[message.proposal.task]}</h2>
-                {message.proposal.subject !== undefined && (
-                  <div className="ai-mail-suggested-subject">
-                    <strong>{text.suggestedSubject}</strong>
-                    <p>{message.proposal.subject || text.newMessage}</p>
-                    <button
-                      className="ai-mail-text-button"
-                      type="button"
-                      onClick={() => void copyProposal(message.id, message.proposal?.subject ?? '')}
-                    >
-                      {text.copySubject}
-                    </button>
-                  </div>
-                )}
-                <strong>{text.outputLabels[message.proposal.task]}</strong>
-                <pre>{message.proposal.text}</pre>
-                <div className="ai-mail-proposal-actions">
-                  {message.proposal.owner === 'compose' && !message.proposal.applied ? (
-                    <button
-                      className="ai-mail-primary"
-                      type="button"
-                      disabled={
-                        message.proposal.busy ||
-                        !target ||
-                        target.accountId !== message.proposal.snapshot.accountId ||
-                        target.composeId !== message.proposal.snapshot.composeId
+                {message.proposal.subject && (
+                  <label className="ai-mail-suggested-subject">
+                    {text.subjectLabel}
+                    <input
+                      type="text"
+                      value={message.proposal.subject.value}
+                      disabled={message.proposal.subject.busy}
+                      onChange={(event) =>
+                        setMessages((current) =>
+                          current.map((item) =>
+                            item.id === message.id && item.proposal?.subject
+                              ? {
+                                  ...item,
+                                  proposal: {
+                                    ...item.proposal,
+                                    subject: { ...item.proposal.subject, value: event.target.value }
+                                  }
+                                }
+                              : item
+                          )
+                        )
                       }
-                      onClick={() => void mutateProposal(message.id, 'apply')}
-                    >
-                      {message.proposal.busy ? text.loadingSnapshot : text.apply}
-                    </button>
-                  ) : message.proposal.owner === 'compose' ? (
-                    <button
-                      className="ai-mail-text-button"
-                      type="button"
-                      disabled={message.proposal.busy}
-                      onClick={() => void mutateProposal(message.id, 'undo')}
-                    >
-                      {text.undo}
-                    </button>
-                  ) : null}
-                  <button
-                    className="ai-mail-secondary"
-                    type="button"
-                    disabled={message.proposal.busy}
-                    onClick={() => void copyProposal(message.id, message.proposal?.text ?? '')}
-                  >
-                    {message.proposal.task === 'summary' ? text.copySummary : text.copy}
-                  </button>
-                </div>
-                {message.proposal.feedback && (
-                  <p
-                    className={
-                      ['error', 'stale', 'busy'].includes(message.proposal.feedback)
-                        ? 'ai-mail-error'
-                        : 'ai-mail-inline-status'
-                    }
-                    role={
-                      ['error', 'stale', 'busy'].includes(message.proposal.feedback)
-                        ? 'alert'
-                        : 'status'
-                    }
-                  >
-                    {message.proposal.feedback === 'applied'
-                      ? text.applied
-                      : message.proposal.feedback === 'undone'
-                        ? text.undone
-                        : message.proposal.feedback === 'stale'
-                          ? text.staleMutation
-                          : message.proposal.feedback === 'busy'
-                            ? text.busy
-                            : message.proposal.feedbackOperation === 'undo'
-                              ? text.undoError
-                              : text.applyError}
-                  </p>
+                    />
+                  </label>
                 )}
-                {message.proposal.conflict && (
-                  <section
-                    className="ai-mail-conflict"
-                    aria-labelledby={`ai-mail-conflict-${message.id}`}
-                  >
-                    <h3 id={`ai-mail-conflict-${message.id}`}>
-                      {message.proposal.conflict.operation === 'apply'
-                        ? text.conflictApplyTitle
-                        : text.conflictUndoTitle}
-                    </h3>
-                    <p>
-                      {message.proposal.conflict.operation === 'apply'
-                        ? text.conflictApply
-                        : text.conflictUndo}
-                    </p>
-                    <details>
-                      <summary>{text.currentBody}</summary>
-                      <pre>{message.proposal.conflict.currentBody}</pre>
-                    </details>
-                    <div className="ai-mail-proposal-actions">
+                <label>
+                  {text.outputLabels.revise}
+                  <textarea
+                    value={message.proposal.body.value}
+                    disabled={message.proposal.body.busy}
+                    onChange={(event) =>
+                      setMessages((current) =>
+                        current.map((item) =>
+                          item.id === message.id && item.proposal
+                            ? {
+                                ...item,
+                                proposal: {
+                                  ...item.proposal,
+                                  body: { ...item.proposal.body, value: event.target.value }
+                                }
+                              }
+                            : item
+                        )
+                      )
+                    }
+                  />
+                </label>
+                {(['subject', 'body'] as const).map((field) => {
+                  const state =
+                    field === 'body' ? message.proposal?.body : message.proposal?.subject
+                  if (!state) return null
+                  return (
+                    <div key={field} className="ai-mail-proposal-actions">
                       <button
                         className="ai-mail-primary"
                         type="button"
-                        disabled={message.proposal.busy}
-                        onClick={() =>
-                          void mutateProposal(
-                            message.id,
-                            message.proposal?.conflict?.operation ?? 'apply',
-                            message.proposal?.conflict?.currentVersion
-                          )
+                        disabled={
+                          state.busy ||
+                          state.applied ||
+                          target?.composeId !== message.proposal?.snapshot.composeId
                         }
+                        onClick={() => void mutateField(message.id, field, 'apply')}
                       >
-                        {message.proposal.conflict.operation === 'apply'
-                          ? text.confirmApply
-                          : text.confirmUndo}
+                        {state.busy
+                          ? text.checking
+                          : field === 'subject'
+                            ? text.applySubject
+                            : text.apply}
                       </button>
+                      {state.applied && (
+                        <button
+                          className="ai-mail-text-button"
+                          type="button"
+                          disabled={state.busy}
+                          onClick={() => void mutateField(message.id, field, 'undo')}
+                        >
+                          {text.undo}
+                        </button>
+                      )}
                       <button
-                        className="ai-mail-secondary"
+                        className="ai-mail-text-button"
                         type="button"
-                        onClick={() =>
-                          updateMessage(message.id, (current) =>
-                            current.proposal
-                              ? {
-                                  ...current,
-                                  proposal: { ...current.proposal, conflict: undefined }
-                                }
-                              : current
-                          )
-                        }
+                        onClick={() => void copy(state.value)}
                       >
-                        {text.keepEditing}
+                        {text.copy}
                       </button>
+                      {state.conflict && (
+                        <div className="ai-mail-conflict" role="alert">
+                          <p>{text.conflictApply}</p>
+                          <details>
+                            <summary>{text.currentBody}</summary>
+                            <pre>{state.conflict.currentBody}</pre>
+                          </details>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void mutateField(
+                                message.id,
+                                field,
+                                state.conflict?.operation ?? 'apply',
+                                state.conflict?.currentVersion
+                              )
+                            }
+                          >
+                            {text.confirmApply}
+                          </button>
+                        </div>
+                      )}
+                      {state.feedback && (
+                        <p
+                          className={
+                            ['error', 'stale', 'busy', 'unsupported'].includes(state.feedback)
+                              ? 'ai-mail-error'
+                              : 'ai-mail-inline-status'
+                          }
+                          role={
+                            ['error', 'stale', 'busy', 'unsupported'].includes(state.feedback)
+                              ? 'alert'
+                              : 'status'
+                          }
+                        >
+                          {aiMailFieldFeedback(state.feedback, state.lastOperation, text)}
+                        </p>
+                      )}
                     </div>
-                  </section>
-                )}
-                {copyErrorId === message.id && (
-                  <p className="ai-mail-error" role="alert">
-                    {text.copyError}
-                  </p>
-                )}
-                {copySuccessId === message.id && (
-                  <p className="ai-mail-inline-status" role="status">
-                    {text.copied}
-                  </p>
-                )}
+                  )
+                })}
               </div>
             )}
           </article>
         ))}
-        {pending && (
+        {requestPending && (
           <div className="ai-mail-pending" role="status">
-            <span className="ai-mail-pulse" aria-hidden="true" />
             <span>{text.generating}</span>
             <button
               className="ai-mail-text-button"
@@ -1209,84 +962,8 @@ export function AiMailPanel({
             {cancelError && <p className="ai-mail-error">{text.cancelFailed}</p>}
           </div>
         )}
-      </section>
-
-      <form className="ai-mail-compose" noValidate onSubmit={(event) => void handleSubmit(event)}>
-        <fieldset className="ai-mail-choice-group" disabled={!targetReady || Boolean(pending)}>
-          <legend>{text.taskLabel}</legend>
-          {(['revise', 'subject', 'summary', 'translate'] as const).map((task) => (
-            <label key={task}>
-              <input
-                type="radio"
-                name="ai-mail-task"
-                value={task}
-                checked={selectedTask === task}
-                onChange={() => setSelectedTask(task)}
-              />
-              <span>{text.taskLabels[task]}</span>
-            </label>
-          ))}
-        </fieldset>
-        {selectedTask === 'translate' && (
-          <fieldset className="ai-mail-choice-group" disabled={!targetReady || Boolean(pending)}>
-            <legend>{text.targetLanguage}</legend>
-            <label>
-              <input
-                type="radio"
-                name="ai-mail-language"
-                value="English"
-                checked={targetLanguage === 'English'}
-                onChange={() => setTargetLanguage('English')}
-              />
-              <span>English</span>
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="ai-mail-language"
-                value="Korean"
-                checked={targetLanguage === 'Korean'}
-                onChange={() => setTargetLanguage('Korean')}
-              />
-              <span>한국어</span>
-            </label>
-          </fieldset>
-        )}
-        <label htmlFor="ai-mail-instruction">
-          {selectedTask === 'revise' ? text.requestLabel : text.optionalInstruction}
-        </label>
-        <textarea
-          id="ai-mail-instruction"
-          className="resize-none"
-          value={instruction}
-          maxLength={2000}
-          placeholder={targetReady ? text.taskPlaceholders[selectedTask] : text.noTarget}
-          disabled={!targetReady || Boolean(pending)}
-          onChange={(event) => setInstruction(event.target.value)}
-        />
-        <p className="ai-mail-privacy">
-          {generationAvailable
-            ? TEST_RESPONSE_MODE
-              ? text.testResponseMode
-              : text.privacy
-            : codexStatus?.state === 'connected'
-              ? text.generationBlocked
-              : text.connectFirst}
-        </p>
-        <button
-          className="ai-mail-primary"
-          type="submit"
-          disabled={
-            (!targetReady && selectedTask !== 'summary' && selectedTask !== 'translate') ||
-            (selectedTask === 'revise' && !instruction.trim()) ||
-            (selectedTask === 'translate' && !targetLanguage) ||
-            !generationAvailable ||
-            Boolean(pending)
-          }
-        >
-          {pending ? text.generating : text.taskActions[selectedTask]}
-        </button>
-      </form>
+        {copyFeedback && <p role="status">{copyFeedback}</p>}
+      </AiMailChatLayout>
     </aside>
   )
 }

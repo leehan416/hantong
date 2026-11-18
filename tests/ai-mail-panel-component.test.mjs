@@ -2,383 +2,112 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
+const { aiMailFieldFeedback } = loadTypeScript(
+  new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url)
+)
 
 function createHooks() {
   const slots = []
-  const pendingEffects = []
+  const effects = []
   let index = 0
-  const sameDeps = (left, right) =>
-    left &&
-    right &&
-    left.length === right.length &&
-    left.every((value, i) => Object.is(value, right[i]))
+  const sameDeps = (a, b) =>
+    a && b && a.length === b.length && a.every((item, i) => Object.is(item, b[i]))
   const hooks = {
     beginRender() {
       index = 0
-      pendingEffects.length = 0
+      effects.length = 0
     },
     useState(initial) {
-      const slotIndex = index++
-      if (!slots[slotIndex]) slots[slotIndex] = { value: initial }
+      const slot = index++
+      if (!slots[slot]) slots[slot] = { value: initial }
       return [
-        slots[slotIndex].value,
-        (value) => {
-          slots[slotIndex].value =
-            typeof value === 'function' ? value(slots[slotIndex].value) : value
+        slots[slot].value,
+        (next) => {
+          slots[slot].value = typeof next === 'function' ? next(slots[slot].value) : next
         }
       ]
     },
     useRef(initial) {
-      const slotIndex = index++
-      if (!slots[slotIndex]) slots[slotIndex] = { value: { current: initial } }
-      return slots[slotIndex].value
+      const slot = index++
+      if (!slots[slot]) slots[slot] = { value: { current: initial } }
+      return slots[slot].value
     },
     useMemo(factory, deps) {
-      const slotIndex = index++
-      if (!slots[slotIndex] || !sameDeps(slots[slotIndex].deps, deps))
-        slots[slotIndex] = { value: factory(), deps }
-      return slots[slotIndex].value
+      const slot = index++
+      if (!slots[slot] || !sameDeps(slots[slot].deps, deps))
+        slots[slot] = { value: factory(), deps }
+      return slots[slot].value
     },
     useCallback(callback, deps) {
       return hooks.useMemo(() => callback, deps)
     },
     useEffect(callback, deps) {
-      const slotIndex = index++
-      const previous = slots[slotIndex]
-      if (!previous || !sameDeps(previous.deps, deps)) {
-        pendingEffects.push(() => {
+      const slot = index++
+      const previous = slots[slot]
+      if (!previous || !sameDeps(previous.deps, deps))
+        effects.push(() => {
           previous?.cleanup?.()
           const cleanup = callback()
-          slots[slotIndex] = { deps, cleanup }
+          slots[slot] = { deps, cleanup }
         })
-      }
     },
     flushEffects() {
-      for (const run of pendingEffects.splice(0)) run()
+      for (const run of effects.splice(0)) run()
     }
   }
   return hooks
 }
 
-const targetA = {
-  status: 'ready',
-  accountId: 'account-a',
-  composeId: 'compose-a',
-  accountLabel: 'A',
-  recipients: [],
-  subject: 'Draft A'
-}
-const targetB = { ...targetA, composeId: 'compose-b', subject: 'Draft B' }
-const targetC = {
-  ...targetB,
-  accountId: 'account-b',
-  accountLabel: 'B',
-  composeId: 'compose-c',
-  subject: 'Draft C'
-}
-const captured = { ...targetA, documentVersion: 'v1', snapshotId: 's1', body: 'Captured body' }
-
 function findElement(node, predicate) {
-  if (Array.isArray(node)) {
+  if (Array.isArray(node))
     for (const child of node) {
       const result = findElement(child, predicate)
       if (result) return result
     }
-    return null
-  }
   if (!node || typeof node !== 'object') return null
   if (predicate(node)) return node
-  const children = node.props?.children
-  for (const child of Array.isArray(children) ? children : [children]) {
-    const result = findElement(child, predicate)
-    if (result) return result
+  const values = node.props ? Object.values(node.props) : []
+  for (const value of values) {
+    for (const child of Array.isArray(value) ? value : [value]) {
+      const result = findElement(child, predicate)
+      if (result) return result
+    }
   }
   return null
 }
 
-test('hidden mount refreshes when opened, polls while open, and ignores late query after close', async () => {
+const target = { status: 'none' }
+const read = {
+  status: 'ready',
+  accountId: 'account-a',
+  accountLabel: 'A',
+  captureId: 'read-1',
+  subject: 'Received subject',
+  body: 'Received body'
+}
+
+function setup(api, timers = []) {
   const hooks = createHooks()
-  let currentTarget = targetA
-  let resolveLate
-  let late = false
-  let queryCount = 0
-  const timers = []
-  const fakeWindow = {
-    api: {
-      getAiMailComposeTargetStatus: () => {
-        queryCount += 1
-        if (late)
-          return new Promise((resolve) => {
-            resolveLate = resolve
-          })
-        return Promise.resolve(currentTarget)
-      },
-      onAiMailComposeTarget: () => () => {},
-      onAiMailCodexStatus: () => () => {},
-      getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
-      getAiMailComposeSnapshot: async () => captured
-    }
-  }
   const { AiMailPanel } = loadTypeScript(
     new URL('../src/renderer/src/AiMailPanel.tsx', import.meta.url),
     {
       react: hooks,
-      window: fakeWindow,
+      window: { api },
+      './AiMailChatLayout': {
+        AiMailChatLayout: (props) => ({
+          type: 'chat-layout',
+          props: { children: [props.header, props.context, props.children, props.composer] }
+        })
+      },
       setTimeout: (callback, delay) => {
-        assert.equal(delay, 1500)
-        timers.push(callback)
-        return callback
+        const timer = { callback, delay }
+        timers.push(timer)
+        return timer
       },
       clearTimeout: (timer) => {
         const index = timers.indexOf(timer)
         if (index >= 0) timers.splice(index, 1)
       }
-    }
-  )
-  const text = new Proxy({}, { get: (_target, key) => String(key) })
-  let props = {
-    activeAccountId: 'account-a',
-    layoutMode: 'right',
-    open: false,
-    captureSession: 0,
-    text,
-    onClose: () => undefined
-  }
-  const render = () => {
-    hooks.beginRender()
-    const tree = AiMailPanel(props)
-    hooks.flushEffects()
-    return tree
-  }
-
-  render()
-  assert.equal(queryCount, 0)
-  props = { ...props, open: true }
-  render()
-  await new Promise(setImmediate)
-  assert.equal(queryCount, 1)
-  let tree = render()
-  const captureButton = findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === 'capture'
-  )
-  assert.ok(captureButton)
-  await captureButton.props.onClick()
-  await new Promise(setImmediate)
-  tree = render()
-  assert.ok(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body')
-  )
-
-  timers.shift()()
-  await new Promise(setImmediate)
-  tree = render()
-  assert.ok(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body')
-  )
-
-  currentTarget = targetB
-  timers.shift()()
-  await new Promise(setImmediate)
-  tree = render()
-  assert.equal(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body'),
-    null
-  )
-
-  late = true
-  timers.shift()()
-  assert.equal(queryCount, 4)
-  props = { ...props, open: false, captureSession: 1 }
-  assert.equal(render(), null)
-  resolveLate(targetA)
-  await new Promise(setImmediate)
-  props = { ...props, open: true }
-  late = false
-  render()
-  await new Promise(setImmediate)
-  tree = render()
-  assert.equal(queryCount, 5)
-  assert.ok(findElement(tree, (node) => node.type === 'span' && node.props.children === 'Draft B'))
-
-  late = true
-  timers.shift()()
-  props = { ...props, activeAccountId: 'account-b' }
-  currentTarget = targetC
-  late = false
-  render()
-  await new Promise(setImmediate)
-  resolveLate(targetA)
-  await new Promise(setImmediate)
-  tree = render()
-  assert.ok(findElement(tree, (node) => node.type === 'span' && node.props.children === 'Draft C'))
-})
-
-test('reopen hides the old target and capture until the fresh access status resolves', async () => {
-  const hooks = createHooks()
-  let currentStatus = targetA
-  let deferQuery = false
-  let resolveQuery
-  const fakeWindow = {
-    api: {
-      getAiMailComposeTargetStatus: () =>
-        deferQuery
-          ? new Promise((resolve) => {
-              resolveQuery = resolve
-            })
-          : Promise.resolve(currentStatus),
-      onAiMailComposeTarget: () => () => {},
-      onAiMailCodexStatus: () => () => {},
-      getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
-      getAiMailComposeSnapshot: async () => captured
-    }
-  }
-  const timers = []
-  const { AiMailPanel } = loadTypeScript(
-    new URL('../src/renderer/src/AiMailPanel.tsx', import.meta.url),
-    {
-      react: hooks,
-      window: fakeWindow,
-      setTimeout: (callback) => {
-        timers.push(callback)
-        return callback
-      },
-      clearTimeout: (timer) => {
-        const index = timers.indexOf(timer)
-        if (index >= 0) timers.splice(index, 1)
-      }
-    }
-  )
-  const text = new Proxy({}, { get: (_target, key) => String(key) })
-  let props = {
-    activeAccountId: 'account-a',
-    layoutMode: 'right',
-    open: false,
-    captureSession: 0,
-    text,
-    onClose: () => undefined
-  }
-  const render = () => {
-    hooks.beginRender()
-    const tree = AiMailPanel(props)
-    hooks.flushEffects()
-    return tree
-  }
-  const flush = () => new Promise(setImmediate)
-
-  render()
-  props = { ...props, open: true }
-  render()
-  await flush()
-  let tree = render()
-  const captureButton = findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === 'capture'
-  )
-  assert.ok(captureButton)
-  captureButton.props.onClick()
-  await flush()
-  tree = render()
-  assert.ok(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body')
-  )
-
-  props = { ...props, open: false, captureSession: 1 }
-  render()
-  deferQuery = true
-  props = { ...props, open: true }
-  tree = render()
-  assert.equal(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body'),
-    null
-  )
-  resolveQuery(targetA)
-  await flush()
-  tree = render()
-  assert.ok(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body')
-  )
-
-  props = { ...props, open: false, captureSession: 2 }
-  render()
-  currentStatus = { status: 'access_locked' }
-  props = { ...props, open: true }
-  tree = render()
-  assert.equal(
-    findElement(tree, (node) => node.type === 'span' && node.props.children === 'Draft A'),
-    null
-  )
-  assert.equal(
-    findElement(tree, (node) => node.type === 'button' && node.props.children === 'capture'),
-    null
-  )
-  assert.equal(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body'),
-    null
-  )
-
-  resolveQuery(currentStatus)
-  await flush()
-  tree = render()
-  assert.equal(
-    findElement(tree, (node) => node.type === 'button' && node.props.children === 'capture'),
-    null
-  )
-  assert.equal(
-    findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Captured body'),
-    null
-  )
-  assert.ok(
-    findElement(tree, (node) => node.type === 'p' && node.props.children === 'lockedTarget')
-  )
-})
-
-test('test response renders subject separately and summary has no body mutation action', async () => {
-  const hooks = createHooks()
-  const applied = []
-  const subjectApplied = []
-  const subjectUndone = []
-  let subjectAttempt = 0
-  const fakeWindow = {
-    api: {
-      getAiMailComposeTargetStatus: async () => targetA,
-      onAiMailComposeTarget: () => () => {},
-      onAiMailCodexStatus: () => () => {},
-      getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
-      getAiMailComposeSnapshot: async () => captured,
-      getAiMailReadSnapshot: async () => ({
-        status: 'ready',
-        accountId: 'account-a',
-        accountLabel: 'A',
-        captureId: 'read-capture-1',
-        subject: 'Read subject',
-        body: 'Read body'
-      }),
-      isAiMailReadSnapshotCurrent: async () => true,
-      applyAiMailDraft: async (request) => {
-        applied.push(request)
-        return { status: 'applied', applyId: 'apply-1' }
-      },
-      applyAiMailSubject: async (request) => {
-        subjectApplied.push(request)
-        subjectAttempt += 1
-        return subjectAttempt === 1
-          ? { status: 'conflict', currentVersion: 'subject-v2', currentBody: 'Current subject' }
-          : { status: 'applied', applyId: 'subject-apply-1' }
-      },
-      undoAiMailSubject: async (request) => {
-        subjectUndone.push(request)
-        return { status: 'undone' }
-      }
-    }
-  }
-  const { AiMailPanel } = loadTypeScript(
-    new URL('../src/renderer/src/AiMailPanel.tsx', import.meta.url),
-    {
-      react: hooks,
-      window: fakeWindow,
-      setTimeout: () => 1,
-      clearTimeout: () => undefined
     }
   )
   const { messages } = loadTypeScript(
@@ -387,7 +116,7 @@ test('test response renders subject separately and summary has no body mutation 
   let props = {
     activeAccountId: 'account-a',
     layoutMode: 'right',
-    open: true,
+    open: false,
     captureSession: 0,
     text: messages.en.aiMail,
     onClose: () => undefined
@@ -398,203 +127,123 @@ test('test response renders subject separately and summary has no body mutation 
     hooks.flushEffects()
     return tree
   }
-  const flush = () => new Promise(setImmediate)
+  return {
+    render,
+    setProps: (next) => {
+      props = { ...props, ...next }
+    },
+    messages
+  }
+}
 
-  render()
-  await flush()
-  let tree = render()
-  const receivedCaptureButton = findElement(
-    tree,
-    (node) =>
-      node.type === 'button' && node.props.children === messages.en.aiMail.captureReceivedMail
-  )
-  assert.ok(receivedCaptureButton)
-  receivedCaptureButton.props.onClick()
-  await flush()
-  tree = render()
-  assert.ok(findElement(tree, (node) => node.type === 'pre' && node.props.children === 'Read body'))
-  const subjectTask = findElement(
-    tree,
-    (node) =>
-      node.type === 'input' && node.props.name === 'ai-mail-task' && node.props.value === 'subject'
-  )
-  assert.ok(subjectTask)
-  subjectTask.props.onChange()
-  tree = render()
-  const testButton = findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.testResponse
-  )
-  assert.ok(testButton)
-  testButton.props.onClick()
-  await flush()
-  tree = render()
+test('opening automatically captures received mail without a compose and displays an inspectable chip', async () => {
+  let reads = 0
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getAiMailReadSnapshot: async () => {
+      reads += 1
+      return read
+    },
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
+  }
+  const app = setup(api)
+  app.render()
+  app.setProps({ open: true })
+  app.render()
+  await new Promise(setImmediate)
+  const tree = app.render()
+  assert.equal(reads, 1)
   assert.ok(
     findElement(
       tree,
-      (node) => node.type === 'p' && node.props.children === messages.en.aiMail.testSubject
+      (node) => node.type === 'summary' && node.props.className === 'ai-mail-context-chip'
     )
   )
-  assert.ok(
-    findElement(
-      tree,
-      (node) => node.type === 'pre' && node.props.children === messages.en.aiMail.testSuggestedBody
-    )
+  assert.ok(findElement(tree, (node) => node.type === 'pre' && node.props.children === read.body))
+  assert.equal(
+    findElement(tree, (node) => node.type === 'button' && node.props.children === 'Test response'),
+    null
   )
-  const subjectProposal = findElement(
-    tree,
-    (node) => node.type === 'h2' && node.props.children === messages.en.aiMail.taskLabels.subject
-  )
-  assert.ok(subjectProposal)
-  const proposalArticle = findElement(
-    tree,
-    (node) =>
-      node.type === 'article' &&
-      node.props.className === 'ai-mail-message ai-mail-message-assistant'
-  )
-  const applyButton = findElement(
-    proposalArticle,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.apply
-  )
-  assert.ok(applyButton)
-  applyButton.props.onClick()
-  await flush()
-  assert.equal(subjectApplied[0].replacement, messages.en.aiMail.testSubject)
-  const undoButton = findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.undo
-  )
-  assert.equal(undoButton, null)
-
-  const summaryTask = findElement(
-    tree,
-    (node) =>
-      node.type === 'input' && node.props.name === 'ai-mail-task' && node.props.value === 'summary'
-  )
-  summaryTask.props.onChange()
-  tree = render()
-  const summaryButton = findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.testResponse
-  )
-  const appliedBeforeReadTask = applied.length
-  summaryButton.props.onClick()
-  await flush()
-  tree = render()
-  assert.ok(
-    findElement(
-      tree,
-      (node) => node.type === 'pre' && node.props.children === messages.en.aiMail.testSummary
-    )
-  )
-  const readProposal = findElement(
-    tree,
-    (node) => node.type === 'h2' && node.props.children === messages.en.aiMail.taskLabels.summary
-  )
-  assert.ok(readProposal)
-  const summaryArticle = findElement(
-    tree,
-    (node) =>
-      node.type === 'article' &&
-      node.props.className === 'ai-mail-message ai-mail-message-assistant' &&
-      findElement(
-        node,
-        (child) =>
-          child.type === 'h2' && child.props.children === messages.en.aiMail.taskLabels.summary
-      )
-  )
-  assert.ok(summaryArticle)
   assert.equal(
     findElement(
-      summaryArticle,
-      (node) => node.type === 'button' && node.props.children === messages.en.aiMail.apply
+      tree,
+      (node) =>
+        node.type === 'button' && node.props.children === 'Capture opened email subject and body'
     ),
     null
   )
-  assert.equal(applied.length, appliedBeforeReadTask)
 })
 
-test('subject proposal applies directly, confirms version conflicts, then supports undo', async () => {
-  const hooks = createHooks()
-  const subjectRequests = []
-  let attempt = 0
-  const fakeWindow = {
-    api: {
-      getAiMailComposeTargetStatus: async () => targetA,
-      onAiMailComposeTarget: () => () => {},
-      onAiMailCodexStatus: () => () => {},
-      getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
-      getAiMailComposeSnapshot: async () => captured,
-      applyAiMailSubject: async (request) => {
-        subjectRequests.push(request)
-        attempt += 1
-        return attempt === 1
-          ? { status: 'conflict', currentVersion: 'subject-v2', currentBody: 'Current subject' }
-          : { status: 'applied', applyId: 'subject-1' }
-      },
-      undoAiMailSubject: async (request) => {
-        subjectRequests.push(request)
-        return { status: 'undone' }
-      }
-    }
+test('unsupported generation is stated honestly and the composer remains disabled', async () => {
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'connected' }),
+    getAiMailReadSnapshot: async () => read,
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
   }
-  const { AiMailPanel } = loadTypeScript(
-    new URL('../src/renderer/src/AiMailPanel.tsx', import.meta.url),
-    { react: hooks, window: fakeWindow, setTimeout: () => 1, clearTimeout: () => undefined }
+  const app = setup(api)
+  app.setProps({ open: true })
+  app.render()
+  await new Promise(setImmediate)
+  const tree = app.render()
+  const composer = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  assert.ok(composer)
+  assert.equal(composer.props.disabled, true)
+  assert.ok(
+    findElement(
+      tree,
+      (node) =>
+        node.type === 'p' && node.props.children === app.messages.en.aiMail.generationBlocked
+    )
   )
+})
+
+test('field mutation failures map to localized error and notice copy', () => {
   const { messages } = loadTypeScript(
     new URL('../src/renderer/src/app-messages.ts', import.meta.url)
   )
-  let props = {
-    activeAccountId: 'account-a',
-    layoutMode: 'right',
-    open: true,
-    captureSession: 0,
-    text: messages.en.aiMail,
-    onClose: () => undefined
+  const copy = messages.en.aiMail
+  assert.equal(aiMailFieldFeedback('error', 'apply', copy), copy.applyError)
+  assert.equal(aiMailFieldFeedback('error', 'undo', copy), copy.undoError)
+  assert.equal(aiMailFieldFeedback('unsupported', 'apply', copy), copy.unsupportedTarget)
+  assert.equal(aiMailFieldFeedback('stale', 'apply', copy), copy.staleMutation)
+  assert.equal(aiMailFieldFeedback('busy', 'apply', copy), copy.busy)
+})
+
+test('read navigation after an empty open capture is detected with a coalesced timer', async () => {
+  let currentRead = { status: 'none' }
+  const timers = []
+  let reads = 0
+  const api = {
+    getAiMailComposeTargetStatus: async () => target,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getAiMailReadSnapshot: async () => {
+      reads += 1
+      return currentRead
+    },
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
   }
-  const render = () => {
-    hooks.beginRender()
-    const tree = AiMailPanel(props)
-    hooks.flushEffects()
-    return tree
-  }
-  const flush = () => new Promise(setImmediate)
-  render()
-  await flush()
-  let tree = render()
-  findElement(
-    tree,
-    (node) => node.type === 'input' && node.props.value === 'subject'
-  ).props.onChange()
-  tree = render()
-  findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.testResponse
-  ).props.onClick()
-  await flush()
-  tree = render()
-  findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.apply
-  ).props.onClick()
-  await flush()
-  tree = render()
-  assert.equal(subjectRequests[0].replacement, messages.en.aiMail.testSubject)
-  assert.equal(subjectRequests[0].composeId, targetA.composeId)
-  const confirm = findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.confirmApply
-  )
-  assert.ok(confirm)
-  confirm.props.onClick()
-  await flush()
-  tree = render()
-  assert.equal(subjectRequests[1].confirmedCurrentVersion, 'subject-v2')
-  findElement(
-    tree,
-    (node) => node.type === 'button' && node.props.children === messages.en.aiMail.undo
-  ).props.onClick()
-  await flush()
-  assert.equal(subjectRequests[2].applyId, 'subject-1')
+  const app = setup(api, timers)
+  app.setProps({ open: true })
+  app.render()
+  await new Promise(setImmediate)
+  assert.equal(reads, 1)
+  const readPoll = timers.find((timer) => timer.delay === 5000)
+  assert.ok(readPoll)
+  currentRead = read
+  readPoll.callback()
+  await new Promise(setImmediate)
+  const tree = app.render()
+  assert.equal(reads, 2)
+  assert.ok(findElement(tree, (node) => node.type === 'pre' && node.props.children === read.body))
 })

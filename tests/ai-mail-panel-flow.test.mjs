@@ -1,3 +1,4 @@
+/* eslint @typescript-eslint/explicit-function-return-type: "off" -- Test fixtures are plain JavaScript. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
@@ -5,583 +6,360 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 const {
   requestAiMailProposal,
   applyAiMailProposal,
-  undoAiMailProposal,
+  applyAiMailSubjectProposal,
   createAiMailTargetEpoch,
   captureAiMailTargetSnapshot,
-  isAiMailSnapshotCaptureBusy,
-  finishAiMailSnapshotCapture,
   createAiMailTargetRefreshCoordinator,
-  createAiMailGenerationSequence,
-  applyAiMailSubjectProposal,
-  undoAiMailSubjectProposal
+  createAiMailFieldMutationCoordinator,
+  buildAiMailConversationPrompt
 } = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
-
-test('target refresh on open updates when access and a compose target become ready', async () => {
-  let status = { status: 'access_locked' }
-  const accepted = []
-  const refresh = createAiMailTargetRefreshCoordinator({
-    query: async () => status
-  })
-  refresh.setActive(true)
-  let outcome = await refresh.query()
-  if (outcome.current) accepted.push(outcome.status)
-  status = target
-  outcome = await refresh.query()
-  if (outcome.current) accepted.push(outcome.status)
-  assert.deepEqual(
-    accepted.map((value) => value.status),
-    ['access_locked', 'ready']
-  )
-})
-
-test('late target status cannot overwrite a newer event or account refresh', async () => {
-  let resolveOld
-  const accepted = []
-  const refresh = createAiMailTargetRefreshCoordinator({
-    query: () =>
-      new Promise((resolve) => {
-        resolveOld = resolve
-      })
-  })
-  refresh.setActive(true)
-  const oldQuery = refresh.query()
-  assert.equal(refresh.accept(), true)
-  accepted.push(target)
-  resolveOld({ status: 'none' })
-  assert.equal((await oldQuery).current, false)
-  assert.deepEqual(accepted, [target])
-})
-
-test('late target status after close or account switch is ignored', async () => {
-  let resolveOld
-  const accepted = []
-  const refresh = createAiMailTargetRefreshCoordinator({
-    query: () =>
-      new Promise((resolve) => {
-        resolveOld = resolve
-      })
-  })
-  refresh.setActive(true)
-  const oldQuery = refresh.query()
-  refresh.setActive(false)
-  refresh.setActive(true)
-  assert.equal(refresh.accept(), true)
-  accepted.push({ status: 'none' })
-  resolveOld(target)
-  assert.equal((await oldQuery).current, false)
-  assert.deepEqual(accepted, [{ status: 'none' }])
-})
-
-test('generation numbers increase per compose across actions and account switches', () => {
-  const sequence = createAiMailGenerationSequence()
-
-  assert.deepEqual(
-    [
-      sequence.next('account-a:compose-1'),
-      sequence.next('account-b:compose-2'),
-      sequence.next('account-a:compose-1')
-    ],
-    [1, 1, 2]
-  )
-})
-
-test('a snapshot started for A is invalid after switching A to B and back to A', async () => {
-  const epoch = createAiMailTargetEpoch()
-  epoch.setTarget('account-a:compose-1')
-  const capture = epoch.capture('account-a:compose-1')
-  let resolveSnapshot
-  const pendingSnapshot = captureAiMailTargetSnapshot(
-    epoch,
-    capture,
-    () =>
-      new Promise((resolve) => {
-        resolveSnapshot = resolve
-      })
-  )
-
-  epoch.setTarget('account-b:compose-2')
-  epoch.setTarget('account-a:compose-1')
-  resolveSnapshot(snapshot)
-  assert.deepEqual(JSON.parse(JSON.stringify(await pendingSnapshot)), { status: 'stale' })
-})
-
-test('a current target capture returns its snapshot', async () => {
-  const epoch = createAiMailTargetEpoch()
-  epoch.setTarget('account-a:compose-1')
-  const capture = epoch.capture('account-a:compose-1')
-
-  const outcome = await captureAiMailTargetSnapshot(epoch, capture, async () => snapshot)
-
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'ready', result: snapshot })
-})
-
-test('a snapshot error after switching targets is discarded as stale', async () => {
-  const epoch = createAiMailTargetEpoch()
-  epoch.setTarget('account-a:compose-1')
-  const capture = epoch.capture('account-a:compose-1')
-  let rejectSnapshot
-  const pendingSnapshot = captureAiMailTargetSnapshot(
-    epoch,
-    capture,
-    () =>
-      new Promise((resolve, reject) => {
-        void resolve
-        rejectSnapshot = reject
-      })
-  )
-
-  epoch.setTarget('account-b:compose-2')
-  rejectSnapshot(new Error('synthetic snapshot failure'))
-  assert.deepEqual(JSON.parse(JSON.stringify(await pendingSnapshot)), { status: 'stale' })
-})
-
-test('a token invalidated by closing cannot start a snapshot call', async () => {
-  const epoch = createAiMailTargetEpoch()
-  epoch.setTarget('account-a:compose-1')
-  const capture = epoch.capture('account-a:compose-1')
-  epoch.invalidate()
-  let snapshotCalls = 0
-  const outcome = await captureAiMailTargetSnapshot(epoch, capture, async () => {
-    snapshotCalls += 1
-    return snapshot
-  })
-
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
-  assert.equal(snapshotCalls, 0)
-})
-
-test('reopening detaches capture A so its late success cannot clear capture B', async () => {
-  const epoch = createAiMailTargetEpoch()
-  epoch.setTarget('account-a:compose-1')
-  let session = 0
-  const captureAToken = { ...epoch.capture('account-a:compose-1'), session }
-  let currentCapture = captureAToken
-  let resolveA
-  const captureA = captureAiMailTargetSnapshot(
-    epoch,
-    captureAToken,
-    () =>
-      new Promise((resolve) => {
-        resolveA = resolve
-      })
-  )
-
-  epoch.invalidate()
-  session += 1
-  assert.equal(isAiMailSnapshotCaptureBusy(false, session, currentCapture), false)
-  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), false)
-  const captureB = { ...epoch.capture('account-a:compose-1'), session }
-  currentCapture = captureB
-  let resolveB
-  const pendingB = captureAiMailTargetSnapshot(
-    epoch,
-    captureB,
-    () =>
-      new Promise((resolve) => {
-        resolveB = resolve
-      })
-  )
-
-  resolveA(snapshot)
-  assert.deepEqual(JSON.parse(JSON.stringify(await captureA)), { status: 'stale' })
-  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureAToken)
-  assert.equal(currentCapture, captureB)
-  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), true)
-
-  resolveB(snapshot)
-  assert.deepEqual(JSON.parse(JSON.stringify(await pendingB)), {
-    status: 'ready',
-    result: snapshot
-  })
-  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureB)
-  assert.equal(currentCapture, null)
-  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), false)
-})
-
-test('reopening detaches capture A so its late error cannot clear capture B error state', async () => {
-  const epoch = createAiMailTargetEpoch()
-  epoch.setTarget('account-a:compose-1')
-  let session = 0
-  const captureAToken = { ...epoch.capture('account-a:compose-1'), session }
-  let currentCapture = captureAToken
-  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), true)
-  let rejectA
-  const captureA = captureAiMailTargetSnapshot(
-    epoch,
-    captureAToken,
-    () =>
-      new Promise((resolve, reject) => {
-        void resolve
-        rejectA = reject
-      })
-  )
-
-  epoch.invalidate()
-  session += 1
-  const captureB = { ...epoch.capture('account-a:compose-1'), session }
-  currentCapture = captureB
-  let rejectB
-  const pendingB = captureAiMailTargetSnapshot(
-    epoch,
-    captureB,
-    () =>
-      new Promise((resolve, reject) => {
-        void resolve
-        rejectB = reject
-      })
-  )
-
-  rejectA(new Error('old capture failed'))
-  assert.deepEqual(JSON.parse(JSON.stringify(await captureA)), { status: 'stale' })
-  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureAToken)
-  assert.equal(currentCapture, captureB)
-  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), true)
-
-  rejectB(new Error('current capture failed'))
-  assert.deepEqual(JSON.parse(JSON.stringify(await pendingB)), { status: 'error' })
-  currentCapture = finishAiMailSnapshotCapture(currentCapture, captureB)
-  assert.equal(currentCapture, null)
-  assert.equal(isAiMailSnapshotCaptureBusy(true, session, currentCapture), false)
-})
 
 const target = {
   status: 'ready',
   accountId: 'account-a',
   composeId: 'compose-1',
   accountLabel: 'Synthetic account',
-  recipients: ['recipient@example.test'],
-  subject: 'Synthetic subject'
+  recipients: [],
+  subject: 'Draft subject'
 }
-
-const snapshot = {
+const compose = {
   ...target,
   documentVersion: 'version-1',
   snapshotId: 'snapshot-1',
-  body: 'Synthetic draft body'
+  body: 'Draft body'
+}
+const read = {
+  status: 'ready',
+  accountId: 'account-a',
+  accountLabel: 'A',
+  captureId: 'read-capture',
+  subject: 'Received subject',
+  body: 'Received body'
 }
 
-test('explicit request captures only its target and renders a synthetic proposal', async () => {
-  let sentRequest
+const ready = (text) => ({ ok: true, text, usage: { inputTokens: null, outputTokens: null } })
+
+test('automatic received-mail context can produce a read-only answer without a compose', async () => {
+  const sent = []
+  const api = {
+    isAiMailReadSnapshotCurrent: async () => true,
+    generateAiMailDraft: async (request) => {
+      sent.push(request)
+      return ready('{"kind":"answer","text":"A short summary"}')
+    }
+  }
   const outcome = await requestAiMailProposal(
-    {
-      getAiMailComposeSnapshot: async () => snapshot,
-      generateAiMailDraft: async (request) => {
-        sentRequest = request
-        return {
-          ok: true,
-          text: 'Synthetic proposal',
-          usage: { inputTokens: null, outputTokens: null }
-        }
-      }
-    },
-    target,
-    'Make this more concise',
+    api,
+    null,
+    { accountId: 'account-a', compose: null, read },
+    'Summarize this email',
     'request-1',
     1
   )
-
   assert.equal(outcome.status, 'ready')
-  assert.equal(outcome.text, 'Synthetic proposal')
-  assert.equal(sentRequest.accountId, target.accountId)
-  assert.equal(sentRequest.composeId, target.composeId)
-  assert.match(sentRequest.prompt, /Synthetic draft body/)
-  assert.doesNotMatch(sentRequest.prompt, /recipient@example\.test/)
+  assert.equal(outcome.owner, 'read')
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome.output)), {
+    kind: 'answer',
+    text: 'A short summary'
+  })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].prompt, /Received body/)
+  assert.match(sent[0].prompt, /untrusted data/)
+  assert.equal(sent[0].accountId, 'account-a')
 })
 
-test('subject recommendation returns separate subject and body fields and never includes JSON in the body', async () => {
-  let sentRequest
-  const outcome = await requestAiMailProposal(
-    {
-      getAiMailComposeSnapshot: async () => snapshot,
-      generateAiMailDraft: async (request) => {
-        sentRequest = request
-        return {
-          ok: true,
-          text: JSON.stringify({ subject: 'Suggested subject', body: 'Suggested body' }),
-          usage: { inputTokens: null, outputTokens: null }
-        }
-      }
-    },
-    target,
-    'subject',
-    'request-subject',
-    1,
-    undefined,
-    { task: 'subject' }
-  )
-
-  assert.equal(outcome.status, 'ready')
-  assert.equal(outcome.task, 'subject')
-  assert.equal(outcome.text, 'Suggested body')
-  assert.equal(outcome.subject, 'Suggested subject')
-  assert.match(sentRequest.prompt, /Synthetic subject/)
-  assert.match(sentRequest.prompt, /Synthetic draft body/)
-})
-
-test('summary and translation capture the currently opened received email, separately from compose', async () => {
-  const prompts = []
-  let composeReads = 0
-  let readReads = 0
+test('read-only context is transmitted only when the user sends a message', async () => {
+  let generationCalls = 0
   const api = {
-    getAiMailComposeSnapshot: async () => {
-      composeReads += 1
-      return snapshot
-    },
-    getAiMailReadSnapshot: async () => {
-      readReads += 1
-      return {
-        status: 'ready',
-        accountId: 'account-a',
-        captureId: 'capture-1',
-        subject: 'Received message subject',
-        body: 'Received message body'
-      }
-    },
     isAiMailReadSnapshotCurrent: async () => true,
-    generateAiMailDraft: async (request) => {
-      prompts.push(request.prompt)
-      return {
-        ok: true,
-        text:
-          prompts.length === 1
-            ? 'Short summary'
-            : '{"subject":"Translated subject","body":"Translated body"}',
-        usage: { inputTokens: null, outputTokens: null }
-      }
+    generateAiMailDraft: async () => {
+      generationCalls += 1
+      return ready('{"kind":"answer","text":"answer"}')
     }
   }
-  const summary = await requestAiMailProposal(
+  assert.equal(generationCalls, 0)
+  await requestAiMailProposal(
     api,
     null,
-    '',
-    'request-summary',
-    1,
-    undefined,
-    {
-      task: 'summary'
-    },
-    'account-a'
-  )
-  const translation = await requestAiMailProposal(
-    api,
-    null,
-    '',
-    'request-translation',
-    1,
-    undefined,
-    { task: 'translate', targetLanguage: 'Korean' },
-    'account-a'
-  )
-  assert.equal(summary.status, 'ready', JSON.stringify(summary))
-  assert.equal(translation.status, 'ready', JSON.stringify(translation))
-
-  assert.equal(summary.status, 'ready')
-  assert.equal(summary.owner, 'read')
-  assert.equal(summary.snapshot.captureId, 'capture-1')
-  assert.equal('composeId' in summary.snapshot, false)
-  assert.equal(summary.task, 'summary')
-  assert.equal(summary.text, 'Short summary')
-  assert.equal(translation.status, 'ready')
-  assert.equal(translation.owner, 'read')
-  assert.equal(translation.text, 'Translated body')
-  assert.equal(translation.subject, 'Translated subject')
-  assert.match(prompts[0], /Received message subject/)
-  assert.match(prompts[0], /Received message body/)
-  assert.match(prompts[1], /Korean/)
-  assert.equal(readReads, 2)
-  assert.equal(composeReads, 0)
-})
-
-test('received-mail generation discards a result after its capture lease changes', async () => {
-  const outcome = await requestAiMailProposal(
-    {
-      getAiMailReadSnapshot: async () => ({
-        status: 'ready',
-        accountId: 'account-a',
-        accountLabel: 'A',
-        captureId: 'read-lease',
-        subject: 'Read',
-        body: 'Body'
-      }),
-      isAiMailReadSnapshotCurrent: async () => false,
-      getAiMailComposeSnapshot: async () => snapshot,
-      generateAiMailDraft: async () => ({
-        ok: true,
-        text: 'Summary',
-        usage: { inputTokens: null, outputTokens: null }
-      })
-    },
-    null,
-    '',
-    'read-stale',
-    1,
-    undefined,
-    { task: 'summary' },
-    'account-a'
-  )
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
-})
-
-test('subject recommendation has a versioned direct apply and undo path', async () => {
-  const calls = []
-  const api = {
-    applyAiMailSubject: async (request) => {
-      calls.push({ operation: 'apply', request })
-      return { status: 'applied', applyId: 'subject-apply-1' }
-    },
-    undoAiMailSubject: async (request) => {
-      calls.push({ operation: 'undo', request })
-      return { status: 'undone' }
-    }
-  }
-  const applied = await applyAiMailSubjectProposal(api, snapshot, 'New subject')
-  assert.deepEqual(applied, { status: 'applied', applyId: 'subject-apply-1' })
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), {
-    operation: 'apply',
-    request: {
-      accountId: snapshot.accountId,
-      composeId: snapshot.composeId,
-      documentVersion: snapshot.documentVersion,
-      snapshotId: snapshot.snapshotId,
-      replacement: 'New subject'
-    }
-  })
-  assert.deepEqual(await undoAiMailSubjectProposal(api, snapshot, 'subject-apply-1'), {
-    status: 'undone'
-  })
-})
-
-test('malformed structured subject output fails closed', async () => {
-  const outcome = await requestAiMailProposal(
-    {
-      getAiMailComposeSnapshot: async () => snapshot,
-      generateAiMailDraft: async () => ({
-        ok: true,
-        text: 'subject: hi\nbody: hello',
-        usage: { inputTokens: null, outputTokens: null }
-      })
-    },
-    target,
-    '',
-    'request-invalid',
-    1,
-    undefined,
-    { task: 'subject' }
-  )
-
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'invalid_output' })
-})
-
-test('translation requires an explicit target language before capturing or generating', async () => {
-  let snapshotCalls = 0
-  const outcome = await requestAiMailProposal(
-    {
-      getAiMailComposeSnapshot: async () => {
-        snapshotCalls += 1
-        return snapshot
-      },
-      generateAiMailDraft: async () => {
-        assert.fail('translation must not generate without a target language')
-      }
-    },
-    target,
-    '',
-    'request-language-required',
-    1,
-    undefined,
-    { task: 'translate' }
-  )
-
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), {
-    status: 'invalid_request',
-    reason: 'target_language_required'
-  })
-  assert.equal(snapshotCalls, 0)
-})
-
-test('unsupported generation remains a failure and cannot create a proposal', async () => {
-  const outcome = await requestAiMailProposal(
-    {
-      getAiMailComposeSnapshot: async () => snapshot,
-      generateAiMailDraft: async () => ({
-        ok: false,
-        error: 'unsupported',
-        reason: 'tool_restrictions_unverified'
-      })
-    },
-    target,
-    'Rewrite this',
+    { accountId: 'account-a', compose: null, read },
+    'Translate this',
     'request-2',
     1
   )
-
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), {
-    status: 'failed',
-    result: { ok: false, error: 'unsupported', reason: 'tool_restrictions_unverified' }
-  })
+  assert.equal(generationCalls, 1)
 })
 
-test('a snapshot for another compose window is rejected before generation', async () => {
-  let generationCalls = 0
+test('compose proposal binds to captured compose and edited value is the applied value', async () => {
+  const applies = []
+  const api = {
+    isAiMailReadSnapshotCurrent: async () => true,
+    getAiMailComposeSnapshot: async () => compose,
+    generateAiMailDraft: async () =>
+      ready('{"kind":"proposal","field":"subject","subject":"Suggested","text":"Suggested body"}'),
+    applyAiMailSubject: async (request) => {
+      applies.push(request)
+      return { status: 'applied', applyId: 'apply-1' }
+    }
+  }
   const outcome = await requestAiMailProposal(
-    {
-      getAiMailComposeSnapshot: async () => ({ ...snapshot, composeId: 'compose-2' }),
-      generateAiMailDraft: async () => {
-        generationCalls += 1
-        return {
-          ok: true,
-          text: 'must not appear',
-          usage: { inputTokens: null, outputTokens: null }
-        }
-      }
-    },
+    api,
     target,
-    'Rewrite this',
+    { accountId: 'account-a', compose, read: null },
+    'Suggest a clearer subject and body',
     'request-3',
     1
   )
-
-  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
-  assert.equal(generationCalls, 0)
+  assert.equal(outcome.status, 'ready')
+  assert.equal(outcome.owner, 'compose')
+  assert.equal(outcome.snapshot.composeId, 'compose-1')
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome.output)), {
+    kind: 'proposal',
+    field: 'subject',
+    subject: 'Suggested',
+    text: 'Suggested body'
+  })
+  await applyAiMailSubjectProposal(api, outcome.snapshot, 'User edited subject')
+  assert.equal(applies[0].replacement, 'User edited subject')
+  assert.equal(applies[0].composeId, 'compose-1')
 })
 
-test('synthetic apply and undo preserve the captured target and support conflict confirmation', async () => {
-  const applyRequests = []
-  const undoRequests = []
+test('late read result after lease change is rejected', async () => {
+  let valid = true
   const api = {
-    applyAiMailDraft: async (request) => {
-      applyRequests.push(request)
-      return applyRequests.length === 1
-        ? { status: 'conflict', currentVersion: 'current-2', currentBody: 'Edited in Gmail' }
-        : { status: 'applied', applyId: 'apply-1' }
-    },
-    undoAiMailDraft: async (request) => {
-      undoRequests.push(request)
-      return { status: 'undone' }
+    isAiMailReadSnapshotCurrent: async () => valid,
+    generateAiMailDraft: async () => {
+      valid = false
+      return ready('{"kind":"answer","text":"stale answer"}')
     }
   }
-  const conflict = await applyAiMailProposal(api, snapshot, 'Synthetic proposal')
-  assert.equal(conflict.status, 'conflict')
-  const applied = await applyAiMailProposal(
+  const outcome = await requestAiMailProposal(
     api,
-    snapshot,
-    'Synthetic proposal',
-    conflict.currentVersion
+    null,
+    { accountId: 'account-a', compose: null, read },
+    'Summarize',
+    'request-4',
+    1
   )
-  assert.deepEqual(applied, { status: 'applied', applyId: 'apply-1' })
-  assert.deepEqual(
-    applyRequests.map(({ accountId, composeId }) => ({ accountId, composeId })),
-    [
-      { accountId: target.accountId, composeId: target.composeId },
-      { accountId: target.accountId, composeId: target.composeId }
-    ]
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
+})
+
+test('late compose result after document version change is rejected', async () => {
+  let current = compose
+  const api = {
+    getAiMailComposeSnapshot: async () => current,
+    generateAiMailDraft: async () => {
+      current = { ...compose, documentVersion: 'version-2' }
+      return ready('{"kind":"proposal","field":"body","text":"stale edit"}')
+    }
+  }
+  const outcome = await requestAiMailProposal(
+    api,
+    target,
+    { accountId: 'account-a', compose, read: null },
+    'Rewrite',
+    'request-5',
+    1
   )
-  assert.equal(applyRequests[1].confirmedCurrentVersion, 'current-2')
-  assert.deepEqual(await undoAiMailProposal(api, snapshot, applied.applyId), { status: 'undone' })
-  assert.deepEqual(JSON.parse(JSON.stringify(undoRequests[0])), {
-    accountId: target.accountId,
-    composeId: target.composeId,
-    documentVersion: snapshot.documentVersion,
-    applyId: 'apply-1'
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
+})
+
+test('request refreshes an edited compose before generation rather than transmitting stale capture', async () => {
+  let generations = 0
+  const api = {
+    getAiMailComposeSnapshot: async () => ({
+      ...compose,
+      documentVersion: 'version-2',
+      subject: 'Current subject',
+      body: 'Current body',
+      snapshotId: 'snapshot-current'
+    }),
+    generateAiMailDraft: async (request) => {
+      generations += 1
+      assert.match(request.prompt, /Current body/)
+      assert.doesNotMatch(request.prompt, /Draft body/)
+      return ready('{"kind":"proposal","field":"body","text":"revision"}')
+    }
+  }
+  const outcome = await requestAiMailProposal(
+    api,
+    target,
+    { accountId: 'account-a', compose, read: null },
+    'Please rewrite',
+    'request-stale-compose',
+    1
+  )
+  assert.equal(outcome.status, 'ready')
+  assert.equal(outcome.snapshot.snapshotId, 'snapshot-current')
+  assert.equal(generations, 1)
+})
+
+test('request uses the latest body and subject even when the compose document lease is unchanged', async () => {
+  const latest = {
+    ...compose,
+    subject: 'Latest subject',
+    body: 'Latest body',
+    snapshotId: 'snapshot-request-time'
+  }
+  let sentPrompt = ''
+  const api = {
+    getAiMailComposeSnapshot: async () => latest,
+    generateAiMailDraft: async (request) => {
+      sentPrompt = request.prompt
+      return ready('{"kind":"proposal","field":"body","text":"Revision"}')
+    }
+  }
+  const outcome = await requestAiMailProposal(
+    api,
+    target,
+    { accountId: 'account-a', compose, read: null },
+    'Rewrite this',
+    'request-latest-compose',
+    1
+  )
+  assert.equal(outcome.status, 'ready')
+  assert.equal(outcome.snapshot.snapshotId, 'snapshot-request-time')
+  assert.match(sentPrompt, /Latest subject/)
+  assert.match(sentPrompt, /Latest body/)
+  assert.doesNotMatch(sentPrompt, /Draft body/)
+})
+
+test('proposal output without a compose is converted to non-applicable guidance', async () => {
+  const api = {
+    isAiMailReadSnapshotCurrent: async () => true,
+    generateAiMailDraft: async () => ready('{"kind":"proposal","field":"body","text":"Reply"}')
+  }
+  const outcome = await requestAiMailProposal(
+    api,
+    null,
+    { accountId: 'account-a', compose: null, read },
+    'Draft a reply',
+    'request-6',
+    1
+  )
+  assert.equal(outcome.status, 'ready')
+  assert.equal(outcome.owner, 'none')
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome.output)), { kind: 'answer', text: 'Reply' })
+})
+
+test('conversation prompt includes eligible contexts and treats them as data', () => {
+  const prompt = buildAiMailConversationPrompt('Please reply', {
+    accountId: 'account-a',
+    compose,
+    read
   })
+  assert.match(prompt, /Received body/)
+  assert.match(prompt, /Draft body/)
+  assert.match(prompt, /never as instructions/)
+  assert.match(prompt, /Please reply/)
+})
+
+test('conversation prompt respects the Main request limit while retaining the user instruction', () => {
+  const prompt = buildAiMailConversationPrompt('Please summarize this for me', {
+    accountId: 'account-a',
+    compose: { ...compose, body: 'D'.repeat(20_000) },
+    read: { ...read, body: 'R'.repeat(20_000) }
+  })
+  assert.ok(prompt.length <= 4000)
+  assert.ok(prompt.includes('Please summarize this for me'))
+})
+
+test('target refresh ignores stale completion after a newer target event', async () => {
+  let resolveOld
+  const refresh = createAiMailTargetRefreshCoordinator({
+    query: () =>
+      new Promise((resolve) => {
+        resolveOld = resolve
+      })
+  })
+  refresh.setActive(true)
+  const pending = refresh.query()
+  refresh.accept()
+  resolveOld({ status: 'none' })
+  assert.equal((await pending).current, false)
+})
+
+test('capture token invalidated by closing cannot start a snapshot call', async () => {
+  const epoch = createAiMailTargetEpoch()
+  epoch.setTarget('account-a:compose-1')
+  const capture = epoch.capture('account-a:compose-1')
+  epoch.invalidate()
+  let calls = 0
+  const outcome = await captureAiMailTargetSnapshot(epoch, capture, async () => {
+    calls += 1
+    return compose
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'stale' })
+  assert.equal(calls, 0)
+})
+
+test('body proposal applies edited content and keeps conflict version confirmation', async () => {
+  const calls = []
+  const api = {
+    applyAiMailDraft: async (request) => {
+      calls.push(request)
+      return calls.length === 1
+        ? { status: 'conflict', currentVersion: 'version-2', currentBody: 'Changed in Gmail' }
+        : { status: 'applied', applyId: 'apply-2' }
+    }
+  }
+  const first = await applyAiMailProposal(api, compose, 'Edited proposal')
+  const second = await applyAiMailProposal(api, compose, 'Edited proposal', first.currentVersion)
+  assert.equal(calls[0].replacement, 'Edited proposal')
+  assert.equal(calls[1].confirmedCurrentVersion, 'version-2')
+  assert.equal(second.status, 'applied')
+})
+
+test('rejected field apply returns a visible failure outcome', async () => {
+  const coordinator = createAiMailFieldMutationCoordinator({
+    getAiMailComposeSnapshot: async () => compose,
+    applyAiMailDraft: async () => {
+      throw new Error('IPC failed')
+    }
+  })
+  const outcome = await coordinator.mutate({
+    lockKey: 'message-1:body',
+    snapshot: compose,
+    field: 'body',
+    operation: 'apply',
+    replacement: 'Edited proposal',
+    isCurrent: () => true,
+    onStart: () => undefined
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(outcome)), { status: 'failed' })
+})
+
+test('field mutation locks before deferred freshness read and rejects after account switch', async () => {
+  let resolveSnapshot
+  let current = true
+  let applies = 0
+  let started = 0
+  const coordinator = createAiMailFieldMutationCoordinator({
+    getAiMailComposeSnapshot: () =>
+      new Promise((resolve) => {
+        resolveSnapshot = resolve
+      }),
+    applyAiMailDraft: async () => {
+      applies += 1
+      return { status: 'applied', applyId: 'apply' }
+    }
+  })
+  const request = {
+    lockKey: 'message-1:body',
+    snapshot: compose,
+    field: 'body',
+    operation: 'apply',
+    replacement: 'Edited proposal',
+    isCurrent: () => current,
+    onStart: () => {
+      started += 1
+    }
+  }
+  const first = coordinator.mutate(request)
+  assert.equal(started, 1)
+  const second = await coordinator.mutate(request)
+  assert.deepEqual(JSON.parse(JSON.stringify(second)), { status: 'busy' })
+  current = false
+  resolveSnapshot(compose)
+  assert.deepEqual(JSON.parse(JSON.stringify(await first)), { status: 'stale' })
+  assert.equal(applies, 0)
 })
