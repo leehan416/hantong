@@ -96,6 +96,118 @@
   right: var(--account-sidebar-width, 248px);
 }
 
+.ai-mail-chat-layout {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ai-mail-chat-header {
+  flex: 0 0 auto;
+}
+
+.ai-mail-chat-context {
+  min-width: 0;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 9px 16px;
+}
+
+.ai-mail-chat-messages {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px 18px 24px;
+  scrollbar-gutter: stable;
+}
+
+.ai-mail-chat-composer {
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 12px 16px max(14px, env(safe-area-inset-bottom));
+  background: var(--color-background);
+}
+
+.ai-mail-chat-composer .ai-mail-compose {
+  border: 1px solid var(--color-rule);
+  border-radius: 14px;
+  padding: 10px;
+  background: var(--color-surface);
+}
+
+.ai-mail-chat-composer .ai-mail-compose textarea {
+  min-height: 52px;
+  max-height: min(28vh, 160px);
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+
+.ai-mail-chat-composer .ai-mail-compose textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-chat-composer .ai-mail-compose .ai-mail-primary {
+  display: block;
+  width: auto;
+  min-width: 76px;
+  margin-left: auto;
+}
+
+.ai-mail-context-chips {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-mail-context-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 25px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--color-background);
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.ai-mail-context-chip strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-mail-context-chip button {
+  min-height: 22px;
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ai-mail-context-chip button:hover {
+  text-decoration: underline;
+}
+
+.ai-mail-context-chip button:focus-visible {
+  border-radius: 3px;
+  outline-offset: 1px;
+}
+
 .ai-mail-heading {
   display: flex;
   min-width: 0;
