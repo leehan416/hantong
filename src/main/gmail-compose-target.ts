@@ -154,6 +154,19 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         if (!after || !after.supported) return { status: 'unsupported' };
         if (after.body !== replacement) return { status: 'conflict', body: after.body };
         return { status: 'applied' };
+      },
+      replaceSubject(targetId, expectedSubject, replacement) {
+        if (!active) return { status: 'stale_target' };
+        const item = targets.get(targetId);
+        const snapshot = inspect(targetId);
+        if (!snapshot || !item || !item.subject) return { status: 'stale_target' };
+        if (!snapshot.supported) return { status: 'unsupported' };
+        if (snapshot.subject !== expectedSubject) return { status: 'conflict', body: snapshot.subject };
+        item.subject.value = replacement;
+        item.subject.dispatchEvent(new Event('input', { bubbles: true }));
+        const after = inspect(targetId);
+        if (!after || after.subject !== replacement) return { status: 'conflict', body: after?.subject || '' };
+        return { status: 'applied' };
       }
     };
     return true;
@@ -211,6 +224,8 @@ export function createGmailComposeTargetService(options: {
   getSnapshot(): Promise<ComposeSnapshotResult>
   applyDraft(request: AiMailComposeApplyRequest): Promise<AiMailComposeMutationResult>
   undoDraft(request: AiMailComposeUndoRequest): Promise<AiMailComposeMutationResult>
+  applySubject(request: AiMailComposeApplyRequest): Promise<AiMailComposeMutationResult>
+  undoSubject(request: AiMailComposeUndoRequest): Promise<AiMailComposeMutationResult>
   isResultTargetCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): Promise<boolean>
   isResultCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): boolean
   onAccessState(state: AccountAccessState): void
@@ -228,7 +243,7 @@ export function createGmailComposeTargetService(options: {
     null
   let destroyedListener: (() => void) | null = null
   const resultLeases = new WeakMap<object, ComposeLease>()
-  const snapshotLeases = new Map<string, { lease: ComposeLease; body: string }>()
+  const snapshotLeases = new Map<string, { lease: ComposeLease; body: string; subject: string }>()
   const applyRecords = new Map<
     string,
     { lease: ComposeLease; originalBody: string; appliedBody: string }
@@ -236,6 +251,14 @@ export function createGmailComposeTargetService(options: {
   const confirmedBodies = new Map<
     string,
     { operation: 'apply' | 'undo'; leaseId: string; lease: ComposeLease; body: string }
+  >()
+  const confirmedSubjects = new Map<
+    string,
+    { operation: 'apply' | 'undo'; leaseId: string; lease: ComposeLease; subject: string }
+  >()
+  const subjectApplyRecords = new Map<
+    string,
+    { lease: ComposeLease; originalSubject: string; appliedSubject: string }
   >()
   let mutationInFlight = false
 
@@ -259,6 +282,8 @@ export function createGmailComposeTargetService(options: {
     snapshotLeases.clear()
     applyRecords.clear()
     confirmedBodies.clear()
+    confirmedSubjects.clear()
+    subjectApplyRecords.clear()
     navListener = null
     destroyedListener = null
   }
@@ -405,6 +430,7 @@ export function createGmailComposeTargetService(options: {
       clear()
       return { status: 'stale' }
     }
+
     const account = options.getAccounts().find((item) => item.id === capturedContext.accountId)
     if (!account) {
       clear()
@@ -446,7 +472,8 @@ export function createGmailComposeTargetService(options: {
     resultLeases.set(snapshotResult, lease)
     snapshotLeases.set(snapshotResult.snapshotId, {
       lease,
-      body: capturedResult.snapshot.body
+      body: capturedResult.snapshot.body,
+      subject: capturedResult.snapshot.subject
     })
     if (snapshotLeases.size > 32) {
       const oldest = snapshotLeases.keys().next().value
@@ -594,7 +621,6 @@ export function createGmailComposeTargetService(options: {
           originalBody: confirmation?.body ?? snapshot.body,
           appliedBody: replacement
         })
-        snapshotLeases.delete(request.snapshotId)
         return { status: 'applied', applyId }
       }
       const record = applyRecords.get(request.applyId)
@@ -642,6 +668,99 @@ export function createGmailComposeTargetService(options: {
     }
   }
 
+  async function mutateSubject(
+    request: AiMailComposeApplyRequest | AiMailComposeUndoRequest,
+    operation: 'apply' | 'undo'
+  ): Promise<AiMailComposeMutationResult> {
+    if ((operation === 'apply') !== 'snapshotId' in request) return { status: 'stale_target' }
+    if (mutationInFlight) return { status: 'busy' }
+    mutationInFlight = true
+    try {
+      const confirmedVersion = request.confirmedCurrentVersion
+      const confirmation = confirmedVersion ? confirmedSubjects.get(confirmedVersion) : undefined
+      if (confirmedVersion) confirmedSubjects.delete(confirmedVersion)
+      let lease: ComposeLease | undefined
+      let leaseId: string
+      let expected: string
+      let replacement: string
+      if ('snapshotId' in request) {
+        leaseId = request.snapshotId
+        const snapshot = snapshotLeases.get(leaseId)
+        lease = snapshot?.lease
+        if (
+          !snapshot ||
+          !lease ||
+          request.accountId !== lease.accountId ||
+          request.composeId !== lease.composeId ||
+          request.documentVersion !== lease.documentVersion ||
+          !leaseIsCurrent(lease)
+        )
+          return { status: 'stale_target' }
+        expected = snapshotLeases.get(leaseId)?.subject ?? ''
+        replacement = request.replacement
+        if (replacement.length > MAX_SUBJECT_LENGTH) return { status: 'unsupported' }
+      } else {
+        leaseId = request.applyId
+        const record = subjectApplyRecords.get(leaseId)
+        lease = record?.lease
+        if (
+          !record ||
+          !lease ||
+          request.accountId !== lease.accountId ||
+          request.composeId !== lease.composeId ||
+          request.documentVersion !== lease.documentVersion ||
+          !leaseIsCurrent(lease)
+        )
+          return { status: 'stale_target' }
+        expected = record.appliedSubject
+        replacement = record.originalSubject
+      }
+      if (
+        !lease ||
+        (confirmedVersion &&
+          (confirmation?.operation !== operation ||
+            confirmation.leaseId !== leaseId ||
+            confirmation.lease !== lease))
+      )
+        return { status: 'stale_target' }
+      const value = await execute(
+        lease.contents,
+        `globalThis.__hantongComposeTarget?.documentId === ${JSON.stringify(lease.probeDocumentId)} ? globalThis.__hantongComposeTarget.replaceSubject(${JSON.stringify(lease.targetId)}, ${JSON.stringify(confirmation?.subject ?? expected)}, ${JSON.stringify(replacement)}) : null`
+      )
+      if (!leaseIsCurrent(lease) || !validPageReplaceResult(value))
+        return { status: 'stale_target' }
+      if (value.status === 'conflict' && typeof value.body === 'string') {
+        const currentVersion = randomUUID()
+        confirmedSubjects.set(currentVersion, { operation, leaseId, lease, subject: value.body })
+        if (confirmedSubjects.size > 32)
+          confirmedSubjects.delete(confirmedSubjects.keys().next().value as string)
+        return { status: 'conflict', currentVersion, currentBody: value.body }
+      }
+      if (value.status !== 'applied')
+        return { status: value.status === 'unsupported' ? 'unsupported' : 'stale_target' }
+      if (operation === 'apply') {
+        const applyId = randomUUID()
+        subjectApplyRecords.clear()
+        subjectApplyRecords.set(applyId, {
+          lease,
+          originalSubject: confirmation?.subject ?? expected,
+          appliedSubject: replacement
+        })
+        const snapshot = snapshotLeases.get(leaseId)
+        if (snapshot) snapshotLeases.set(leaseId, { ...snapshot, subject: replacement })
+        return { status: 'applied', applyId }
+      }
+      subjectApplyRecords.delete(leaseId)
+      for (const [id, snapshot] of snapshotLeases)
+        if (snapshot.lease === lease) snapshotLeases.set(id, { ...snapshot, subject: replacement })
+      return { status: 'undone' }
+    } catch {
+      return { status: 'failed' }
+    } finally {
+      mutationInFlight = false
+    }
+  }
+
   function isResultCurrent(value: ComposeTargetStatus | ComposeSnapshotResult): boolean {
     if (!value || typeof value !== 'object' || value.status !== 'ready') return true
     const lease = resultLeases.get(value)
@@ -673,6 +792,12 @@ export function createGmailComposeTargetService(options: {
     },
     undoDraft(request) {
       return mutate(request, 'undo')
+    },
+    async applySubject(request) {
+      return mutateSubject(request, 'apply')
+    },
+    async undoSubject(request) {
+      return mutateSubject(request, 'undo')
     },
     async isResultTargetCurrent(value) {
       if (!value || typeof value !== 'object' || value.status !== 'ready') return true

@@ -23,6 +23,7 @@ function fixture(options = {}) {
   let targetId = 'target-7'
   let documentRevision = '4:9'
   let body = 'Synthetic body'
+  let subject = 'Synthetic subject'
   const listeners = new Map()
   const contents = {
     id: 25,
@@ -49,12 +50,23 @@ function fixture(options = {}) {
         body = replacement
         return { status: 'applied' }
       }
+      if (code.includes('__hantongComposeTarget.replaceSubject(')) {
+        const match = code.match(
+          /\.replaceSubject\(("(?:\\.|[^"])*"), ("(?:\\.|[^"])*"), ("(?:\\.|[^"])*")\)/
+        )
+        if (!match) return null
+        const expected = JSON.parse(match[2])
+        const replacement = JSON.parse(match[3])
+        if (subject !== expected) return { status: 'conflict', body: subject }
+        subject = replacement
+        return { status: 'applied' }
+      }
       if (code.includes('__hantongComposeTarget.readTarget(')) {
         if (options.deferReadBeforeReplace) await options.deferReadBeforeReplace()
         return {
           targetId,
           snapshot: {
-            subject: 'Synthetic subject',
+            subject,
             recipients: ['recipient@example.test'],
             body,
             supported: options.supported !== false
@@ -66,7 +78,7 @@ function fixture(options = {}) {
         return {
           targetId,
           snapshot: {
-            subject: 'Synthetic subject',
+            subject,
             recipients: ['recipient@example.test'],
             body,
             supported: options.supported !== false
@@ -116,6 +128,12 @@ function fixture(options = {}) {
     },
     getBody() {
       return body
+    },
+    setSubject(value) {
+      subject = value
+    },
+    getSubject() {
+      return subject
     },
     destroy() {
       destroyed = true
@@ -198,6 +216,134 @@ test('explicit apply and undo mutate only the captured synthetic compose body', 
     { status: 'undone' }
   )
   assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
+test('body and subject apply and undo remain independent in either apply order', async () => {
+  for (const subjectFirst of [false, true]) {
+    const f = fixture()
+    const snapshot = await f.service.getSnapshot()
+    assert.equal(snapshot.status, 'ready')
+    const bodyRequest = {
+      accountId: snapshot.accountId,
+      composeId: snapshot.composeId,
+      documentVersion: snapshot.documentVersion,
+      snapshotId: snapshot.snapshotId,
+      replacement: 'Revised synthetic body'
+    }
+    const subjectRequest = { ...bodyRequest, replacement: 'Revised synthetic subject' }
+    let bodyApply
+    let subjectApply
+    if (subjectFirst) {
+      subjectApply = await f.service.applySubject(subjectRequest)
+      bodyApply = await f.service.applyDraft(bodyRequest)
+    } else {
+      bodyApply = await f.service.applyDraft(bodyRequest)
+      subjectApply = await f.service.applySubject(subjectRequest)
+    }
+    assert.equal(bodyApply.status, 'applied')
+    assert.equal(subjectApply.status, 'applied')
+    assert.equal(f.getBody(), 'Revised synthetic body')
+    assert.equal(f.getSubject(), 'Revised synthetic subject')
+    if (bodyApply.status !== 'applied' || subjectApply.status !== 'applied')
+      assert.fail('both independent mutations should return apply ids')
+
+    const subjectUndoRequest = {
+      accountId: snapshot.accountId,
+      composeId: snapshot.composeId,
+      documentVersion: snapshot.documentVersion,
+      applyId: subjectApply.applyId
+    }
+    const bodyUndoRequest = {
+      accountId: snapshot.accountId,
+      composeId: snapshot.composeId,
+      documentVersion: snapshot.documentVersion,
+      applyId: bodyApply.applyId
+    }
+    if (subjectFirst) {
+      assert.deepEqual(plain(await f.service.undoDraft(bodyUndoRequest)), { status: 'undone' })
+      assert.equal(f.getBody(), 'Synthetic body')
+      assert.equal(f.getSubject(), 'Revised synthetic subject')
+      assert.deepEqual(plain(await f.service.undoSubject(subjectUndoRequest)), { status: 'undone' })
+    } else {
+      assert.deepEqual(plain(await f.service.undoSubject(subjectUndoRequest)), { status: 'undone' })
+      assert.equal(f.getBody(), 'Revised synthetic body')
+      assert.equal(f.getSubject(), 'Synthetic subject')
+      assert.deepEqual(plain(await f.service.undoDraft(bodyUndoRequest)), { status: 'undone' })
+    }
+    assert.equal(f.getBody(), 'Synthetic body')
+    assert.equal(f.getSubject(), 'Synthetic subject')
+    f.service.dispose()
+  }
+})
+
+test('subject apply and undo conflicts require fresh single-use confirmation', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  f.setSubject('Direct subject edit')
+  const request = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'AI subject'
+  }
+  const conflict = await f.service.applySubject(request)
+  assert.equal(conflict.status, 'conflict')
+  assert.equal(f.getSubject(), 'Direct subject edit')
+  if (conflict.status !== 'conflict') assert.fail('expected subject apply confirmation')
+  const applied = await f.service.applySubject({
+    ...request,
+    confirmedCurrentVersion: conflict.currentVersion
+  })
+  assert.equal(applied.status, 'applied')
+  assert.equal(f.getSubject(), 'AI subject')
+  if (applied.status !== 'applied') assert.fail('expected subject apply id')
+  assert.deepEqual(
+    plain(
+      await f.service.applySubject({
+        ...request,
+        confirmedCurrentVersion: conflict.currentVersion
+      })
+    ),
+    { status: 'stale_target' }
+  )
+
+  f.setSubject('User subject edit before undo')
+  const undoRequest = {
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    applyId: applied.applyId
+  }
+  const undoConflict = await f.service.undoSubject(undoRequest)
+  assert.equal(undoConflict.status, 'conflict')
+  assert.equal(f.getSubject(), 'User subject edit before undo')
+  if (undoConflict.status !== 'conflict') assert.fail('expected subject undo confirmation')
+  f.setSubject('Newer subject edit')
+  const refreshed = await f.service.undoSubject({
+    ...undoRequest,
+    confirmedCurrentVersion: undoConflict.currentVersion
+  })
+  assert.equal(refreshed.status, 'conflict')
+  assert.equal(f.getSubject(), 'Newer subject edit')
+  if (refreshed.status !== 'conflict') assert.fail('expected refreshed subject conflict')
+  assert.deepEqual(
+    plain(
+      await f.service.undoSubject({
+        ...undoRequest,
+        confirmedCurrentVersion: undoConflict.currentVersion
+      })
+    ),
+    { status: 'stale_target' }
+  )
+  const undone = await f.service.undoSubject({
+    ...undoRequest,
+    confirmedCurrentVersion: refreshed.currentVersion
+  })
+  assert.deepEqual(plain(undone), { status: 'undone' })
+  assert.equal(f.getSubject(), 'Direct subject edit')
   f.service.dispose()
 })
 

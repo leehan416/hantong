@@ -50,6 +50,7 @@ import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
 import { createAiMailCodexService } from './ai-mail-codex-service'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
+import type { createGmailReadTargetService } from './gmail-read-target'
 import {
   createNotificationPauseController,
   createNotificationPauseMenuActions
@@ -91,6 +92,7 @@ let relayRuntime: ReturnType<typeof createRelayRuntime> | null = null
 let gmailRelaySync: ReturnType<typeof createGmailRelaySync> | null = null
 let accountAccessController: ReturnType<typeof createAccountAccessController> | null = null
 let composeTargetService: ReturnType<typeof createGmailComposeTargetService> | null = null
+let readTargetService: ReturnType<typeof createGmailReadTargetService> | null = null
 let notificationConnectionController: ReturnType<
   typeof createNotificationConnectionController
 > | null = null
@@ -418,6 +420,7 @@ function removeAccountAfterGmailLogout(
 
 function activateAccountView(accountId: string): void {
   composeTargetService?.onAccountSwitch()
+  readTargetService?.onAccountSwitch()
   try {
     accountViewManager?.activate(accountId)
   } catch {
@@ -451,6 +454,9 @@ const mainWindowRuntime = createMainWindowRuntime({
   requireGoogleManager: requireGoogleConnectionManager,
   setComposeTargetService: (service) => {
     composeTargetService = service
+  },
+  setReadTargetService: (service) => {
+    readTargetService = service
   },
   settings: () => settingsStore,
   windowState: () => windowStateStore,
@@ -644,7 +650,8 @@ void app
       createWindow,
       loginLaunch,
       aiMailCodex,
-      composeTarget: () => composeTargetService
+      composeTarget: () => composeTargetService,
+      readTarget: () => readTargetService
     })
     loginLaunchStartup.start(wasOpenedAtLogin)
     app.on('before-quit', (event) => {

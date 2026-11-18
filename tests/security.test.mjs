@@ -12,6 +12,8 @@ const {
   isAllowedSettingsRequest,
   isAllowedLoginLaunchRequest,
   isAllowedAiMailComposeMutationRequest,
+  isAllowedAiMailReadRequest,
+  isAllowedAiMailSubjectMutationRequest,
   isTrustedRendererUrl
 } = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
 const policy = {
@@ -123,6 +125,53 @@ test('compose mutation IPC accepts only bounded explicit apply and undo requests
     isAllowedAiMailComposeMutationRequest({
       ...base,
       senderUrl: 'https://mail.google.com/',
+      operation: 'apply',
+      args: [apply]
+    }),
+    false
+  )
+})
+
+test('read-mail snapshot is read-only and subject IPC requires explicit field mutation shapes', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: []
+  }
+  assert.equal(isAllowedAiMailReadRequest(base), true)
+  assert.equal(isAllowedAiMailReadRequest({ ...base, args: ['message-id'] }), false)
+  const apply = {
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    documentVersion: 'document-a',
+    snapshotId: 'snapshot-a',
+    replacement: 'Subject'
+  }
+  const undo = {
+    accountId: 'account-a',
+    composeId: 'compose-a',
+    documentVersion: 'document-a',
+    applyId: 'apply-a'
+  }
+  assert.equal(
+    isAllowedAiMailSubjectMutationRequest({ ...base, operation: 'apply', args: [apply] }),
+    true
+  )
+  assert.equal(
+    isAllowedAiMailSubjectMutationRequest({ ...base, operation: 'undo', args: [undo] }),
+    true
+  )
+  assert.equal(
+    isAllowedAiMailSubjectMutationRequest({ ...base, operation: 'undo', args: [apply] }),
+    false
+  )
+  assert.equal(
+    isAllowedAiMailSubjectMutationRequest({
+      ...base,
+      senderMatches: false,
       operation: 'apply',
       args: [apply]
     }),

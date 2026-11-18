@@ -43,6 +43,10 @@ export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-ta
 export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
 export const AI_MAIL_COMPOSE_APPLY_CHANNEL = 'hantong:ai-mail-compose-apply'
 export const AI_MAIL_COMPOSE_UNDO_CHANNEL = 'hantong:ai-mail-compose-undo'
+export const AI_MAIL_READ_SNAPSHOT_CHANNEL = 'hantong:ai-mail-read-snapshot'
+export const AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL = 'hantong:ai-mail-read-snapshot-current'
+export const AI_MAIL_SUBJECT_APPLY_CHANNEL = 'hantong:ai-mail-subject-apply'
+export const AI_MAIL_SUBJECT_UNDO_CHANNEL = 'hantong:ai-mail-subject-undo'
 export const AI_MAIL_COMPOSE_TARGET_EVENT = 'hantong:ai-mail-compose-target-change'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
@@ -95,7 +99,10 @@ export type CodexConnectionStatus =
 
 export type ComposeTargetStatus =
   | { status: 'none' | 'stale' | 'access_locked' }
-  | { status: 'unsupported'; code: 'unsupported_compose' | 'unsupported_content' }
+  | {
+      status: 'unsupported'
+      code: 'unsupported_compose' | 'unsupported_content' | 'unsupported_read_mail'
+    }
   | {
       status: 'ready'
       accountId: string
@@ -107,7 +114,10 @@ export type ComposeTargetStatus =
 
 export type ComposeSnapshotResult =
   | { status: 'none' | 'stale' | 'access_locked' }
-  | { status: 'unsupported'; code: 'unsupported_compose' | 'unsupported_content' }
+  | {
+      status: 'unsupported'
+      code: 'unsupported_compose' | 'unsupported_content' | 'unsupported_read_mail'
+    }
   | {
       status: 'ready'
       accountId: string
@@ -137,6 +147,34 @@ export interface AiMailComposeUndoRequest {
   applyId: string
   /** Send only after the user explicitly approves the `currentBody` returned by a conflict. */
   confirmedCurrentVersion?: string
+}
+
+export interface AiMailSubjectApplyRequest extends Omit<AiMailComposeApplyRequest, 'replacement'> {
+  replacement: string
+}
+
+export interface AiMailSubjectUndoRequest extends Omit<AiMailComposeUndoRequest, 'applyId'> {
+  applyId: string
+}
+
+export type ReadMailSnapshotResult =
+  | { status: 'none' | 'stale' | 'access_locked' }
+  | { status: 'unsupported'; code: 'unsupported_read_mail' }
+  | {
+      status: 'ready'
+      accountId: string
+      accountLabel: string
+      captureId: string
+      subject: string
+      body: string
+    }
+
+export interface AiMailReadApplyRequest {
+  accountId: string
+  captureId: string
+  task: 'summary' | 'translate'
+  targetLanguage?: string
+  instruction?: string
 }
 
 export type AiMailComposeMutationResult =
@@ -185,6 +223,10 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  getAiMailReadSnapshot: () => Promise<ReadMailSnapshotResult>
+  isAiMailReadSnapshotCurrent: (captureId: string) => Promise<boolean>
+  applyAiMailSubject: (request: AiMailSubjectApplyRequest) => Promise<AiMailComposeMutationResult>
+  undoAiMailSubject: (request: AiMailSubjectUndoRequest) => Promise<AiMailComposeMutationResult>
   getAiMailComposeTargetStatus: () => Promise<ComposeTargetStatus>
   getAiMailComposeSnapshot: () => Promise<ComposeSnapshotResult>
   applyAiMailDraft: (request: AiMailComposeApplyRequest) => Promise<AiMailComposeMutationResult>

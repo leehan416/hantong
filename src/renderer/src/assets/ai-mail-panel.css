@@ -58,7 +58,7 @@
   display: grid;
   width: var(--ai-mail-panel-width, 360px);
   min-width: 0;
-  grid-template-rows: auto auto auto minmax(80px, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
   overflow: hidden;
   border-left: 1px solid var(--color-rule);
@@ -96,6 +96,118 @@
   right: var(--account-sidebar-width, 248px);
 }
 
+.ai-mail-chat-layout {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ai-mail-chat-header {
+  flex: 0 0 auto;
+}
+
+.ai-mail-chat-context {
+  min-width: 0;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 9px 16px;
+}
+
+.ai-mail-chat-messages {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px 18px 24px;
+  scrollbar-gutter: stable;
+}
+
+.ai-mail-chat-composer {
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 12px 16px max(14px, env(safe-area-inset-bottom));
+  background: var(--color-background);
+}
+
+.ai-mail-chat-composer .ai-mail-compose {
+  border: 1px solid var(--color-rule);
+  border-radius: 14px;
+  padding: 10px;
+  background: var(--color-surface);
+}
+
+.ai-mail-chat-composer .ai-mail-compose textarea {
+  min-height: 52px;
+  max-height: min(28vh, 160px);
+  border-color: transparent;
+  background: transparent;
+  font-size: 12px;
+}
+
+.ai-mail-chat-composer .ai-mail-compose textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-chat-composer .ai-mail-compose .ai-mail-primary {
+  display: block;
+  width: auto;
+  min-width: 76px;
+  margin-left: auto;
+}
+
+.ai-mail-context-chips {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-mail-context-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 25px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--color-background);
+  color: var(--color-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.ai-mail-context-chip strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-mail-context-chip button {
+  min-height: 22px;
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ai-mail-context-chip button:hover {
+  text-decoration: underline;
+}
+
+.ai-mail-context-chip button:focus-visible {
+  border-radius: 3px;
+  outline-offset: 1px;
+}
+
 .ai-mail-heading {
   display: flex;
   min-width: 0;
@@ -103,7 +215,7 @@
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--color-rule);
-  padding: 16px 16px 12px;
+  padding: 14px 16px 11px;
 }
 
 .ai-mail-heading h1 {
@@ -215,6 +327,29 @@
   padding: 12px 16px;
 }
 
+.ai-mail-chat-context .ai-mail-target {
+  border: 0;
+  padding: 0;
+}
+
+.ai-mail-chat-context .ai-mail-target > h2 {
+  margin-bottom: 5px;
+  font-size: 9px;
+  letter-spacing: 0.035em;
+}
+
+.ai-mail-chat-context .ai-mail-target-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 6px;
+}
+
+.ai-mail-chat-context .ai-mail-target-card > .ai-mail-text-button {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  margin: 0;
+}
+
 .ai-mail-target h2,
 .ai-mail-proposal h2 {
   margin: 0 0 7px;
@@ -290,6 +425,34 @@
   user-select: text;
 }
 
+.ai-mail-suggested-subject {
+  border-left: 2px solid var(--color-accent);
+  margin: 8px 0;
+  padding-left: 9px;
+}
+
+.ai-mail-suggested-subject strong {
+  color: var(--color-muted);
+  font-size: 10px;
+}
+
+.ai-mail-suggested-subject p {
+  margin: 3px 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-suggested-subject input {
+  width: 100%;
+  min-height: 33px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 5px 7px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+}
+
 .ai-mail-conversation {
   min-width: 0;
   min-height: 0;
@@ -297,17 +460,22 @@
   padding: 12px 16px 16px;
 }
 
+.ai-mail-chat-messages .ai-mail-conversation {
+  overflow: visible;
+  padding: 0;
+}
+
 .ai-mail-message {
   max-width: 100%;
-  margin: 0 0 12px;
+  margin: 0 0 20px;
   font-size: 12px;
   line-height: 1.55;
 }
 
 .ai-mail-message-user {
   border-radius: 9px 9px 2px 9px;
-  margin-left: 22px;
-  padding: 9px 10px;
+  margin-left: 24px;
+  padding: 10px 12px;
   background: var(--color-accent-soft);
 }
 
@@ -317,8 +485,64 @@
   white-space: pre-wrap;
 }
 
+.ai-mail-message-assistant {
+  padding: 1px 0;
+}
+
+.ai-mail-message-assistant > p {
+  line-height: 1.7;
+}
+
 .ai-mail-proposal {
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
   margin-top: 6px;
+  padding: 12px;
+  background: var(--color-background);
+}
+
+.ai-mail-proposal textarea {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  max-height: 34vh;
+  resize: none;
+  border: 1px solid var(--color-rule);
+  border-radius: 7px;
+  padding: 9px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-mail-proposal textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-proposal input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--color-rule);
+  border-radius: 7px;
+  padding: 6px 9px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ai-mail-proposal input:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-proposal label {
+  display: block;
+  margin: 7px 0 4px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .ai-mail-proposal pre {
@@ -399,7 +623,24 @@
   background: var(--color-background);
 }
 
-.ai-mail-compose label {
+.ai-mail-chat-composer .ai-mail-compose {
+  border-top: 0;
+}
+
+.ai-mail-chat-composer .ai-mail-compose > label {
+  display: none;
+}
+
+.ai-mail-chat-composer .ai-mail-compose textarea {
+  border-radius: 8px;
+  padding: 7px 8px;
+}
+
+.ai-mail-chat-composer .ai-mail-privacy {
+  margin: 2px 0 8px;
+}
+
+.ai-mail-compose > label {
   display: block;
   margin-bottom: 5px;
   font-size: 11px;
@@ -442,6 +683,62 @@
   width: 100%;
 }
 
+.ai-mail-choice-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border: 0;
+  margin: 0 0 9px;
+  padding: 0;
+}
+
+.ai-mail-choice-group legend {
+  margin-bottom: 5px;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ai-mail-choice-group label {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  margin: 0;
+  padding: 5px 7px;
+  background: var(--color-background);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ai-mail-choice-group label:has(input:checked) {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.ai-mail-choice-group label:focus-within {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.ai-mail-choice-group input {
+  flex: 0 0 auto;
+  accent-color: var(--color-accent);
+}
+
+.ai-mail-choice-group span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-choice-group:disabled label {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .ai-mail-primary:disabled,
 .ai-mail-secondary:disabled,
 .ai-mail-text-button:disabled,
@@ -474,6 +771,31 @@
   .ai-mail-pulse {
     animation: none;
     transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .ai-mail-context-chip,
+  .ai-mail-proposal,
+  .ai-mail-chat-composer .ai-mail-compose {
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .ai-mail-chat-messages {
+    padding: 14px 12px 18px;
+  }
+
+  .ai-mail-chat-context,
+  .ai-mail-chat-composer {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .ai-mail-message-user {
+    margin-left: 12px;
   }
 }
 

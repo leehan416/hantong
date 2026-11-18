@@ -88,6 +88,11 @@ export function createAccountViewManager(
     navigationRevision: number
     accessRevision: number
   } | null
+  getReadMailView: (id: string) => {
+    contents: WebContents
+    navigationRevision: number
+    accessRevision: number
+  } | null
   setMailAccess: (id: string, allowed: boolean, expectedRevision?: number) => boolean
   clearLogoutLock: (id: string, recoveryPending?: boolean) => boolean
   forgetLogoutLock: (id: string) => boolean
@@ -690,6 +695,11 @@ export function createAccountViewManager(
         navigationRevision: entry.navigationRevision,
         accessRevision: entry.accessRevision
       }
+    },
+    getReadMailView(id) {
+      const entry = views.get(id)
+      if (!entry?.attached || covered) return null
+      return this.getComposeProbeView(id)
     },
     setMailAccess(id, allowed, expectedRevision) {
       const entry = views.get(id)

@@ -2,6 +2,10 @@
 import assert from 'node:assert/strict'
 
 export const ALLOWED_API_OPERATIONS = Object.freeze([
+  'getAiMailReadSnapshot',
+  'isAiMailReadSnapshotCurrent',
+  'applyAiMailSubject',
+  'undoAiMailSubject',
   'getAiMailComposeTargetStatus',
   'getAiMailComposeSnapshot',
   'applyAiMailDraft',
