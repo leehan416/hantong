@@ -38,6 +38,8 @@ export const AI_MAIL_CODEX_CONNECT_CHANNEL = 'hantong:ai-mail-codex-connect'
 export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnect'
 export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
 export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
+export const AI_MAIL_OLLAMA_GENERATE_CHANNEL = 'hantong:ai-mail-ollama-generate'
+export const AI_MAIL_OLLAMA_CANCEL_CHANNEL = 'hantong:ai-mail-ollama-cancel'
 export const AI_MAIL_CODEX_STATUS_EVENT = 'hantong:ai-mail-codex-status-change'
 export const OLLAMA_STATUS_CHANNEL = 'hantong:ollama-status'
 export const OLLAMA_MODELS_CHANNEL = 'hantong:ollama-models'
@@ -222,6 +224,25 @@ export type CodexGenerationResult =
       reason: string
     }
 
+export interface OllamaGenerationRequest {
+  accountId: string
+  composeId: string
+  requestId: string
+  generation: number
+  prompt: string
+  followUp?: string
+}
+
+export type OllamaGenerationResult =
+  | {
+      ok: true
+      output:
+        | { kind: 'answer'; text: string }
+        | { kind: 'proposal'; field: 'body'; text: string }
+        | { kind: 'proposal'; field: 'subject'; text: string; subject: string }
+    }
+  | { ok: false; error: 'cancelled' | 'unavailable' | 'failed'; reason: string }
+
 export type AccountAccessState = {
   accountId: string
   status: 'sign_in' | 'checking' | 'required' | 'ready' | 'error'
@@ -257,6 +278,8 @@ export interface HantongApi {
   connectAiMailCodex: () => Promise<CodexConnectionStatus>
   disconnectAiMailCodex: () => Promise<CodexConnectionStatus>
   generateAiMailDraft: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
+  generateAiMailWithOllama: (request: OllamaGenerationRequest) => Promise<OllamaGenerationResult>
+  cancelAiMailOllamaGeneration: (requestId: string) => Promise<{ cancelled: boolean }>
   cancelAiMailGeneration: (requestId: string) => Promise<{ cancelled: boolean; reason?: string }>
   onAiMailCodexStatus: (listener: (status: CodexConnectionStatus) => void) => () => void
   getOllamaStatus: () => Promise<OllamaConnectionStatus>

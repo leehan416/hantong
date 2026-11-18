@@ -46,6 +46,8 @@ import {
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_OLLAMA_GENERATE_CHANNEL,
+  AI_MAIL_OLLAMA_CANCEL_CHANNEL,
   OLLAMA_STATUS_CHANNEL,
   OLLAMA_MODELS_CHANNEL,
   CODEX_MODELS_CHANNEL,
@@ -68,6 +70,7 @@ import {
   isTrustedRendererUrl,
   isAllowedLoginLaunchRequest,
   isAllowedAiMailCodexRequest,
+  isAllowedAiMailOllamaRequest,
   isAllowedProviderModelRequest,
   isAllowedAiMailComposeTargetRequest,
   isAllowedAiMailComposeMutationRequest,
@@ -77,6 +80,7 @@ import {
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
 import type { createAiMailCodexService } from './ai-mail-codex-service'
+import type { createAiMailOllamaGenerationService } from './ai-mail-ollama-service'
 import type { createOllamaService } from './ollama-service'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
@@ -102,6 +106,7 @@ export interface MainIpcDependencies {
   readonly createWindow: () => void
   readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
   readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
+  readonly aiMailOllama: ReturnType<typeof createAiMailOllamaGenerationService>
   readonly ollama: ReturnType<typeof createOllamaService>
   readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
   readonly readTarget: () => ReturnType<typeof createGmailReadTargetService> | null
@@ -337,6 +342,45 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
           args[0] as import('../shared/ipc').CodexGenerationRequest
         )
       return dependencies.aiMailCodex.cancel(args[0] as string)
+    })
+  }
+  for (const [channel, operation] of [
+    [AI_MAIL_OLLAMA_GENERATE_CHANNEL, 'generate'],
+    [AI_MAIL_OLLAMA_CANCEL_CHANNEL, 'cancel']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const request = {
+        ownerAlive: Boolean(owner && !owner.isDestroyed()),
+        senderMatches: Boolean(owner && event.sender === owner.webContents),
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        operation,
+        args
+      }
+      if (!isAllowedAiMailOllamaRequest(request) || !owner) throw new Error('Request rejected')
+      if (operation === 'cancel')
+        return { cancelled: dependencies.aiMailOllama.cancel(args[0] as string) }
+      const frame = event.senderFrame
+      const frameUrl = frame?.url ?? ''
+      const generationRequest = args[0] as import('../shared/ipc').OllamaGenerationRequest
+      return dependencies.aiMailOllama.generate(generationRequest, owner, () => {
+        const liveOwner = dependencies.window()
+        const settings = dependencies.settings()?.get()
+        return (
+          liveOwner === owner &&
+          !owner.isDestroyed() &&
+          event.sender === owner.webContents &&
+          event.senderFrame === frame &&
+          event.sender.mainFrame === frame &&
+          frame?.url === frameUrl &&
+          isTrustedRendererUrl(frameUrl, dependencies.rendererUrl) &&
+          settings?.aiMailProvider === 'ollama' &&
+          settings.ollamaModel !== null
+        )
+      })
     })
   }
   for (const [channel, operation] of [

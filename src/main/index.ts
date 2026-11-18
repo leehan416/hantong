@@ -50,6 +50,7 @@ import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
 import { createAiMailCodexService } from './ai-mail-codex-service'
 import { createOllamaService } from './ollama-service'
+import { createAiMailOllamaGenerationService } from './ai-mail-ollama-service'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
 import {
@@ -130,6 +131,10 @@ const aiMailCodex = createAiMailCodexService({
   }
 })
 const ollama = createOllamaService()
+const aiMailOllama = createAiMailOllamaGenerationService({
+  ollama,
+  settings: () => settingsStore?.get() ?? null
+})
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
@@ -174,6 +179,7 @@ function prepareApplicationShutdown(): Promise<void> {
   notificationRecoveryRuntime.resolveAll()
   const cleanup = Promise.all([
     aiMailCodex.dispose(),
+    Promise.resolve(aiMailOllama.dispose()),
     Promise.resolve(ollama.dispose()),
     googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
     relayRuntime?.dispose() ?? Promise.resolve()
@@ -438,6 +444,7 @@ const mainWindowRuntime = createMainWindowRuntime({
   preloadFile: join(__dirname, '../preload/index.js'),
   window: () => mainWindow,
   setWindow: (window, current) => {
+    if (current) aiMailOllama.cancelOwner(current)
     if (window) mainWindow = window
     else if (mainWindow === current) mainWindow = null
   },
@@ -653,6 +660,7 @@ void app
       createWindow,
       loginLaunch,
       aiMailCodex,
+      aiMailOllama,
       ollama,
       composeTarget: () => composeTargetService,
       readTarget: () => readTargetService

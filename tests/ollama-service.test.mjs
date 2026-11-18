@@ -115,11 +115,83 @@ test('selection confirms the candidate with /api/show and refuses remote metadat
       ['GET /api/tags', response(200, { models: [{ name: 'qwen3:8b', model: 'qwen3:8b' }] })],
       [
         'POST /api/show',
-        response(200, { remote_host: 'https://ollama.com', remote_model: 'qwen3' })
+        response(200, {
+          remote_host: 'https://ollama.com',
+          remote_model: 'qwen3',
+          capabilities: ['completion']
+        })
       ]
     ])
   )
   await assert.rejects(service.validateModel('qwen3:8b'), /not available as a local model/)
+})
+
+test('chat uses fixed local endpoint, schema and non-streaming response', async () => {
+  const { service, calls } = fixture(
+    new Map([
+      ['GET /api/status', response(200, { cloud: { disabled: true } })],
+      ['GET /api/tags', response(200, { models: [{ name: 'qwen3:8b' }] })],
+      ['POST /api/show', response(200, { capabilities: ['completion'] })],
+      [
+        'POST /api/chat',
+        response(200, { message: { content: '{"kind":"answer","text":"hello"}' } })
+      ]
+    ])
+  )
+  const result = await service.generateChat(
+    'qwen3:8b',
+    'prompt',
+    undefined,
+    new AbortController().signal
+  )
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { kind: 'answer', text: 'hello' })
+  const chat = calls.at(-1)
+  assert.equal(chat.url, 'http://127.0.0.1:11434/api/chat')
+  assert.equal(chat.init.redirect, 'manual')
+  const body = JSON.parse(chat.init.body)
+  assert.equal(body.stream, false)
+  assert.ok(body.format.oneOf)
+  assert.deepEqual(body.tools, [])
+})
+
+test('chat output is bounded and caller cancellation aborts transport', async () => {
+  const oversized = fixture(
+    new Map([
+      ['GET /api/status', response(200, { cloud: { disabled: true } })],
+      ['GET /api/tags', response(200, { models: [{ name: 'qwen3:8b' }] })],
+      ['POST /api/show', response(200, { capabilities: ['completion'] })],
+      ['POST /api/chat', response(200, { message: { content: 'x'.repeat(70_000) } })]
+    ])
+  )
+  await assert.rejects(
+    oversized.service.generateChat('qwen3:8b', 'prompt', undefined, new AbortController().signal),
+    /too large/
+  )
+  let signal
+  const cancelledCalls = []
+  const cancelled = createOllamaService({
+    fetch: (url, init) => {
+      const path = new URL(url).pathname
+      cancelledCalls.push(path)
+      if (path === '/api/status')
+        return Promise.resolve(response(200, { cloud: { disabled: true } }))
+      if (path === '/api/tags')
+        return Promise.resolve(response(200, { models: [{ name: 'qwen3:8b' }] }))
+      if (path === '/api/show')
+        return Promise.resolve(response(200, { capabilities: ['completion'] }))
+      signal = init.signal
+      return new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      )
+    }
+  })
+  const controller = new AbortController()
+  const pending = cancelled.generateChat('qwen3:8b', 'prompt', undefined, controller.signal)
+  while (!signal) await new Promise((resolve) => setImmediate(resolve))
+  controller.abort()
+  assert.equal(signal.aborted, true)
+  await assert.rejects(pending)
+  cancelled.dispose()
 })
 
 test('disposed service rejects future requests', async () => {

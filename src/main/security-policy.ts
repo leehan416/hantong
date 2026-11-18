@@ -39,6 +39,47 @@ interface AiMailCodexRequest extends Omit<AppInfoRequest, 'args'> {
   args: unknown[]
 }
 
+interface AiMailOllamaRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: 'generate' | 'cancel'
+  args: unknown[]
+}
+
+export function isAllowedAiMailOllamaRequest(request: AiMailOllamaRequest): boolean {
+  if (
+    !request.ownerAlive ||
+    !request.senderMatches ||
+    !request.mainFrameMatches ||
+    !isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+    return false
+  if (request.operation === 'cancel')
+    return request.args.length === 1 && isBoundedId(request.args[0])
+  if (
+    request.args.length !== 1 ||
+    !request.args[0] ||
+    typeof request.args[0] !== 'object' ||
+    Array.isArray(request.args[0])
+  )
+    return false
+  const value = request.args[0] as Record<string, unknown>
+  return (
+    isBoundedId(value.accountId) &&
+    isBoundedId(value.composeId) &&
+    isBoundedId(value.requestId) &&
+    Number.isSafeInteger(value.generation) &&
+    (value.generation as number) > 0 &&
+    typeof value.prompt === 'string' &&
+    value.prompt.length > 0 &&
+    new TextEncoder().encode(value.prompt).byteLength <= 32 * 1024 &&
+    (value.followUp === undefined ||
+      (typeof value.followUp === 'string' &&
+        new TextEncoder().encode(value.followUp).byteLength <= 16 * 1024)) &&
+    Object.keys(value).every((key) =>
+      ['accountId', 'composeId', 'requestId', 'generation', 'prompt', 'followUp'].includes(key)
+    )
+  )
+}
+
 interface ProviderModelRequest extends Omit<AppInfoRequest, 'args'> {
   operation: 'status' | 'models' | 'codex-models'
   args: unknown[]

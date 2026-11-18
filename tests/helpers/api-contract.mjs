@@ -15,6 +15,8 @@ export const ALLOWED_API_OPERATIONS = Object.freeze([
   'connectAiMailCodex',
   'disconnectAiMailCodex',
   'generateAiMailDraft',
+  'generateAiMailWithOllama',
+  'cancelAiMailOllamaGeneration',
   'cancelAiMailGeneration',
   'onAiMailCodexStatus',
   'getOllamaStatus',

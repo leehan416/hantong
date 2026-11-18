@@ -34,6 +34,8 @@ import {
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_OLLAMA_GENERATE_CHANNEL,
+  AI_MAIL_OLLAMA_CANCEL_CHANNEL,
   AI_MAIL_CODEX_STATUS_EVENT,
   OLLAMA_STATUS_CHANNEL,
   OLLAMA_MODELS_CHANNEL,
@@ -85,6 +87,10 @@ const api: HantongApi = Object.freeze({
   connectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_CONNECT_CHANNEL),
   disconnectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_DISCONNECT_CHANNEL),
   generateAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_CODEX_GENERATE_CHANNEL, request),
+  generateAiMailWithOllama: (request) =>
+    ipcRenderer.invoke(AI_MAIL_OLLAMA_GENERATE_CHANNEL, request),
+  cancelAiMailOllamaGeneration: (requestId) =>
+    ipcRenderer.invoke(AI_MAIL_OLLAMA_CANCEL_CHANNEL, requestId),
   cancelAiMailGeneration: (requestId) =>
     ipcRenderer.invoke(AI_MAIL_CODEX_CANCEL_CHANNEL, requestId),
   onAiMailCodexStatus: (listener) => {
