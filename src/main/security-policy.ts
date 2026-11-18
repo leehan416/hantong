@@ -39,6 +39,21 @@ interface AiMailCodexRequest extends Omit<AppInfoRequest, 'args'> {
   args: unknown[]
 }
 
+interface ProviderModelRequest extends Omit<AppInfoRequest, 'args'> {
+  operation: 'status' | 'models' | 'codex-models'
+  args: unknown[]
+}
+
+export function isAllowedProviderModelRequest(request: ProviderModelRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    request.args.length === 0 &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
 const isBoundedId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 

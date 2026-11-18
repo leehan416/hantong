@@ -9,7 +9,8 @@ import { CODEX_RUNTIME_PIN, type CodexRuntimePin } from './codex-runtime-pin'
 import type {
   CodexConnectionStatus,
   CodexGenerationRequest,
-  CodexGenerationResult
+  CodexGenerationResult,
+  CodexModelInventory
 } from '../shared/ipc'
 
 const HOME_MARKER = '.hantong-codex-isolation'
@@ -126,6 +127,10 @@ class AppServerRpcError extends Error {
     super(message)
     this.category = category
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function validPrivateStat(stat: Awaited<ReturnType<typeof lstat>>, directory: boolean): boolean {
@@ -278,6 +283,7 @@ function redactReason(message: string, type: string | undefined): string {
 
 export function createAiMailCodexService(options: ServiceOptions = {}): {
   getStatus: () => CodexConnectionStatus
+  getModels: () => Promise<CodexModelInventory>
   connect: () => Promise<CodexConnectionStatus>
   disconnect: () => Promise<CodexConnectionStatus>
   generate: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
@@ -813,6 +819,55 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
     }
   }
 
+  async function getModels(): Promise<CodexModelInventory> {
+    const processState = runtime
+    if (disposed || status.state !== 'connected' || !processState)
+      return { state: 'unavailable', reason: 'not_connected' }
+    try {
+      const models: import('../shared/ipc').CodexModel[] = []
+      let cursor: string | null = null
+      const seenCursors = new Set<string>()
+      for (let page = 0; page < 4; page += 1) {
+        const result = await rpc(processState, 'model/list', {
+          limit: 100,
+          cursor,
+          includeHidden: false
+        })
+        if (!isRecord(result) || !Array.isArray(result.data) || result.data.length > 100)
+          throw new Error('invalid_model_catalog')
+        for (const item of result.data) {
+          if (!isRecord(item) || item.hidden === true) continue
+          const id = typeof item.id === 'string' ? item.id : ''
+          const model = typeof item.model === 'string' ? item.model : id
+          const displayName = typeof item.displayName === 'string' ? item.displayName : id
+          if (
+            !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(id) ||
+            !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(model) ||
+            displayName.length === 0 ||
+            displayName.length > 128 ||
+            (Array.isArray(item.inputModalities) && !item.inputModalities.includes('text'))
+          )
+            continue
+          models.push({ id, model, displayName })
+        }
+        if (result.nextCursor === null || result.nextCursor === undefined)
+          return { state: 'available', models }
+        if (
+          typeof result.nextCursor !== 'string' ||
+          result.nextCursor.length > 256 ||
+          seenCursors.has(result.nextCursor)
+        )
+          throw new Error('invalid_model_cursor')
+        cursor = result.nextCursor
+        seenCursors.add(cursor)
+      }
+      if (cursor !== null) throw new Error('model_catalog_page_limit')
+      return { state: 'available', models }
+    } catch {
+      return { state: 'unavailable', reason: 'discovery_failed' }
+    }
+  }
+
   function interruptGeneration(entry: ActiveGeneration): void {
     entry.cancelRequested = true
     if (entry.interruptPromise) return
@@ -1213,6 +1268,7 @@ export function createAiMailCodexService(options: ServiceOptions = {}): {
 
   return {
     getStatus: (): CodexConnectionStatus => status,
+    getModels,
     connect,
     disconnect: async (): Promise<CodexConnectionStatus> => {
       lifecycleGeneration += 1

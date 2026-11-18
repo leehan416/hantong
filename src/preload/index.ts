@@ -35,6 +35,9 @@ import {
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
   AI_MAIL_CODEX_STATUS_EVENT,
+  OLLAMA_STATUS_CHANNEL,
+  OLLAMA_MODELS_CHANNEL,
+  CODEX_MODELS_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
@@ -92,6 +95,9 @@ const api: HantongApi = Object.freeze({
     ipcRenderer.on(AI_MAIL_CODEX_STATUS_EVENT, handler)
     return () => ipcRenderer.removeListener(AI_MAIL_CODEX_STATUS_EVENT, handler)
   },
+  getOllamaStatus: () => ipcRenderer.invoke(OLLAMA_STATUS_CHANNEL),
+  getOllamaModels: () => ipcRenderer.invoke(OLLAMA_MODELS_CHANNEL),
+  getCodexModels: () => ipcRenderer.invoke(CODEX_MODELS_CHANNEL),
   getLoginLaunchState: () => ipcRenderer.invoke(LOGIN_LAUNCH_GET_CHANNEL),
   setLoginLaunchEnabled: (enabled) => ipcRenderer.invoke(LOGIN_LAUNCH_SET_CHANNEL, enabled),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),

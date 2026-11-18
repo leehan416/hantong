@@ -66,6 +66,24 @@ function fixture(overrides = {}) {
         status: enabled ? 'enabled' : 'disabled'
       })
     },
+    aiMailCodex: {
+      getStatus: () => ({ state: 'connected' }),
+      getModels: async () => ({
+        state: 'available',
+        models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+      }),
+      connect: async () => ({ state: 'connected' }),
+      disconnect: async () => ({ state: 'disconnected' }),
+      generate: async () => ({ ok: false, error: 'unsupported', reason: 'not_ready' }),
+      cancel: async () => ({ cancelled: false }),
+      dispose: async () => undefined
+    },
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [{ name: 'qwen3:8b', size: 100 }],
+      validateModel: async () => undefined,
+      dispose: () => undefined
+    },
     ...overrides
   }
   registerMainIpc(dependencies)
@@ -77,6 +95,285 @@ function invokeEvent(owner, sender = owner.webContents) {
   sender.mainFrame = frame
   return { sender, senderFrame: frame }
 }
+
+test('provider model IPC is owner-frame only and Codex returns the live catalog contract', async () => {
+  const { owner } = fixture()
+  const event = invokeEvent(owner)
+  const status = handlers.get('hantong:ollama-status')
+  const models = handlers.get('hantong:ollama-models')
+  const codexModels = handlers.get('hantong:codex-models')
+  assert.deepEqual(JSON.parse(JSON.stringify(await status(event))), {
+    state: 'available',
+    cloudDisabled: true
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(await models(event))), [
+    { name: 'qwen3:8b', size: 100 }
+  ])
+  assert.deepEqual(JSON.parse(JSON.stringify(await codexModels(event))), {
+    state: 'available',
+    models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+  })
+  assert.throws(() => status(event, 'http://127.0.0.1'), /Request rejected/)
+  assert.throws(() => models(invokeEvent(owner, {})), /Request rejected/)
+})
+
+test('settings IPC validates local Ollama model selection before persistence', async () => {
+  const updates = []
+  let modelChecks = 0
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates.push(patch)
+      Object.assign(saved, patch)
+      return { ...saved, ...patch }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async (name) => {
+        modelChecks++
+        if (name !== 'qwen3:8b') throw new Error('Ollama model is not available as a local model')
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  await assert.rejects(
+    update(event, { aiMailProvider: 'ollama' }),
+    /Select an available Ollama model first/
+  )
+  await assert.rejects(
+    update(event, { ollamaModel: 'remote:latest' }),
+    /not available as a local model/
+  )
+  assert.deepEqual(updates, [])
+  await update(event, { ollamaModel: 'qwen3:8b' })
+  await update(event, { aiMailProvider: 'ollama' })
+  await assert.rejects(
+    update(event, { ollamaModel: null }),
+    /Select an available Ollama model first/
+  )
+  assert.equal(modelChecks, 3)
+  assert.deepEqual(updates, [{ ollamaModel: 'qwen3:8b' }, { aiMailProvider: 'ollama' }])
+})
+
+test('concurrent settings updates validate against the latest persisted provider and model', async () => {
+  const validation = deferred()
+  const validationStarted = deferred()
+  const updates = []
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: 'qwen3:8b',
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates.push(patch)
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async () => {
+        validationStarted.resolve()
+        await validation.promise
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  const switchProvider = update(event, { aiMailProvider: 'ollama' })
+  await validationStarted.promise
+  const clearModel = update(event, { ollamaModel: null })
+  validation.resolve()
+
+  await switchProvider
+  await assert.rejects(clearModel, /Select an available Ollama model first/)
+  assert.deepEqual(saved, {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'ollama',
+    ollamaModel: 'qwen3:8b',
+    codexModel: null
+  })
+  assert.deepEqual(updates, [{ aiMailProvider: 'ollama' }])
+})
+
+test('settings update rejects when its owner window is replaced during model validation', async () => {
+  const validation = deferred()
+  const validationStarted = deferred()
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  let owner = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  fixture({
+    window: () => owner,
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async () => {
+        validationStarted.resolve()
+        await validation.promise
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  const pending = update(event, { ollamaModel: 'qwen3:8b' })
+  await validationStarted.promise
+  owner = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  validation.resolve()
+
+  await assert.rejects(pending, /Request rejected/)
+  assert.equal(saved.ollamaModel, null)
+})
+
+test('settings update rejects when its owner frame navigates during model validation', async () => {
+  const validation = deferred()
+  const validationStarted = deferred()
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async () => {
+        validationStarted.resolve()
+        await validation.promise
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  const pending = update(event, { ollamaModel: 'qwen3:8b' })
+  await validationStarted.promise
+  event.senderFrame.url = 'file:///untrusted/index.html'
+  validation.resolve()
+
+  await assert.rejects(pending, /Request rejected/)
+  assert.equal(saved.ollamaModel, null)
+})
+
+test('non-provider settings remain editable when selected Ollama is offline', async () => {
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'ollama',
+    ollamaModel: 'qwen3:8b',
+    codexModel: null
+  }
+  let updates = 0
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates++
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'unavailable', cloudDisabled: false }),
+      getModels: async () => [],
+      validateModel: async () => {
+        throw new Error('Ollama is offline')
+      },
+      dispose: () => undefined
+    }
+  })
+
+  const result = await handlers.get('hantong:settings-update')(invokeEvent(owner), {
+    theme: 'dark'
+  })
+
+  assert.equal(result.theme, 'dark')
+  assert.equal(result.aiMailProvider, 'ollama')
+  assert.equal(updates, 1)
+})
+
+test('Codex model settings accept only entries from the connected app-server catalog', async () => {
+  const updates = []
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates.push(patch)
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    aiMailCodex: {
+      getStatus: () => ({ state: 'connected' }),
+      getModels: async () => ({
+        state: 'available',
+        models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+      })
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  await assert.rejects(
+    update(event, { codexModel: 'invented-model' }),
+    /Select an available Codex model first/
+  )
+  await update(event, { codexModel: 'gpt-6.1-sol' })
+  assert.deepEqual(updates, [{ codexModel: 'gpt-6.1-sol' }])
+})
 
 test('trusted URL from a foreign sender is rejected by IPC ownership checks', () => {
   const { owner } = fixture()

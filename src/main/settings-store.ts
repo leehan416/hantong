@@ -22,8 +22,14 @@ const FIELDS = {
   hideGmailLogo: BOOLEAN,
   hideHeaderButtons: BOOLEAN,
   hideSidePanel: BOOLEAN,
-  hideStoragePromo: BOOLEAN
-} as const satisfies Record<keyof AppSettingsPatch, readonly (string | boolean)[]>
+  hideStoragePromo: BOOLEAN,
+  aiMailProvider: ['codex', 'ollama']
+} as const satisfies Record<
+  Exclude<keyof AppSettingsPatch, 'ollamaModel' | 'codexModel'>,
+  readonly (string | boolean)[]
+>
+
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -39,10 +45,13 @@ export function isSettingsPatch(value: unknown): value is AppSettingsPatch {
   const keys = Object.keys(value)
   return (
     keys.length > 0 &&
-    keys.every(
-      (key) =>
-        Object.hasOwn(FIELDS, key) && isOption(FIELDS[key as keyof typeof FIELDS], value[key])
-    )
+    keys.every((key) => {
+      if (key === 'ollamaModel' || key === 'codexModel')
+        return (
+          value[key] === null || (typeof value[key] === 'string' && MODEL_NAME.test(value[key]))
+        )
+      return Object.hasOwn(FIELDS, key) && isOption(FIELDS[key as keyof typeof FIELDS], value[key])
+    })
   )
 }
 
@@ -52,6 +61,18 @@ export function parseSettings(value: unknown): AppSettings {
   const settings: AppSettings = { ...DEFAULT_SETTINGS }
   for (const key of Object.keys(FIELDS) as (keyof typeof FIELDS)[]) {
     if (isOption(FIELDS[key], value[key])) Object.assign(settings, { [key]: value[key] })
+  }
+  if (
+    value.ollamaModel === null ||
+    (typeof value.ollamaModel === 'string' && MODEL_NAME.test(value.ollamaModel))
+  ) {
+    settings.ollamaModel = value.ollamaModel
+  }
+  if (
+    value.codexModel === null ||
+    (typeof value.codexModel === 'string' && MODEL_NAME.test(value.codexModel))
+  ) {
+    settings.codexModel = value.codexModel
   }
   // `hideGemini` was folded into `hideHeaderButtons`; keep Gemini hidden for users who hid it.
   if (value.hideHeaderButtons === undefined && value.hideGemini === true) {

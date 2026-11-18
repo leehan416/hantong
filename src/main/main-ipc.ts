@@ -46,6 +46,9 @@ import {
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
+  OLLAMA_STATUS_CHANNEL,
+  OLLAMA_MODELS_CHANNEL,
+  CODEX_MODELS_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
@@ -65,6 +68,7 @@ import {
   isTrustedRendererUrl,
   isAllowedLoginLaunchRequest,
   isAllowedAiMailCodexRequest,
+  isAllowedProviderModelRequest,
   isAllowedAiMailComposeTargetRequest,
   isAllowedAiMailComposeMutationRequest,
   isAllowedAiMailReadRequest,
@@ -73,6 +77,7 @@ import {
 } from './security-policy'
 import type { createLoginLaunchController } from './login-launch'
 import type { createAiMailCodexService } from './ai-mail-codex-service'
+import type { createOllamaService } from './ollama-service'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
 
@@ -97,6 +102,7 @@ export interface MainIpcDependencies {
   readonly createWindow: () => void
   readonly loginLaunch: ReturnType<typeof createLoginLaunchController>
   readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
+  readonly ollama: ReturnType<typeof createOllamaService>
   readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
   readonly readTarget: () => ReturnType<typeof createGmailReadTargetService> | null
 }
@@ -331,6 +337,32 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
           args[0] as import('../shared/ipc').CodexGenerationRequest
         )
       return dependencies.aiMailCodex.cancel(args[0] as string)
+    })
+  }
+  for (const [channel, operation] of [
+    [OLLAMA_STATUS_CHANNEL, 'status'],
+    [OLLAMA_MODELS_CHANNEL, 'models'],
+    [CODEX_MODELS_CHANNEL, 'codex-models']
+  ] as const) {
+    ipcMain.handle(channel, (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const ownerAlive = owner !== null && !owner.isDestroyed()
+      if (
+        !isAllowedProviderModelRequest({
+          ownerAlive,
+          senderMatches: ownerAlive && event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? '',
+          rendererUrl: dependencies.rendererUrl,
+          operation,
+          args
+        })
+      )
+        throw new Error('Request rejected')
+      if (operation === 'status') return dependencies.ollama.getStatus()
+      if (operation === 'models') return dependencies.ollama.getModels()
+      return dependencies.aiMailCodex.getModels()
     })
   }
   for (const [channel, operation] of [
@@ -573,21 +605,88 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     if (!settingsStore) throw new Error('Request rejected')
     return settingsStore.get()
   })
+  let settingsUpdateQueue: Promise<void> = Promise.resolve()
   ipcMain.handle(SETTINGS_UPDATE_CHANNEL, (event, ...args: unknown[]) => {
     if (!settingsRequestAllowed(event, 'update', args)) {
       throw new Error('Request rejected')
     }
-    const settingsStore = dependencies.settings()
-    if (!settingsStore) throw new Error('Request rejected')
-    const settings = settingsStore.update(args[0] as AppSettingsPatch) // validated by the policy
-    nativeTheme.themeSource = settings.theme
-    dependencies.views()?.setLayout(settings.accountSelectorPosition, settings.sidebarCollapsed)
-    for (const contents of webContents.getAllWebContents())
-      dependencies.gmailCleanup.apply(contents)
-    dependencies.installAppMenu()
     const owner = dependencies.window()
-    if (owner && !owner.isDestroyed()) owner.webContents.send(SETTINGS_EVENT, settings)
-    return settings
+    const frame = event.senderFrame
+    const frameUrl = frame?.url ?? ''
+    const requestStillAllowed = (settingsStore?: ReturnType<typeof createSettingsStore>): boolean =>
+      Boolean(
+        owner &&
+        frame &&
+        dependencies.window() === owner &&
+        !owner.isDestroyed() &&
+        (!settingsStore || dependencies.settings() === settingsStore) &&
+        event.senderFrame === frame &&
+        event.sender.mainFrame === frame &&
+        frame.url === frameUrl &&
+        isAllowedSettingsRequest({
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches: event.senderFrame === frame && event.sender.mainFrame === frame,
+          senderUrl: frame.url,
+          rendererUrl: dependencies.rendererUrl,
+          operation: 'update',
+          args
+        })
+      )
+    const patch = args[0] as AppSettingsPatch
+    const operation = settingsUpdateQueue.then(async () => {
+      if (!requestStillAllowed()) throw new Error('Request rejected')
+      const settingsStore = dependencies.settings()
+      if (!settingsStore) throw new Error('Request rejected')
+      const currentSettings = settingsStore.get()
+      const nextProvider = patch.aiMailProvider ?? currentSettings.aiMailProvider
+      const selectedModel =
+        patch.ollamaModel === undefined ? currentSettings.ollamaModel : patch.ollamaModel
+      const ollamaProviderChanged =
+        patch.aiMailProvider === 'ollama' && currentSettings.aiMailProvider !== 'ollama'
+      if (nextProvider === 'ollama' && selectedModel === null)
+        throw new Error('Select an available Ollama model first')
+      if (
+        (patch.ollamaModel !== undefined && patch.ollamaModel !== null) ||
+        ollamaProviderChanged
+      ) {
+        if (selectedModel === null) throw new Error('Select an available Ollama model first')
+        await dependencies.ollama.validateModel(selectedModel)
+      }
+
+      const selectedCodexModel =
+        patch.codexModel === undefined ? currentSettings.codexModel : patch.codexModel
+      const codexProviderChanged =
+        patch.aiMailProvider === 'codex' && currentSettings.aiMailProvider !== 'codex'
+      if (
+        ((patch.codexModel !== undefined && patch.codexModel !== null) || codexProviderChanged) &&
+        selectedCodexModel !== null
+      ) {
+        const inventory = await dependencies.aiMailCodex.getModels()
+        if (
+          inventory.state !== 'available' ||
+          !inventory.models.some(
+            (model) => model.id === selectedCodexModel || model.model === selectedCodexModel
+          )
+        )
+          throw new Error('Select an available Codex model first')
+      }
+      if (!requestStillAllowed(settingsStore)) throw new Error('Request rejected')
+      if (!owner) throw new Error('Request rejected')
+      const settings = settingsStore.update(patch) // validated by the policy
+      nativeTheme.themeSource = settings.theme
+      dependencies.views()?.setLayout(settings.accountSelectorPosition, settings.sidebarCollapsed)
+      for (const contents of webContents.getAllWebContents())
+        dependencies.gmailCleanup.apply(contents)
+      dependencies.installAppMenu()
+      owner.webContents.send(SETTINGS_EVENT, settings)
+      return settings
+    })
+    settingsUpdateQueue = operation.then(
+      () => undefined,
+      () => undefined
+    )
+    return operation
   })
   ipcMain.handle(SETTINGS_PANEL_CHANNEL, (event, ...args: unknown[]) => {
     if (!settingsRequestAllowed(event, 'panel', args)) throw new Error('Request rejected')

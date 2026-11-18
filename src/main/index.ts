@@ -49,6 +49,7 @@ import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
 import { createLoginLaunchController } from './login-launch'
 import { createLoginLaunchStartupController } from './login-launch-startup'
 import { createAiMailCodexService } from './ai-mail-codex-service'
+import { createOllamaService } from './ollama-service'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
 import {
@@ -128,6 +129,7 @@ const aiMailCodex = createAiMailCodexService({
     if (window && !window.isDestroyed()) window.webContents.send(AI_MAIL_CODEX_STATUS_EVENT, status)
   }
 })
+const ollama = createOllamaService()
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
@@ -172,6 +174,7 @@ function prepareApplicationShutdown(): Promise<void> {
   notificationRecoveryRuntime.resolveAll()
   const cleanup = Promise.all([
     aiMailCodex.dispose(),
+    Promise.resolve(ollama.dispose()),
     googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
     relayRuntime?.dispose() ?? Promise.resolve()
   ]).then(() => undefined)
@@ -650,6 +653,7 @@ void app
       createWindow,
       loginLaunch,
       aiMailCodex,
+      ollama,
       composeTarget: () => composeTargetService,
       readTarget: () => readTargetService
     })

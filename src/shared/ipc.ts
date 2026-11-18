@@ -39,6 +39,9 @@ export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnec
 export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
 export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
 export const AI_MAIL_CODEX_STATUS_EVENT = 'hantong:ai-mail-codex-status-change'
+export const OLLAMA_STATUS_CHANNEL = 'hantong:ollama-status'
+export const OLLAMA_MODELS_CHANNEL = 'hantong:ollama-models'
+export const CODEX_MODELS_CHANNEL = 'hantong:codex-models'
 export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-target-status'
 export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
 export const AI_MAIL_COMPOSE_APPLY_CHANNEL = 'hantong:ai-mail-compose-apply'
@@ -96,6 +99,24 @@ export type GoogleConnectionStatus = {
 export type CodexConnectionStatus =
   | { state: 'unsupported'; reason: 'product_owned_executable_unavailable' }
   | { state: 'disconnected' | 'connecting' | 'connected' | 'error'; reason?: string }
+
+export type OllamaConnectionStatus =
+  { state: 'available'; cloudDisabled: true } | { state: 'unavailable'; cloudDisabled: false }
+
+export interface OllamaModel {
+  name: string
+  size: number | null
+}
+
+export interface CodexModel {
+  id: string
+  model: string
+  displayName: string
+}
+
+export type CodexModelInventory =
+  | { state: 'unavailable'; reason: 'not_connected' | 'discovery_failed' }
+  | { state: 'available'; models: CodexModel[] }
 
 export type ComposeTargetStatus =
   | { status: 'none' | 'stale' | 'access_locked' }
@@ -238,6 +259,9 @@ export interface HantongApi {
   generateAiMailDraft: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
   cancelAiMailGeneration: (requestId: string) => Promise<{ cancelled: boolean; reason?: string }>
   onAiMailCodexStatus: (listener: (status: CodexConnectionStatus) => void) => () => void
+  getOllamaStatus: () => Promise<OllamaConnectionStatus>
+  getOllamaModels: () => Promise<OllamaModel[]>
+  getCodexModels: () => Promise<CodexModelInventory>
   getLoginLaunchState: () => Promise<LoginLaunchState>
   setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>

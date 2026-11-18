@@ -618,6 +618,46 @@ test('ChatGPT session connects while generation fails closed without a verified 
   await service.dispose()
 })
 
+test('Codex model discovery uses the app-server catalog without starting a model turn', async (t) => {
+  const { service, spawned } = await setup(t, ({ child, packet }) => {
+    let result = {}
+    if (packet.method === 'account/read') result = { account: { type: 'chatgpt' } }
+    if (packet.method === 'model/list')
+      result = {
+        data: [
+          {
+            id: 'gpt-6.1-sol',
+            model: 'gpt-6.1-sol',
+            displayName: 'GPT 6.1 Sol',
+            hidden: false,
+            inputModalities: ['text']
+          },
+          {
+            id: 'hidden-model',
+            model: 'hidden-model',
+            displayName: 'Hidden',
+            hidden: true,
+            inputModalities: ['text']
+          }
+        ],
+        nextCursor: null
+      }
+    if (packet.id) child.stdout.write(`${JSON.stringify({ id: packet.id, result })}\n`)
+  })
+  await service.connect()
+  assert.deepEqual(plain(await service.getModels()), {
+    state: 'available',
+    models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+  })
+  const modelRequest = spawned[0].writes.find((packet) => packet.method === 'model/list')
+  assert.deepEqual(modelRequest.params, { limit: 100, cursor: null, includeHidden: false })
+  assert.equal(
+    spawned[0].writes.some((packet) => packet.method === 'turn/start'),
+    false
+  )
+  await service.dispose()
+})
+
 test('verified synthetic policy permits bounded app-server turns and fences cancellation', async (t) => {
   const toolFeatures = [
     'shell_tool',
