@@ -5,13 +5,13 @@ import { runInNewContext } from 'node:vm'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createGmailComposeTargetService } = loadTypeScript(
-  new URL('../src/main/gmail-compose-target.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-compose-target.ts', import.meta.url)
 )
 const { gmailComposeTargetPageSource } = loadTypeScript(
-  new URL('../src/main/gmail-compose-target.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-compose-target.ts', import.meta.url)
 )
 const { isAllowedAiMailComposeTargetRequest } = loadTypeScript(
-  new URL('../src/main/security-policy.ts', import.meta.url)
+  new URL('../src/main/security/security-policy.ts', import.meta.url)
 )
 
 const renderer = 'file:///Applications/Hantong.app/Contents/Resources/app/index.html'
@@ -1611,9 +1611,12 @@ test('snapshot IPC rejects a ready result whose Main target lease changed before
     nativeTheme: {},
     webContents: { getAllWebContents: () => [] }
   }
-  const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
-    electron
-  })
+  const { registerMainIpc } = loadTypeScript(
+    new URL('../src/main/ipc/main-ipc.ts', import.meta.url),
+    {
+      electron
+    }
+  )
   let activeAccountId = 'account-a'
   const ownerContents = {
     send() {
@@ -1705,9 +1708,12 @@ test('snapshot IPC rejects a renderer that navigates while the snapshot is pendi
     nativeTheme: {},
     webContents: { getAllWebContents: () => [] }
   }
-  const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
-    electron
-  })
+  const { registerMainIpc } = loadTypeScript(
+    new URL('../src/main/ipc/main-ipc.ts', import.meta.url),
+    {
+      electron
+    }
+  )
   const mainFrame = { url: renderer }
   const ownerContents = {
     mainFrame,

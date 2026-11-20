@@ -1,4 +1,4 @@
-import type { HantongApi } from '../shared/ipc'
+import type { HantongApi } from '~/shared/ipc'
 
 declare global {
   interface Window {

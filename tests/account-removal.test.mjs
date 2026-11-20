@@ -15,7 +15,7 @@ function fixture({ failCleanup = false } = {}) {
   let fail = failCleanup
   const events = []
   const controllerModule = loadTypeScript(
-    new URL('../src/main/account-removal.ts', import.meta.url)
+    new URL('../src/main/accounts/account-removal.ts', import.meta.url)
   )
   const controller = controllerModule.createAccountRemovalController(
     {
@@ -66,7 +66,7 @@ test('account removal disconnects the API grant after view disposal and before s
     activeAccountId: firstId
   }
   const { createAccountRemovalController } = loadTypeScript(
-    new URL('../src/main/account-removal.ts', import.meta.url)
+    new URL('../src/main/accounts/account-removal.ts', import.meta.url)
   )
   const controller = createAccountRemovalController(
     {
@@ -98,7 +98,7 @@ test('failed API disconnection keeps account metadata and does not clear the web
     activeAccountId: firstId
   }
   const { createAccountRemovalController } = loadTypeScript(
-    new URL('../src/main/account-removal.ts', import.meta.url)
+    new URL('../src/main/accounts/account-removal.ts', import.meta.url)
   )
   const controller = createAccountRemovalController(
     {
@@ -226,7 +226,7 @@ test('a closed owner after confirmation prevents native cleanup and view changes
 test('session cleanup closes connections and clears only the requested account partition', async () => {
   const calls = []
   const { createAccountSessionCleaner } = loadTypeScript(
-    new URL('../src/main/account-session-cleanup.ts', import.meta.url),
+    new URL('../src/main/accounts/account-session-cleanup.ts', import.meta.url),
     { './account-session': { getAccountSession: (id) => id } }
   )
   const clean = createAccountSessionCleaner((id) => ({

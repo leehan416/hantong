@@ -5,10 +5,10 @@ import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const config = loadTypeScript(new URL('../src/main/google-oauth-config.ts', import.meta.url))
-const pkce = loadTypeScript(new URL('../src/main/google-pkce.ts', import.meta.url))
+const config = loadTypeScript(new URL('../src/main/google/google-oauth-config.ts', import.meta.url))
+const pkce = loadTypeScript(new URL('../src/main/google/google-pkce.ts', import.meta.url))
 const authorization = loadTypeScript(
-  new URL('../src/main/google-authorization.ts', import.meta.url)
+  new URL('../src/main/google/google-authorization.ts', import.meta.url)
 )
 
 const clientId = 'desktop-client.apps.googleusercontent.com'

@@ -4,7 +4,7 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { GmailMetadataFailure, registerGmailWatch, stopGmailWatch } = loadTypeScript(
-  new URL('../src/main/gmail-metadata.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-metadata.ts', import.meta.url)
 )
 
 function options(

@@ -158,7 +158,7 @@ Apache License 2.0 is included at \`resources/codex-runtime/LICENSE\` and shippe
 inside the application. The runtime binary is downloaded and verified during
 \`npm run provision:codex-runtime\`; archive and executable SHA-256 pins are
 recorded in \`scripts/provision-codex-runtime.mjs\` and
-\`src/main/codex-runtime-pin.ts\`.`)
+\`src/main/ai/codex/codex-runtime-pin.ts\`.`)
 
 const header = `# Third-Party Notices
 

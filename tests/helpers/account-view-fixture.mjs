@@ -43,12 +43,12 @@ export function fixture({
     })
   }
   const manager = loadTypeScript(
-    new URL('../../src/main/account-view-manager.ts', import.meta.url),
+    new URL('../../src/main/accounts/account-view-manager.ts', import.meta.url),
     {
       setTimeout,
       clearTimeout,
       './account-session': { getAccountSession: (id) => id },
-      './gmail-view': {
+      '~/main/gmail/gmail-view': {
         createGmailView: (session, callbacks) => {
           const webContents = new EventEmitter()
           webContents.url = 'https://mail.google.com/mail/u/0/'

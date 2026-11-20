@@ -4,15 +4,18 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const handlers = new Map()
-const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
-  electron: {
-    app: { getName: () => 'Hantong', getVersion: () => '1.0', getLocale: () => 'en-US' },
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    nativeTheme: {},
-    webContents: { getAllWebContents: () => [] }
+const { registerMainIpc } = loadTypeScript(
+  new URL('../src/main/ipc/main-ipc.ts', import.meta.url),
+  {
+    electron: {
+      app: { getName: () => 'Hantong', getVersion: () => '1.0', getLocale: () => 'en-US' },
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+      nativeTheme: {},
+      webContents: { getAllWebContents: () => [] }
+    }
   }
-})
+)
 const accountId = '550e8400-e29b-41d4-a716-446655440000'
 
 function deferred() {

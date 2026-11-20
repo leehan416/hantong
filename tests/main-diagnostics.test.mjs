@@ -7,12 +7,14 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { sanitizeNavigationDiagnostic } = loadTypeScript(
-  new URL('../src/main/navigation-diagnostic.ts', import.meta.url)
+  new URL('../src/main/security/navigation-diagnostic.ts', import.meta.url)
 )
 
-const diagnostics = loadTypeScript(new URL('../src/main/main-diagnostics.ts', import.meta.url))
+const diagnostics = loadTypeScript(
+  new URL('../src/main/diagnostics/main-diagnostics.ts', import.meta.url)
+)
 const { isEvent } = loadTypeScript(
-  new URL('../src/main/main-diagnostics-validation.ts', import.meta.url)
+  new URL('../src/main/diagnostics/main-diagnostics-validation.ts', import.meta.url)
 )
 
 test('diagnostic records allowlisted fields and anonymous stable account aliases', () => {

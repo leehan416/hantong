@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createOllamaService } = loadTypeScript(
-  new URL('../src/main/ollama-service.ts', import.meta.url)
+  new URL('../src/main/ai/ollama/ollama-service.ts', import.meta.url)
 )
 
 function response(status, value, headers = {}) {

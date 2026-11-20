@@ -7,10 +7,10 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const storeModule = loadTypeScript(
-  new URL('../src/main/google-credential-store.ts', import.meta.url)
+  new URL('../src/main/google/google-credential-store.ts', import.meta.url)
 )
 const managerModule = loadTypeScript(
-  new URL('../src/main/google-connection-manager.ts', import.meta.url)
+  new URL('../src/main/google/google-connection-manager.ts', import.meta.url)
 )
 const accountId = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
 const otherAccountId = 'b1b2c3d4-e5f6-4789-8abc-123456789abc'

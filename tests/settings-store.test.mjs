@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createSettingsStore, isSettingsPatch, parseSettings } = loadTypeScript(
-  new URL('../src/main/settings-store.ts', import.meta.url)
+  new URL('../src/main/app/settings-store.ts', import.meta.url)
 )
 const defaults = {
   version: 1,

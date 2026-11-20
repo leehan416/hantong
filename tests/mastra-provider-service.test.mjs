@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createMastraOllamaProvider } = loadTypeScript(
-  new URL('../src/main/mastra-ollama-provider.ts', import.meta.url),
+  new URL('../src/main/ai/ollama/mastra-ollama-provider.ts', import.meta.url),
   { Response: globalThis.Response, Request: globalThis.Request, Headers: globalThis.Headers }
 )
 
@@ -301,7 +301,7 @@ test('remote credential changes do not retain an old credential-bearing Agent', 
     }
   }
   const loadProvider = loadTypeScript(
-    new URL('../src/main/mastra-ollama-provider.ts', import.meta.url),
+    new URL('../src/main/ai/ollama/mastra-ollama-provider.ts', import.meta.url),
     {
       Response: globalThis.Response,
       Request: globalThis.Request,

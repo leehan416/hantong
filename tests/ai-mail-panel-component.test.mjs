@@ -4,14 +4,28 @@ import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 const { aiMailFieldFeedback } = loadTypeScript(
-  new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url)
+  new URL(
+    '../src/renderer/src/components/ai-mail/AiMailPanel/ai-mail-panel-flow.ts',
+    import.meta.url
+  )
 )
 
 test('data-sharing caption uses compact rules from the loaded panel stylesheet', async () => {
   const mainStylesheetUrl = new URL('../src/renderer/src/assets/main.css', import.meta.url)
   const mainStylesheet = await readFile(mainStylesheetUrl, 'utf8')
-  assert.match(mainStylesheet, /@import ['"]\.\/ai-mail-panel\.css['"]/)
-  const panelStylesheet = await readFile(new URL('ai-mail-panel.css', mainStylesheetUrl), 'utf8')
+  assert.doesNotMatch(mainStylesheet, /ai-mail-panel\.css/)
+  const panelComponent = await readFile(
+    new URL('../src/renderer/src/components/ai-mail/AiMailPanel/AiMailPanel.tsx', import.meta.url),
+    'utf8'
+  )
+  assert.match(panelComponent, /import ['"]\.\/ai-mail-panel\.css['"];?/)
+  const panelStylesheet = await readFile(
+    new URL(
+      '../src/renderer/src/components/ai-mail/AiMailPanel/ai-mail-panel.css',
+      import.meta.url
+    ),
+    'utf8'
+  )
   assert.match(panelStylesheet, /\.ai-mail-data-sharing\s*\{[^}]*font-size:\s*11px/s)
   assert.match(panelStylesheet, /\.ai-mail-proposal textarea\s*\{[^}]*max-height:\s*none/s)
   assert.match(panelStylesheet, /\.ai-mail-proposal textarea\s*\{[^}]*overflow:\s*hidden/s)
@@ -123,26 +137,29 @@ const read = {
 function setup(api, timers = []) {
   const hooks = createHooks()
   const { AiMailPanel } = loadTypeScript(
-    new URL('../src/renderer/src/AiMailPanel.tsx', import.meta.url),
+    new URL('../src/renderer/src/components/ai-mail/AiMailPanel/AiMailPanel.tsx', import.meta.url),
     {
       react: hooks,
       window: { api, addEventListener: () => undefined, removeEventListener: () => undefined },
       document: { activeElement: null, body: {}, querySelectorAll: () => [] },
       HTMLElement: class HTMLElement {},
+      './ai-mail-panel.css': {},
       './AiMailChatLayout': {
         AiMailChatLayout: (props) => ({
           type: 'chat-layout',
           props: { children: [props.header, props.context, props.children, props.composer] }
         })
       },
-      './SettingsDialog': {
+      '~/renderer/src/components/settings/SettingsDialog/SettingsDialog': {
         AppDialog: (props) => ({
           type: 'dialog',
           props: { ...props, children: props.children }
         })
       },
       // Header icon buttons render as plain buttons so tests find them by aria-label.
-      './IconActionButton': { IconActionButton: 'button' },
+      '~/renderer/src/components/common/IconActionButton/IconActionButton': {
+        IconActionButton: 'button'
+      },
       setTimeout: (callback, delay) => {
         const timer = { callback, delay }
         timers.push(timer)
@@ -155,7 +172,7 @@ function setup(api, timers = []) {
     }
   )
   const { messages } = loadTypeScript(
-    new URL('../src/renderer/src/app-messages.ts', import.meta.url)
+    new URL('../src/renderer/src/messages/app-messages.ts', import.meta.url)
   )
   let props = {
     activeAccountId: 'account-a',
@@ -1422,7 +1439,7 @@ test('Codex catalog and connection controls are managed in settings', async () =
 
 test('field mutation failures map to localized error and notice copy', () => {
   const { messages } = loadTypeScript(
-    new URL('../src/renderer/src/app-messages.ts', import.meta.url)
+    new URL('../src/renderer/src/messages/app-messages.ts', import.meta.url)
   )
   const copy = messages.en.aiMail
   assert.equal(aiMailFieldFeedback('error', 'apply', copy), copy.applyError)

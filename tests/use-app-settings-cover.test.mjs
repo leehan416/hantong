@@ -31,7 +31,7 @@ function loadSettingsHook(api) {
     }
   }
   const { useAppSettings } = loadTypeScript(
-    new URL('../src/renderer/src/use-app-settings.ts', import.meta.url),
+    new URL('../src/renderer/src/shell/hooks/use-app-settings.ts', import.meta.url),
     { react: hooks, window: { api } }
   )
   return () => {

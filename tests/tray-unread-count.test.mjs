@@ -4,7 +4,7 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { updateTrayUnreadCount } = loadTypeScript(
-  new URL('../src/main/tray-unread-count.ts', import.meta.url)
+  new URL('../src/main/notifications/tray-unread-count.ts', import.meta.url)
 )
 
 test('macOS tray title shows the aggregate unread count', () => {

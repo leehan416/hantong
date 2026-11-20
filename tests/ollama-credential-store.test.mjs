@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createOllamaCredentialStore } = loadTypeScript(
-  new URL('../src/main/ollama-credential-store.ts', import.meta.url)
+  new URL('../src/main/ai/ollama/ollama-credential-store.ts', import.meta.url)
 )
 
 test('remote credentials are encrypted at rest and can be cleared without returning them to UI', async () => {

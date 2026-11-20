@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const serviceSource = new URL('../src/main/ai-mail-codex-service.ts', import.meta.url)
+const serviceSource = new URL('../src/main/ai/codex/ai-mail-codex-service.ts', import.meta.url)
 const childProcessMock = {
   spawn: () => {
     throw new Error('unexpected_spawn')
@@ -21,7 +21,7 @@ function createServiceFactory(runtimePin) {
   return loadTypeScript(serviceSource, overrides).createAiMailCodexService
 }
 const { isAllowedAiMailCodexRequest } = loadTypeScript(
-  new URL('../src/main/security-policy.ts', import.meta.url)
+  new URL('../src/main/security/security-policy.ts', import.meta.url)
 )
 
 const request = {

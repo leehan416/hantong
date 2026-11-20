@@ -6,7 +6,10 @@ import ReactDOMServer from 'react-dom/server'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { AppDialog, SettingsDialog } = loadTypeScript(
-  new URL('../src/renderer/src/SettingsDialog.tsx', import.meta.url),
+  new URL(
+    '../src/renderer/src/components/settings/SettingsDialog/SettingsDialog.tsx',
+    import.meta.url
+  ),
   {
     'react/jsx-runtime': {
       Fragment: 'fragment',
@@ -82,7 +85,10 @@ test('shared native dialog prevents implicit close and delegates Escape cancella
 test('AgentSettings scopes Ollama fields and status to the active provider including pending selection', async () => {
   const { readFile } = await import('node:fs/promises')
   const source = await readFile(
-    new URL('../src/renderer/src/AgentSettings.tsx', import.meta.url),
+    new URL(
+      '../src/renderer/src/components/settings/AgentSettings/AgentSettings.tsx',
+      import.meta.url
+    ),
     'utf8'
   )
   assert.match(source, /activeProvider === 'ollama' && settings\?\.ollamaMode === 'remote'/)
@@ -94,11 +100,14 @@ test('AgentSettings scopes Ollama fields and status to the active provider inclu
 
 test('Codex settings do not display the Ollama connection mode selector', () => {
   const { AgentSettings } = loadTypeScript(
-    new URL('../src/renderer/src/AgentSettings.tsx', import.meta.url),
+    new URL(
+      '../src/renderer/src/components/settings/AgentSettings/AgentSettings.tsx',
+      import.meta.url
+    ),
     { window: { api: {} } }
   )
   const { messages } = loadTypeScript(
-    new URL('../src/renderer/src/app-messages.ts', import.meta.url)
+    new URL('../src/renderer/src/messages/app-messages.ts', import.meta.url)
   )
   const markup = ReactDOMServer.renderToStaticMarkup(
     React.createElement(AgentSettings, {
@@ -153,7 +162,10 @@ test('stale persisted local model keeps the Ollama picker reachable from Codex',
     }
   })()
   const { AgentSettings } = loadTypeScript(
-    new URL('../src/renderer/src/AgentSettings.tsx', import.meta.url),
+    new URL(
+      '../src/renderer/src/components/settings/AgentSettings/AgentSettings.tsx',
+      import.meta.url
+    ),
     {
       react: hooks,
       window: {
@@ -166,11 +178,11 @@ test('stale persisted local model keeps the Ollama picker reachable from Codex',
           onAiMailCodexStatus: () => () => undefined
         }
       },
-      './SettingsDialog': { SettingsRow: (props) => ({ type: 'row', props }) }
+      '../SettingsDialog/SettingsDialog': { SettingsRow: (props) => ({ type: 'row', props }) }
     }
   )
   const { messages } = loadTypeScript(
-    new URL('../src/renderer/src/app-messages.ts', import.meta.url)
+    new URL('../src/renderer/src/messages/app-messages.ts', import.meta.url)
   )
   const settings = {
     aiMailProvider: 'codex',

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { normalizeRemoteOllamaEndpoint, isValidRemoteOllamaEndpoint } = loadTypeScript(
-  new URL('../src/main/ai-provider-policy.ts', import.meta.url)
+  new URL('../src/main/ai/ai-provider-policy.ts', import.meta.url)
 )
 
 test('remote Ollama endpoints require HTTPS and normalize to a versioned API root', () => {

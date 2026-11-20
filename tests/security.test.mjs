@@ -19,7 +19,7 @@ const {
   isAllowedOllamaCredentialRequest,
   isAllowedAiMailOllamaRequest,
   isTrustedRendererUrl
-} = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
+} = loadTypeScript(new URL('../src/main/security/security-policy.ts', import.meta.url))
 const policy = {
   isAllowedExternalUrl,
   isAllowedAppInfoRequest,

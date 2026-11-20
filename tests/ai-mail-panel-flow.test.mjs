@@ -16,7 +16,12 @@ const {
   applyAiMailFieldsTogether,
   isAiMailConversationVisible,
   chooseNewestComposeCandidate
-} = loadTypeScript(new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url))
+} = loadTypeScript(
+  new URL(
+    '../src/renderer/src/components/ai-mail/AiMailPanel/ai-mail-panel-flow.ts',
+    import.meta.url
+  )
+)
 
 const target = {
   status: 'ready',

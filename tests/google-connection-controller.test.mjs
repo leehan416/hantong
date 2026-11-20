@@ -8,7 +8,9 @@ const {
   GoogleConnectionController,
   GoogleConnectionControllerPool,
   hasPendingGoogleConnection
-} = loadTypeScript(new URL('../src/renderer/src/google-connection-controller.ts', import.meta.url))
+} = loadTypeScript(
+  new URL('../src/renderer/src/shell/controllers/google-connection-controller.ts', import.meta.url)
+)
 
 function deferred() {
   let resolve

@@ -11,7 +11,10 @@ import ts from 'typescript'
 const require = createRequire(import.meta.url)
 const module = { exports: {} }
 const source = readFileSync(
-  new URL('../src/renderer/src/AccountAccessGate.tsx', import.meta.url),
+  new URL(
+    '../src/renderer/src/components/accounts/AccountAccessGate/AccountAccessGate.tsx',
+    import.meta.url
+  ),
   'utf8'
 )
 const compiled = ts.transpileModule(source, {

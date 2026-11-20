@@ -4,7 +4,10 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { AiMailMarkdown } = loadTypeScript(
-  new URL('../src/renderer/src/ai-mail-markdown.tsx', import.meta.url)
+  new URL(
+    '../src/renderer/src/components/ai-mail/AiMailMarkdown/AiMailMarkdown.tsx',
+    import.meta.url
+  )
 )
 
 function elements(node, result = []) {

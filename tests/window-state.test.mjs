@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createWindowStateStore, fitWindowBounds, parseWindowState } = loadTypeScript(
-  new URL('../src/main/window-state.ts', import.meta.url)
+  new URL('../src/main/app/window-state.ts', import.meta.url)
 )
 const laptop = { x: 0, y: 25, width: 1440, height: 875 }
 const external = { x: 1440, y: 0, width: 2560, height: 1415 }

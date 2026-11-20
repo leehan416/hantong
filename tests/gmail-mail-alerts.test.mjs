@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createGmailMailAlerts, senderName } = loadTypeScript(
-  new URL('../src/main/gmail-mail-alerts.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-mail-alerts.ts', import.meta.url)
 )
 const first = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
 const second = 'b1b2c3d4-e5f6-4789-8abc-123456789abc'

@@ -66,9 +66,9 @@ import {
   type NotificationConnectionStates,
   type ComposeTargetStatus,
   type HantongApi
-} from '../shared/ipc'
-import type { AccountState } from '../shared/accounts'
-import type { AppSettings } from '../shared/settings'
+} from '~/shared/ipc'
+import type { AccountState } from '~/shared/accounts'
+import type { AppSettings } from '~/shared/settings'
 
 if (!process.contextIsolated) throw new Error('Context isolation is required')
 
@@ -113,7 +113,7 @@ const api: HantongApi = Object.freeze({
   onAiMailCodexStatus: (listener) => {
     const handler = (
       _event: IpcRendererEvent,
-      status: import('../shared/ipc').CodexConnectionStatus
+      status: import('~/shared/ipc').CodexConnectionStatus
     ): void => listener(status)
     ipcRenderer.on(AI_MAIL_CODEX_STATUS_EVENT, handler)
     return () => ipcRenderer.removeListener(AI_MAIL_CODEX_STATUS_EVENT, handler)

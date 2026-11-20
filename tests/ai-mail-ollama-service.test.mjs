@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createAiMailOllamaGenerationService } = loadTypeScript(
-  new URL('../src/main/ai-mail-ollama-service.ts', import.meta.url)
+  new URL('../src/main/ai/ollama/ai-mail-ollama-service.ts', import.meta.url)
 )
 
 const request = {

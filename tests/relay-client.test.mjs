@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const relay = loadTypeScript(new URL('../src/main/relay-client.ts', import.meta.url))
+const relay = loadTypeScript(new URL('../src/main/relay/relay-client.ts', import.meta.url))
 
 function response(status, payload, headers = {}) {
   return {

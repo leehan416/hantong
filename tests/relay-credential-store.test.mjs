@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createRelayCredentialStore } = loadTypeScript(
-  new URL('../src/main/relay-credential-store.ts', import.meta.url)
+  new URL('../src/main/relay/relay-credential-store.ts', import.meta.url)
 )
 const account = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
 const other = 'b1b2c3d4-e5f6-4789-8abc-123456789abc'

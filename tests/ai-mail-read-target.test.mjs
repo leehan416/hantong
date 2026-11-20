@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { gmailReadTargetPageSource, createGmailReadTargetService } = loadTypeScript(
-  new URL('../src/main/gmail-read-target.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-read-target.ts', import.meta.url)
 )
 
 class SyntheticElement {

@@ -4,11 +4,11 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createNotificationRecoveryRuntime } = loadTypeScript(
-  new URL('../src/main/notification-recovery-runtime.ts', import.meta.url),
+  new URL('../src/main/notifications/notification-recovery-runtime.ts', import.meta.url),
   { electron: { dialog: {} } }
 )
 const { createAccountAccessController } = loadTypeScript(
-  new URL('../src/main/account-access-controller.ts', import.meta.url),
+  new URL('../src/main/accounts/account-access-controller.ts', import.meta.url),
   {}
 )
 

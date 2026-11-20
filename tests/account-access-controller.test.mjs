@@ -6,7 +6,7 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 const accountId = '11111111-1111-4111-8111-111111111111'
 const otherAccountId = '22222222-2222-4222-8222-222222222222'
 const { createAccountAccessController } = loadTypeScript(
-  new URL('../src/main/account-access-controller.ts', import.meta.url),
+  new URL('../src/main/accounts/account-access-controller.ts', import.meta.url),
   {}
 )
 

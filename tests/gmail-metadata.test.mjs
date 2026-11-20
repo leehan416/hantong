@@ -9,7 +9,7 @@ const {
   fetchGmailHistoryPage,
   fetchGmailMessageSummary,
   fetchGmailUnreadCount
-} = loadTypeScript(new URL('../src/main/gmail-metadata.ts', import.meta.url))
+} = loadTypeScript(new URL('../src/main/gmail/gmail-metadata.ts', import.meta.url))
 
 function options(fetch, signal = new AbortController().signal, timeoutMs) {
   return { fetch, signal, timeoutMs }

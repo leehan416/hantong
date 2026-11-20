@@ -12,7 +12,7 @@ const {
   gmailComposeProbeLimits,
   gmailComposeProbeStatusMessage,
   isGmailComposeProbeOptedIn
-} = loadTypeScript(new URL('../src/main/gmail-compose-probe.ts', import.meta.url))
+} = loadTypeScript(new URL('../src/main/gmail/gmail-compose-probe.ts', import.meta.url))
 
 function createFixture() {
   let now = 10
