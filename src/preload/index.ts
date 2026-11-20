@@ -40,8 +40,13 @@ import {
   OLLAMA_STATUS_CHANNEL,
   OLLAMA_MODELS_CHANNEL,
   CODEX_MODELS_CHANNEL,
+  CLIPBOARD_WRITE_TEXT_CHANNEL,
+  OLLAMA_CREDENTIAL_STATUS_CHANNEL,
+  OLLAMA_CREDENTIAL_SET_CHANNEL,
+  OLLAMA_CREDENTIAL_CLEAR_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
   AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT,
@@ -68,6 +73,13 @@ if (!process.contextIsolated) throw new Error('Context isolation is required')
 
 // Expose operations rather than a generic channel sender or Electron objects.
 const api: HantongApi = Object.freeze({
+  writeClipboardText: (text) => ipcRenderer.invoke(CLIPBOARD_WRITE_TEXT_CHANNEL, text),
+  getOllamaCredentialStatus: (endpoint) =>
+    ipcRenderer.invoke(OLLAMA_CREDENTIAL_STATUS_CHANNEL, endpoint),
+  setOllamaCredential: (endpoint, credential) =>
+    ipcRenderer.invoke(OLLAMA_CREDENTIAL_SET_CHANNEL, endpoint, credential),
+  clearOllamaCredential: (endpoint) =>
+    ipcRenderer.invoke(OLLAMA_CREDENTIAL_CLEAR_CHANNEL, endpoint),
   getAiMailReadSnapshot: () => ipcRenderer.invoke(AI_MAIL_READ_SNAPSHOT_CHANNEL),
   isAiMailReadSnapshotCurrent: (captureId) =>
     ipcRenderer.invoke(AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL, captureId),
@@ -75,6 +87,8 @@ const api: HantongApi = Object.freeze({
   undoAiMailSubject: (request) => ipcRenderer.invoke(AI_MAIL_SUBJECT_UNDO_CHANNEL, request),
   getAiMailComposeTargetStatus: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL),
   getAiMailComposeSnapshot: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL),
+  selectAiMailComposeTarget: (request) =>
+    ipcRenderer.invoke(AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL, request),
   applyAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_APPLY_CHANNEL, request),
   undoAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_UNDO_CHANNEL, request),
   onAiMailComposeTarget: (listener) => {

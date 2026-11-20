@@ -1,22 +1,35 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react'
 import type {
+  AccountViewSnapshot,
   CodexConnectionStatus,
-  CodexModelInventory,
   ComposeSnapshotResult,
   ComposeTargetStatus,
+  AiMailComposeMutationResult,
   OllamaConnectionStatus,
   OllamaModel,
   ReadMailSnapshotResult
 } from '../../shared/ipc'
-import type { AppSettings, AppSettingsPatch } from '../../shared/settings'
+import type { AppSettings } from '../../shared/settings'
 import type { AppMessages } from './app-messages'
 import { AiMailChatLayout } from './AiMailChatLayout'
+import { AiMailMarkdown } from './ai-mail-markdown'
+import { AppDialog } from './SettingsDialog'
 import {
   createAiMailGenerationSequence,
   createAiMailFieldMutationCoordinator,
   createAiMailTargetRefreshCoordinator,
   requestAiMailProposal,
-  aiMailFieldFeedback
+  aiMailFieldFeedback,
+  applyAiMailFieldsTogether,
+  isAiMailConversationVisible,
+  chooseNewestComposeCandidate
 } from './ai-mail-panel-flow'
 
 const TARGET_REFRESH_INTERVAL_MS = 1500
@@ -35,7 +48,8 @@ type FieldState = {
   conflict?: { currentVersion: string; currentBody: string; operation: 'apply' | 'undo' }
 }
 type Proposal = {
-  snapshot: ReadySnapshot
+  snapshot?: ReadySnapshot
+  session: number
   subject?: FieldState
   body: FieldState
 }
@@ -46,6 +60,30 @@ type PanelMessage = {
   tone?: 'error' | 'notice'
   proposal?: Proposal
 }
+type ArchivedConversation = {
+  id: string
+  accountId: string
+  title: string
+  messages: PanelMessage[]
+}
+type OverwriteConfirmation =
+  | {
+      kind: 'conflict'
+      messageId: string
+      field: 'body' | 'subject'
+      operation: 'apply' | 'undo'
+      version: string
+      currentValue: string
+    }
+  | { kind: 'overwrite'; messageId: string; field: 'body' | 'subject'; currentValue: string }
+  | {
+      kind: 'draft'
+      messageId: string
+      snapshot: ReadySnapshot
+      targetLabel: string
+      session: number
+      includeSubject: boolean
+    }
 
 type Props = {
   activeAccountId: string | null
@@ -54,7 +92,7 @@ type Props = {
   captureSession: number
   text: AppMessages['aiMail']
   settings: AppSettings | null
-  onChangeSettings: (patch: AppSettingsPatch) => Promise<boolean>
+  onConfirmationCover: (open: boolean) => Promise<AccountViewSnapshot | null>
   onClose: () => void
 }
 
@@ -89,7 +127,7 @@ export function AiMailPanel({
   captureSession,
   text,
   settings,
-  onChangeSettings,
+  onConfirmationCover,
   onClose
 }: Props): React.JSX.Element | null {
   const [targetStatus, setTargetStatus] = useState<ComposeTargetStatus>({ status: 'none' })
@@ -98,30 +136,40 @@ export function AiMailPanel({
     session: number
   } | null>(null)
   const [codexStatus, setCodexStatus] = useState<CodexConnectionStatus | null>(null)
-  const [codexBusy, setCodexBusy] = useState(false)
   const [statusFailed, setStatusFailed] = useState(false)
   const [ollamaStatus, setOllamaStatus] = useState<OllamaConnectionStatus | null>(null)
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[] | null>(null)
-  const [codexModels, setCodexModels] = useState<CodexModelInventory | null>(null)
   const [inventoryFailed, setInventoryFailed] = useState(false)
   const [inventoryLoadedKey, setInventoryLoadedKey] = useState('')
-  const [settingsSaving, setSettingsSaving] = useState(false)
-  const settingsSavingRef = useRef(false)
-  const [settingsFailed, setSettingsFailed] = useState(false)
-  const [settingsRetryPatch, setSettingsRetryPatch] = useState<AppSettingsPatch | null>(null)
-  const [inventoryRevision, setInventoryRevision] = useState(0)
-  const [codexStatusRevision, setCodexStatusRevision] = useState(0)
-  const codexInventoryRequest = useRef(0)
   const [composeSnapshot, setComposeSnapshot] = useState<ReadySnapshot | null>(null)
   const [readSnapshot, setReadSnapshot] = useState<ReadyReadSnapshot | null>(null)
   const [contextStatus, setContextStatus] = useState('')
   const [messages, setMessages] = useState<PanelMessage[]>([])
-  const [messagesContext, setMessagesContext] = useState('')
+  const [currentConversationId, setCurrentConversationId] = useState(newId())
+  const [messagesAccountId, setMessagesAccountId] = useState<string | null>(null)
+  const [archivedConversations, setArchivedConversations] = useState<ArchivedConversation[]>([])
+  const archivedConversationsRef = useRef<ArchivedConversation[]>([])
+  const [conversationStatus, setConversationStatus] = useState('')
   const [instruction, setInstruction] = useState('')
   const [pending, setPending] = useState(false)
   const [pendingContext, setPendingContext] = useState('')
   const [cancelError, setCancelError] = useState(false)
   const [copyFeedback, setCopyFeedback] = useState('')
+  const [confirmOverwrite, setConfirmOverwrite] = useState<OverwriteConfirmation | null>(null)
+  const [proposalTargetNotice, setProposalTargetNotice] = useState<{
+    messageId: string
+    message: string
+    kind: 'info' | 'error'
+  } | null>(null)
+  const [proposalApplyingId, setProposalApplyingId] = useState<string | null>(null)
+  const confirmationDialogRef = useRef<HTMLDialogElement | null>(null)
+  const confirmationCancelRef = useRef<HTMLButtonElement | null>(null)
+  const confirmationReturnFocusRef = useRef<HTMLElement | null>(null)
+  const confirmationAccountRef = useRef<string | null>(activeAccountId)
+  const proposalApplyingRef = useRef(false)
+  useEffect(() => {
+    proposalApplyingRef.current = proposalApplyingId !== null
+  }, [proposalApplyingId])
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const composing = useRef(false)
@@ -133,7 +181,6 @@ export function AiMailPanel({
   const captureSequence = useRef(0)
   const pendingRequest = useRef<{ requestId: string; key: string } | null>(null)
   const requestCancel = useRef<((id: string) => Promise<unknown>) | null>(null)
-  const codexActionRevision = useRef(0)
   const generation = useRef(createAiMailGenerationSequence())
   const fieldMutations = useRef(createAiMailFieldMutationCoordinator(window.api))
   const targetRefresh = useRef(
@@ -156,16 +203,27 @@ export function AiMailPanel({
       : null
   const contextKey = `${activeAccountId ?? 'none'}:${targetKey(target)}:${currentReadSnapshot?.captureId ?? 'no-read'}:${captureSession}`
   const provider = settings?.aiMailProvider ?? 'codex'
+  const selectedProvider = provider
   const providerRef = useRef(provider)
-  const inventoryRequestKey = `${open ? 'open' : 'closed'}:${captureSession}:${inventoryRevision}`
+  const inventoryRequestKey = `${open ? 'open' : 'closed'}:${captureSession}:${settings?.ollamaMode ?? 'local'}:${settings?.ollamaRemoteEndpoint ?? ''}`
   const inventoryLoading = open && inventoryLoadedKey !== inventoryRequestKey
-  const selectedModel = provider === 'ollama' ? settings?.ollamaModel : settings?.codexModel
+  const selectedModel =
+    selectedProvider === 'ollama'
+      ? settings?.ollamaMode === 'remote'
+        ? settings.ollamaRemoteModel
+        : settings?.ollamaModel
+      : settings?.codexModel
   const ollamaReady = ollamaStatus?.state === 'available'
   const selectedOllamaAvailable = ollamaModels?.some((model) => model.name === selectedModel)
   // Codex model selection is available, but its mail execution remains fixture-only by policy.
   const generationAvailable =
     provider === 'ollama'
-      ? Boolean(!inventoryLoading && ollamaStatus?.state === 'available' && selectedOllamaAvailable)
+      ? Boolean(
+          !inventoryLoading &&
+          ollamaStatus?.state === 'available' &&
+          (settings?.ollamaMode === 'remote' || ollamaStatus.cloudDisabled) &&
+          selectedOllamaAvailable
+        )
       : false
 
   const invalidatePendingGeneration = useCallback((): void => {
@@ -188,7 +246,42 @@ export function AiMailPanel({
     sessionRef.current = captureSession
   }, [activeAccountId, captureSession])
 
-  const visibleMessages = messagesContext === contextKey ? messages : []
+  useEffect(() => {
+    archivedConversationsRef.current = archivedConversations
+  }, [archivedConversations])
+
+  useEffect(() => {
+    if (!messagesAccountId || messagesAccountId === activeAccountId) return
+    const previousAccountId = messagesAccountId
+    const previousMessages = messages
+    const title =
+      messages.find((message) => message.role === 'user')?.text.slice(0, 72) || text.title
+    void Promise.resolve().then(() => {
+      if (activeAccountRef.current !== activeAccountId) return
+      if (previousMessages.length) {
+        setArchivedConversations((current) => [
+          {
+            id: currentConversationId,
+            accountId: previousAccountId,
+            title,
+            messages: previousMessages
+          },
+          ...current
+        ])
+      }
+      setMessages([])
+      setCurrentConversationId(newId())
+      setMessagesAccountId(activeAccountId)
+      setConversationStatus('')
+    })
+  }, [activeAccountId, messagesAccountId, messages, currentConversationId, text.title])
+
+  const visibleMessages = isAiMailConversationVisible(messagesAccountId, activeAccountId)
+    ? messages
+    : []
+  const accountConversations = archivedConversations.filter(
+    (conversation) => conversation.accountId === activeAccountId
+  )
   const requestPending = pending && pendingContext === contextKey
 
   const captureCurrentContext = useCallback(
@@ -246,7 +339,6 @@ export function AiMailPanel({
       setComposeSnapshot(nextCompose)
       setContextStatus(nextRead || nextCompose ? '' : text.noTarget)
       invalidatePendingGeneration()
-      setMessages([])
     },
     [
       composeSnapshot,
@@ -274,7 +366,7 @@ export function AiMailPanel({
         invalidatePendingGeneration()
         currentTargetKey.current = nextKey
         setComposeSnapshot(null)
-        setMessages([])
+        setConfirmOverwrite(null)
         lastCaptureKey.current = ''
       }
     })
@@ -306,7 +398,7 @@ export function AiMailPanel({
       unsubscribeTarget()
       unsubscribeCodex()
     }
-  }, [activeAccountId, codexStatusRevision, invalidatePendingGeneration])
+  }, [activeAccountId, invalidatePendingGeneration])
 
   useEffect(() => {
     const coordinator = targetRefresh.current
@@ -333,7 +425,7 @@ export function AiMailPanel({
             invalidatePendingGeneration()
             currentTargetKey.current = nextKey
             setComposeSnapshot(null)
-            setMessages([])
+            setConfirmOverwrite(null)
             lastCaptureKey.current = ''
           }
           if (!lastCaptureKey.current) void captureCurrentContext()
@@ -351,10 +443,6 @@ export function AiMailPanel({
       coordinator.setActive(false)
     }
   }, [open, activeAccountId, captureSession, captureCurrentContext, invalidatePendingGeneration])
-
-  useEffect(() => {
-    if (open) closeButtonRef.current?.focus()
-  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -375,48 +463,27 @@ export function AiMailPanel({
   useEffect(() => {
     if (!open) return
     let current = true
-    const codexRequest = ++codexInventoryRequest.current
-    void Promise.allSettled([
-      window.api.getOllamaStatus(),
-      window.api.getOllamaModels(),
-      window.api.getCodexModels()
-    ]).then((results) => {
-      if (!current) return
-      if (results[0].status === 'fulfilled') setOllamaStatus(results[0].value)
-      else setOllamaStatus({ state: 'unavailable', cloudDisabled: false })
-      if (results[1].status === 'fulfilled') setOllamaModels(results[1].value)
-      else setOllamaModels([])
-      if (codexInventoryRequest.current === codexRequest) {
-        if (results[2].status === 'fulfilled') setCodexModels(results[2].value)
-        else setCodexModels({ state: 'unavailable', reason: 'discovery_failed' })
-      }
-      setInventoryFailed(results.some((result) => result.status === 'rejected'))
-      setInventoryLoadedKey(inventoryRequestKey)
-    })
-    return () => {
-      current = false
-    }
-  }, [open, captureSession, inventoryRevision, inventoryRequestKey])
-
-  useEffect(() => {
-    if (codexStatus?.state !== 'connected') return
-    const request = ++codexInventoryRequest.current
-    let current = true
-    void window.api.getCodexModels().then(
-      (inventory) => {
-        if (current && codexInventoryRequest.current === request) setCodexModels(inventory)
-      },
-      () => {
-        if (current && codexInventoryRequest.current === request) {
-          setCodexModels({ state: 'unavailable', reason: 'discovery_failed' })
-          setInventoryFailed(true)
-        }
+    void Promise.allSettled([window.api.getOllamaStatus(), window.api.getOllamaModels()]).then(
+      (results) => {
+        if (!current) return
+        if (results[0].status === 'fulfilled') setOllamaStatus(results[0].value)
+        else setOllamaStatus({ state: 'unavailable', cloudDisabled: false })
+        if (results[1].status === 'fulfilled') setOllamaModels(results[1].value)
+        else setOllamaModels([])
+        setInventoryFailed(results.some((result) => result.status === 'rejected'))
+        setInventoryLoadedKey(inventoryRequestKey)
       }
     )
     return () => {
       current = false
     }
-  }, [codexStatus?.state])
+  }, [
+    open,
+    captureSession,
+    settings?.ollamaMode,
+    settings?.ollamaRemoteEndpoint,
+    inventoryRequestKey
+  ])
 
   useEffect(() => {
     const request = pendingRequest.current
@@ -472,75 +539,13 @@ export function AiMailPanel({
     }
   }, [open, activeAccountId, captureSession, readSnapshot])
 
-  async function connectCodex(): Promise<void> {
-    if (codexBusy) return
-    const revision = ++codexActionRevision.current
-    setCodexBusy(true)
-    try {
-      setCodexStatus(await window.api.connectAiMailCodex())
-    } catch {
-      if (codexActionRevision.current === revision) {
-        setStatusFailed(true)
-        setCodexStatus({ state: 'error' })
-      }
-    } finally {
-      if (codexActionRevision.current === revision) setCodexBusy(false)
-    }
-  }
-
-  async function retryProviderData(): Promise<void> {
-    setStatusFailed(false)
-    setInventoryFailed(false)
-    setInventoryRevision((value) => value + 1)
-    if (provider === 'codex') {
-      setCodexStatusRevision((value) => value + 1)
-    }
-  }
-
-  async function retryLastSave(): Promise<void> {
-    if (settingsRetryPatch) await saveProvider(settingsRetryPatch)
-  }
-
-  async function saveProvider(patch: AppSettingsPatch): Promise<void> {
-    if (settingsSavingRef.current) return
-    settingsSavingRef.current = true
-    setSettingsSaving(true)
-    setSettingsFailed(false)
-    setSettingsRetryPatch(patch)
-    try {
-      if (await onChangeSettings(patch)) setSettingsRetryPatch(null)
-      else setSettingsFailed(true)
-    } catch {
-      setSettingsFailed(true)
-    } finally {
-      settingsSavingRef.current = false
-      setSettingsSaving(false)
-    }
-  }
-
-  async function disconnectCodex(): Promise<void> {
-    if (codexBusy && codexStatus?.state !== 'connecting') return
-    const revision = ++codexActionRevision.current
-    setCodexBusy(true)
-    try {
-      setCodexStatus(await window.api.disconnectAiMailCodex())
-    } catch {
-      if (codexActionRevision.current === revision) {
-        setStatusFailed(true)
-        setCodexStatus({ state: 'error' })
-      }
-    } finally {
-      if (codexActionRevision.current === revision) setCodexBusy(false)
-    }
-  }
-
   async function runGeneration(userText: string): Promise<void> {
     const account = activeAccountId
+    const conversationId = currentConversationId
     const capturedRead = currentReadSnapshot
     const capturedCompose = currentComposeSnapshot
     const capturedTarget = target
     if (!account || !generationAvailable || requestPending || !userText.trim()) return
-    if (!capturedRead && !capturedCompose) return
     const key = contextKey
     const requestId = newId()
     const requestGeneration = generation.current.next(
@@ -554,7 +559,7 @@ export function AiMailPanel({
     setPending(true)
     setPendingContext(key)
     setCancelError(false)
-    setMessagesContext(key)
+    setMessagesAccountId(account)
     setMessages((current) => [...current, { id: newId(), role: 'user', text: userText }])
     setInstruction('')
     try {
@@ -569,12 +574,14 @@ export function AiMailPanel({
         userText,
         requestId,
         requestGeneration,
-        provider
+        provider,
+        undefined,
+        conversationId
       )
       if (
         pendingRequest.current?.requestId !== requestId ||
         activeAccountRef.current !== account ||
-        contextKey !== key ||
+        sessionRef.current !== captureSession ||
         providerRef.current !== provider
       )
         return
@@ -586,28 +593,30 @@ export function AiMailPanel({
               id: newId(),
               role: 'assistant',
               text:
-                outcome.owner === 'none'
+                outcome.owner === 'none' && outcome.readSnapshot && outcome.output.kind === 'answer'
                   ? `${outcome.output.text}\n\n${text.replyNeedsCompose}`
-                  : outcome.output.text
+                  : outcome.output.kind === 'answer'
+                    ? outcome.output.text
+                    : text.proposal
             }
           ])
-        else if (outcome.owner === 'compose' && outcome.snapshot) {
+        else if (outcome.output.kind === 'proposal') {
           const proposal: Proposal = {
-            snapshot: outcome.snapshot,
-            body: { value: outcome.output.text, applied: false, busy: false },
-            ...(outcome.output.field === 'subject'
-              ? { subject: { value: outcome.output.subject ?? '', applied: false, busy: false } }
-              : {})
+            ...(outcome.snapshot ? { snapshot: outcome.snapshot } : {}),
+            session: captureSession,
+            body: { value: outcome.output.body, applied: false, busy: false },
+            subject: { value: outcome.output.subject, applied: false, busy: false }
           }
           setMessages((current) => [
             ...current,
-            { id: newId(), role: 'assistant', text: text.proposal, proposal }
+            {
+              id: newId(),
+              role: 'assistant',
+              text: outcome.owner === 'compose' ? text.proposal : text.replyNeedsCompose,
+              proposal
+            }
           ])
-        } else
-          setMessages((current) => [
-            ...current,
-            { id: newId(), role: 'assistant', text: outcome.output.text }
-          ])
+        }
       } else {
         const failure =
           outcome.status === 'unavailable'
@@ -663,7 +672,136 @@ export function AiMailPanel({
     if (value) void runGeneration(value)
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+  function startNewConversation(): void {
+    invalidatePendingGeneration()
+    if (activeAccountId && messages.length) {
+      setArchivedConversations((current) => [
+        {
+          id: currentConversationId,
+          accountId: activeAccountId,
+          title:
+            messages.find((message) => message.role === 'user')?.text.slice(0, 72) || text.title,
+          messages
+        },
+        ...current
+      ])
+    }
+    setMessages([])
+    setCurrentConversationId(newId())
+    setMessagesAccountId(activeAccountId)
+    setInstruction('')
+    setConversationStatus('')
+  }
+
+  function restoreConversation(conversationId: string): void {
+    const archived = accountConversations.find((conversation) => conversation.id === conversationId)
+    const currentArchive = archivedConversationsRef.current.find(
+      (conversation) => conversation.id === conversationId
+    )
+    if (
+      !archived ||
+      archived.accountId !== activeAccountId ||
+      !currentArchive ||
+      currentArchive.accountId !== activeAccountId ||
+      activeAccountRef.current !== activeAccountId
+    ) {
+      setConversationStatus(text.conversationUnavailable)
+      return
+    }
+    invalidatePendingGeneration()
+    const currentConversation =
+      activeAccountId && messages.length
+        ? {
+            id: currentConversationId,
+            accountId: activeAccountId,
+            title:
+              messages.find((message) => message.role === 'user')?.text.slice(0, 72) || text.title,
+            messages
+          }
+        : null
+    setArchivedConversations((current) => [
+      ...(currentConversation ? [currentConversation] : []),
+      ...current.filter((conversation) => conversation.id !== conversationId)
+    ])
+    setMessages(archived.messages)
+    setMessagesAccountId(archived.accountId)
+    setCurrentConversationId(archived.id)
+    setInstruction('')
+    setConversationStatus(text.conversationRestored)
+  }
+
+  async function chooseProposalTarget(
+    messageId: string,
+    requestedComposeId?: string
+  ): Promise<void> {
+    const proposalMessage = messages.find((message) => message.id === messageId)
+    const proposal = proposalMessage?.proposal
+    const accountId = activeAccountId
+    const session = captureSession
+    if (!proposal || !accountId || proposal.session !== session || proposalApplyingId) return
+    setProposalApplyingId(messageId)
+    setProposalTargetNotice(null)
+    try {
+      const refreshed = await window.api.getAiMailComposeTargetStatus()
+      if (activeAccountRef.current !== accountId || sessionRef.current !== session) return
+      setTargetStatus(refreshed)
+      targetStatusRef.current = refreshed
+      setReadyTargetContext({ accountId, session })
+      const candidates = 'candidates' in refreshed ? (refreshed.candidates ?? []) : []
+      let composeId = requestedComposeId
+      if (!composeId) composeId = chooseNewestComposeCandidate(candidates) ?? ''
+      if (!composeId) {
+        setProposalTargetNotice({
+          messageId,
+          message: candidates.length > 1 ? text.chooseDraftFirst : text.noComposeForApply,
+          kind: 'info'
+        })
+        return
+      }
+      const candidate = candidates.find((item) => item.composeId === composeId)
+      const currentTargetIsAllowed =
+        refreshed.status === 'ready' &&
+        refreshed.accountId === accountId &&
+        refreshed.composeId === composeId
+      if (!candidate && !currentTargetIsAllowed) {
+        setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+        return
+      }
+      if (requestedComposeId && !candidate) {
+        setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+        return
+      }
+      const result = await window.api.selectAiMailComposeTarget({ accountId, composeId })
+      if (
+        activeAccountRef.current !== accountId ||
+        sessionRef.current !== session ||
+        result.status !== 'ready' ||
+        result.accountId !== accountId ||
+        result.composeId !== composeId
+      ) {
+        setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+        return
+      }
+      currentTargetKey.current = `${accountId}:${composeId}`
+      setComposeSnapshot(result)
+      setConfirmOverwrite({
+        kind: 'draft',
+        messageId,
+        snapshot: result,
+        targetLabel:
+          candidate?.label ??
+          (refreshed.status === 'ready' ? refreshed.accountLabel : text.newMessage),
+        session,
+        includeSubject: Boolean(proposal.subject)
+      })
+    } catch {
+      setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+    } finally {
+      setProposalApplyingId(null)
+    }
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>): void {
     if (
       event.key === 'Enter' &&
       !event.shiftKey &&
@@ -696,26 +834,175 @@ export function AiMailPanel({
     }
   }
 
+  const hasConfirmation = confirmOverwrite !== null
+  const confirmationMessageId = confirmOverwrite?.messageId
+  useEffect(() => {
+    if (!hasConfirmation) {
+      confirmationAccountRef.current = activeAccountId
+      return
+    }
+    if (confirmationAccountRef.current !== activeAccountId) setConfirmOverwrite(null)
+  }, [activeAccountId, hasConfirmation])
+
+  useEffect(() => {
+    if (!hasConfirmation) return
+    if (confirmationAccountRef.current !== activeAccountId) {
+      setConfirmOverwrite(null)
+      return
+    }
+    let active = true
+    const dialog = confirmationDialogRef.current
+    const activeElement = document.activeElement
+    confirmationReturnFocusRef.current =
+      activeElement instanceof HTMLElement ? activeElement : closeButtonRef.current
+    void onConfirmationCover(true)
+      .then(
+        async (snapshot) => {
+          if (activeAccountId && snapshot?.accountId !== activeAccountId)
+            throw new Error('Unable to capture the active Gmail view')
+          if (snapshot) {
+            const image = new Image()
+            image.src = snapshot.dataUrl
+            try {
+              await image.decode()
+            } catch {
+              throw new Error('Unable to display the captured Gmail view')
+            }
+          }
+          if (!active) {
+            await onConfirmationCover(false)
+            return
+          }
+          dialog?.showModal()
+          confirmationCancelRef.current?.focus()
+        },
+        () => {
+          if (active) {
+            setProposalTargetNotice({
+              messageId: confirmationMessageId ?? '',
+              message: text.modalCoverError,
+              kind: 'error'
+            })
+            setConfirmOverwrite(null)
+          }
+        }
+      )
+      .catch(() => {
+        if (active) {
+          void onConfirmationCover(false)
+          setProposalTargetNotice({
+            messageId: confirmationMessageId ?? '',
+            message: text.modalCoverError,
+            kind: 'error'
+          })
+          setConfirmOverwrite(null)
+        }
+      })
+    return () => {
+      active = false
+      if (dialog?.open) dialog.close()
+      void onConfirmationCover(false)
+      confirmationReturnFocusRef.current?.focus()
+      confirmationReturnFocusRef.current = null
+    }
+  }, [
+    activeAccountId,
+    confirmationMessageId,
+    hasConfirmation,
+    onConfirmationCover,
+    text.modalCoverError
+  ])
+
+  useEffect(() => {
+    const resizeProposalBodies = (): void => {
+      if (typeof document === 'undefined') return
+      for (const textarea of document.querySelectorAll<HTMLTextAreaElement>(
+        '.ai-mail-proposal textarea'
+      )) {
+        textarea.style.height = 'auto'
+        textarea.style.height = `${textarea.scrollHeight}px`
+      }
+    }
+    resizeProposalBodies()
+    window.addEventListener('resize', resizeProposalBodies)
+    return () => window.removeEventListener('resize', resizeProposalBodies)
+  }, [messages])
+
   async function mutateField(
     messageId: string,
     field: 'body' | 'subject',
     operation: 'apply' | 'undo',
     confirmedVersion?: string
   ): Promise<void> {
+    await mutateFieldResult(messageId, field, operation, confirmedVersion)
+  }
+
+  async function undoAppliedProposal(messageId: string): Promise<void> {
+    const proposal = messages.find((message) => message.id === messageId)?.proposal
+    if (!proposal) return
+    const fields: Array<'body' | 'subject'> = []
+    if (proposal.body.applied) fields.push('body')
+    if (proposal.subject?.applied) fields.push('subject')
+    for (const field of fields) {
+      const result = await mutateFieldResult(messageId, field, 'undo')
+      if (
+        result.status === 'confirmation_required' ||
+        result.status === 'conflict' ||
+        result.status === 'stale' ||
+        result.status === 'stale_target'
+      )
+        break
+    }
+  }
+
+  async function mutateFieldResult(
+    messageId: string,
+    field: 'body' | 'subject',
+    operation: 'apply' | 'undo',
+    confirmedVersion?: string,
+    applyIdOverride?: string,
+    allowOverwrite = false
+  ): Promise<
+    | AiMailComposeMutationResult
+    | { status: 'stale' | 'unsupported' | 'error' | 'confirmation_required' }
+  > {
     const message = messages.find((item) => item.id === messageId)
     const proposal = message?.proposal
     const fieldState = field === 'body' ? proposal?.body : proposal?.subject
     if (
       !proposal ||
       !fieldState ||
+      !proposal.snapshot ||
       proposal.snapshot.accountId !== activeAccountId ||
+      proposal.session !== captureSession ||
       !target ||
       target.composeId !== proposal.snapshot.composeId
-    )
-      return
+    ) {
+      setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+      return { status: 'stale' }
+    }
     const capturedAccountId = activeAccountId
     const capturedSession = captureSession
     const expectedTargetKey = `${proposal.snapshot.accountId}:${proposal.snapshot.composeId}`
+    if (operation === 'apply' && !allowOverwrite) {
+      const current = await window.api
+        .getAiMailComposeSnapshot()
+        .catch(() => ({ status: 'stale' as const }))
+      if (
+        current.status !== 'ready' ||
+        current.accountId !== capturedAccountId ||
+        current.composeId !== proposal.snapshot.composeId ||
+        activeAccountRef.current !== capturedAccountId ||
+        sessionRef.current !== capturedSession ||
+        currentTargetKey.current !== expectedTargetKey
+      )
+        return { status: 'stale' }
+      const currentValue = field === 'subject' ? current.subject : current.body
+      if (currentValue && currentValue !== fieldState.value) {
+        setConfirmOverwrite({ kind: 'overwrite', messageId, field, currentValue })
+        return { status: 'confirmation_required' }
+      }
+    }
     const setField = (update: (state: FieldState) => FieldState): void =>
       setMessages((current) =>
         current.map((item) => {
@@ -732,7 +1019,9 @@ export function AiMailPanel({
       field,
       operation,
       replacement: fieldState.value,
-      ...(fieldState.applyId ? { applyId: fieldState.applyId } : {}),
+      ...((applyIdOverride ?? fieldState.applyId)
+        ? { applyId: applyIdOverride ?? fieldState.applyId }
+        : {}),
       ...(confirmedVersion ? { confirmedCurrentVersion: confirmedVersion } : {}),
       isCurrent: () =>
         activeAccountRef.current === capturedAccountId &&
@@ -747,7 +1036,15 @@ export function AiMailPanel({
         }))
     })
     setField((state) => {
-      if (result.status === 'conflict')
+      if (result.status === 'conflict') {
+        setConfirmOverwrite({
+          kind: 'conflict',
+          messageId,
+          field,
+          operation,
+          version: result.currentVersion,
+          currentValue: result.currentBody
+        })
         return {
           ...state,
           busy: false,
@@ -758,6 +1055,7 @@ export function AiMailPanel({
             currentBody: result.currentBody
           }
         }
+      }
       if (result.status === 'applied')
         return {
           ...state,
@@ -788,41 +1086,280 @@ export function AiMailPanel({
               : 'error'
       }
     })
+    return result
   }
 
   async function copy(value: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(value)
+      await window.api.writeClipboardText(value)
       setCopyFeedback(text.copied)
     } catch {
       setCopyFeedback(text.copyError)
     }
   }
 
+  function confirmApply(): void {
+    const confirmation = confirmOverwrite
+    if (!confirmation) return
+    if (confirmation.kind === 'draft') {
+      void applyProposalDraft(confirmation)
+      return
+    }
+    setConfirmOverwrite(null)
+    if (confirmation.kind === 'overwrite') {
+      void mutateFieldResult(
+        confirmation.messageId,
+        confirmation.field,
+        'apply',
+        undefined,
+        undefined,
+        true
+      )
+      return
+    }
+    void mutateField(
+      confirmation.messageId,
+      confirmation.field,
+      confirmation.operation,
+      confirmation.version
+    )
+  }
+
+  async function applyProposalDraft(
+    confirmation: Extract<OverwriteConfirmation, { kind: 'draft' }>
+  ): Promise<void> {
+    const { snapshot, session, messageId, includeSubject } = confirmation
+    const proposal = messages.find((message) => message.id === messageId)?.proposal
+    const isCurrent = (): boolean =>
+      activeAccountRef.current === snapshot.accountId &&
+      sessionRef.current === session &&
+      currentTargetKey.current === `${snapshot.accountId}:${snapshot.composeId}`
+    if (!proposal || !isCurrent()) {
+      setConfirmOverwrite(null)
+      setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+      return
+    }
+    setProposalApplyingId(messageId)
+    try {
+      const latest = await window.api.getAiMailComposeSnapshot()
+      if (
+        !isCurrent() ||
+        latest.status !== 'ready' ||
+        latest.accountId !== snapshot.accountId ||
+        latest.composeId !== snapshot.composeId ||
+        latest.documentVersion !== snapshot.documentVersion ||
+        latest.subject !== snapshot.subject ||
+        latest.body !== snapshot.body
+      ) {
+        setConfirmOverwrite(null)
+        setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+        return
+      }
+      const request = {
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        snapshotId: snapshot.snapshotId
+      }
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.proposal
+            ? {
+                ...message,
+                proposal: {
+                  ...message.proposal,
+                  snapshot,
+                  body: { ...message.proposal.body, busy: true, feedback: undefined },
+                  ...(includeSubject && message.proposal.subject
+                    ? { subject: { ...message.proposal.subject, busy: true, feedback: undefined } }
+                    : {})
+                }
+              }
+            : message
+        )
+      )
+      let bodyResult: AiMailComposeMutationResult
+      let subjectApplyId: string | undefined
+      if (includeSubject && proposal.subject) {
+        const combined = await applyAiMailFieldsTogether<AiMailComposeMutationResult>(
+          async (): Promise<AiMailComposeMutationResult> => {
+            if (!isCurrent()) return { status: 'stale_target' }
+            return await window.api.applyAiMailSubject({
+              ...request,
+              replacement: proposal.subject?.value ?? ''
+            })
+          },
+          async (): Promise<AiMailComposeMutationResult> => {
+            if (!isCurrent()) return { status: 'stale_target' }
+            return await window.api.applyAiMailDraft({
+              ...request,
+              replacement: proposal.body.value
+            })
+          },
+          async (applyId): Promise<AiMailComposeMutationResult> => {
+            if (!isCurrent()) return { status: 'stale_target' }
+            return await window.api.undoAiMailSubject({ ...request, applyId })
+          }
+        )
+        if (
+          combined.status === 'applied' &&
+          combined.subject.status === 'applied' &&
+          combined.body?.status === 'applied'
+        ) {
+          bodyResult = combined.body
+          subjectApplyId = combined.subject.applyId
+        } else {
+          const failedStatus =
+            combined.status === 'partial'
+              ? text.applyPartial
+              : combined.status === 'rolled_back'
+                ? text.applyRolledBack
+                : text.applyFailed
+          setConfirmOverwrite(null)
+          setProposalTargetNotice({ messageId, message: failedStatus, kind: 'error' })
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === messageId && message.proposal
+                ? {
+                    ...message,
+                    proposal: {
+                      ...message.proposal,
+                      body: {
+                        ...message.proposal.body,
+                        busy: false,
+                        feedback: undefined
+                      },
+                      ...(message.proposal.subject
+                        ? {
+                            subject:
+                              combined.status === 'partial' &&
+                              combined.subject.status === 'applied' &&
+                              combined.subject.applyId
+                                ? {
+                                    ...message.proposal.subject,
+                                    applied: true,
+                                    applyId: combined.subject.applyId,
+                                    busy: false,
+                                    feedback: undefined,
+                                    lastOperation: 'apply'
+                                  }
+                                : {
+                                    ...message.proposal.subject,
+                                    busy: false,
+                                    feedback: undefined
+                                  }
+                          }
+                        : {})
+                    }
+                  }
+                : message
+            )
+          )
+          return
+        }
+      } else {
+        if (!isCurrent()) {
+          setConfirmOverwrite(null)
+          setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+          return
+        }
+        bodyResult = await window.api.applyAiMailDraft({
+          ...request,
+          replacement: proposal.body.value
+        })
+      }
+      if (bodyResult.status !== 'applied') {
+        setConfirmOverwrite(null)
+        setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+        return
+      }
+      setConfirmOverwrite(null)
+      setProposalTargetNotice(null)
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.proposal
+            ? {
+                ...message,
+                proposal: {
+                  ...message.proposal,
+                  snapshot,
+                  body: {
+                    ...message.proposal.body,
+                    applied: true,
+                    applyId: bodyResult.applyId,
+                    busy: false,
+                    feedback: 'applied'
+                  },
+                  ...(subjectApplyId && message.proposal.subject
+                    ? {
+                        subject: {
+                          ...message.proposal.subject,
+                          applied: true,
+                          applyId: subjectApplyId,
+                          busy: false,
+                          feedback: 'applied'
+                        }
+                      }
+                    : {})
+                }
+              }
+            : message
+        )
+      )
+    } catch {
+      setConfirmOverwrite(null)
+      setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
+    } finally {
+      setProposalApplyingId(null)
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === messageId && message.proposal
+            ? {
+                ...message,
+                proposal: {
+                  ...message.proposal,
+                  body: { ...message.proposal.body, busy: false },
+                  ...(message.proposal.subject
+                    ? { subject: { ...message.proposal.subject, busy: false } }
+                    : {})
+                }
+              }
+            : message
+        )
+      )
+    }
+  }
+
   if (!open) return null
+  const targetCandidates =
+    targetStatus.status === 'ready' && targetStatus.accountId !== activeAccountId
+      ? []
+      : 'candidates' in targetStatus
+        ? (targetStatus.candidates ?? [])
+        : []
+  const visibleCandidates = [...targetCandidates]
+  if (target && !visibleCandidates.some((candidate) => candidate.composeId === target.composeId))
+    visibleCandidates.unshift({
+      composeId: target.composeId,
+      label: target.accountLabel,
+      lastUsedAt: 0
+    })
   const statusLabel =
-    provider === 'ollama'
+    selectedProvider === 'ollama'
       ? inventoryLoading
         ? text.providerLoading
         : inventoryFailed
           ? text.providerError
           : !ollamaReady
             ? text.ollamaUnavailable
-            : !selectedOllamaAvailable
-              ? text.modelUnavailable
-              : text.ollamaReady
+            : !selectedModel
+              ? text.chooseModel
+              : !selectedOllamaAvailable
+                ? text.modelUnavailable
+                : text.ollamaReady
       : statusFailed
         ? text.connectionError
         : statusText(codexStatus, text)
-  const selectedCatalog =
-    provider === 'ollama'
-      ? (ollamaModels ?? []).map((model) => ({ id: model.name, label: model.name }))
-      : codexModels?.state === 'available'
-        ? codexModels.models.map((model) => ({ id: model.id, label: model.displayName }))
-        : []
-  const modelUnavailable = Boolean(
-    selectedModel && !selectedCatalog.some((model) => model.id === selectedModel)
-  )
   const contextDetails = [
     currentReadSnapshot
       ? `${text.receivedEmailChip}: ${currentReadSnapshot.subject || text.newMessage}`
@@ -838,6 +1375,9 @@ export function AiMailPanel({
           <h1 id="ai-mail-title">{text.title}</h1>
           <p>{text.caption}</p>
         </div>
+        <button className="ai-mail-text-button" type="button" onClick={startNewConversation}>
+          {text.newConversation}
+        </button>
         <button
           ref={closeButtonRef}
           className="ai-mail-close"
@@ -849,136 +1389,27 @@ export function AiMailPanel({
           <span aria-hidden="true">×</span>
         </button>
       </div>
-      <section className="ai-mail-provider" aria-label={text.provider}>
-        <fieldset className="ai-mail-choice-group" disabled={settingsSaving || !settings}>
-          <legend>{text.provider}</legend>
-          {(['codex', 'ollama'] as const).map((value) => (
-            <label key={value}>
-              <input
-                type="radio"
-                name="ai-mail-provider"
-                value={value}
-                checked={provider === value}
-                onChange={() => void saveProvider({ aiMailProvider: value })}
-              />
-              <span>{value === 'codex' ? text.codexProvider : text.ollamaProvider}</span>
-            </label>
-          ))}
-        </fieldset>
-        <label className="ai-mail-model-label" htmlFor="ai-mail-model">
-          {text.model}
-        </label>
-        <select
-          id="ai-mail-model"
-          value={selectedModel ?? ''}
-          disabled={inventoryLoading || settingsSaving || !settings}
-          aria-describedby="ai-mail-provider-status"
-          onChange={(event) =>
-            void saveProvider(
-              provider === 'ollama'
-                ? { ollamaModel: event.target.value || null }
-                : { codexModel: event.target.value || null }
-            )
-          }
-        >
-          {!selectedModel && <option value="">{text.chooseModel}</option>}
-          {modelUnavailable && selectedModel && (
-            <option value={selectedModel}>{`${selectedModel} — ${text.modelUnavailable}`}</option>
-          )}
-          {!selectedCatalog.length && !modelUnavailable && (
-            <option value="">{inventoryLoading ? text.providerLoading : text.noModels}</option>
-          )}
-          {selectedCatalog.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.label}
-            </option>
-          ))}
-        </select>
-        <div className="ai-mail-provider-status" id="ai-mail-provider-status" role="status">
-          <span
-            className={`ai-mail-connection-dot ai-mail-state-${provider === 'ollama' ? (ollamaReady ? 'connected' : 'error') : (codexStatus?.state ?? 'checking')}`}
-            aria-hidden="true"
-          />
-          <span>{statusLabel}</span>
-          {(inventoryFailed || statusFailed || (provider === 'ollama' && !ollamaReady)) && (
-            <button
-              className="ai-mail-text-button"
-              type="button"
-              onClick={() => void retryProviderData()}
-            >
-              {text.retry}
-            </button>
-          )}
-        </div>
-        {provider === 'codex' && (
-          <p className="ai-mail-provider-note">{text.codexGenerationUnavailable}</p>
-        )}
-        {settingsFailed && (
-          <p className="ai-mail-error" role="alert">
-            {text.providerSaveError}
-            <button
-              className="ai-mail-text-button"
-              type="button"
-              onClick={() => void retryLastSave()}
-            >
-              {text.retry}
-            </button>
-          </p>
-        )}
-      </section>
-      {provider === 'codex' && (
-        <section className="ai-mail-connection" aria-label={text.codex}>
-          <span
-            className={`ai-mail-connection-dot ai-mail-state-${codexStatus?.state ?? 'checking'}`}
-            aria-hidden="true"
-          />
-          <div className="ai-mail-connection-copy">
-            <strong>{statusLabel}</strong>
-            <p>
-              {generationAvailable
-                ? text.privacy
-                : codexStatus?.state === 'connected'
-                  ? text.codexGenerationUnavailable
-                  : text.connectFirst}
-            </p>
-          </div>
-          {codexStatus?.state === 'connected' ? (
-            <button
-              className="ai-mail-text-button"
-              type="button"
-              disabled={codexBusy}
-              onClick={() => void disconnectCodex()}
-            >
-              {text.disconnect}
-            </button>
-          ) : codexStatus?.state === 'connecting' ? (
-            <button
-              className="ai-mail-text-button"
-              type="button"
-              onClick={() => void disconnectCodex()}
-            >
-              {text.cancelLogin}
-            </button>
-          ) : (
-            <button
-              className="ai-mail-text-button"
-              type="button"
-              disabled={codexBusy}
-              onClick={() => void connectCodex()}
-            >
-              {codexBusy
-                ? text.checking
-                : codexStatus?.state === 'error'
-                  ? text.reconnect
-                  : text.connect}
-            </button>
-          )}
-        </section>
-      )}
     </>
   )
   const context = (
     <div className="ai-mail-context-chips">
+      {accountConversations.length > 0 && (
+        <label className="ai-mail-history-picker">
+          <span>{text.earlierConversations}</span>
+          <select
+            aria-label={text.earlierConversations}
+            value=""
+            onChange={(event) => restoreConversation(event.target.value)}
+          >
+            <option value="">{text.chooseConversation}</option>
+            {accountConversations.map((conversation) => (
+              <option key={conversation.id} value={conversation.id}>
+                {conversation.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {contextDetails.map((detail) => (
         <details key={detail} className="ai-mail-captured">
           <summary className="ai-mail-context-chip">
@@ -991,6 +1422,11 @@ export function AiMailPanel({
           </pre>
         </details>
       ))}
+      {conversationStatus && (
+        <span className="ai-mail-conversation-status" role="status">
+          {conversationStatus}
+        </span>
+      )}
       {!contextDetails.length && (
         <span className="ai-mail-inline-status" role="status">
           {contextStatus ||
@@ -1012,11 +1448,6 @@ export function AiMailPanel({
         maxLength={2000}
         aria-label={text.requestLabel}
         placeholder={text.requestPlaceholder}
-        disabled={
-          !generationAvailable ||
-          (!currentReadSnapshot && !currentComposeSnapshot) ||
-          requestPending
-        }
         onChange={(event) => setInstruction(event.target.value)}
         onKeyDown={handleKeyDown}
         onCompositionStart={() => {
@@ -1027,7 +1458,7 @@ export function AiMailPanel({
         }}
       />
       <div className="ai-mail-chat-composer-actions">
-        <span>
+        <span className="ai-mail-data-sharing">
           {!generationAvailable
             ? provider === 'codex'
               ? text.codexGenerationUnavailable
@@ -1038,10 +1469,7 @@ export function AiMailPanel({
           className="ai-mail-primary"
           type="submit"
           disabled={
-            !generationAvailable ||
-            (!currentReadSnapshot && !currentComposeSnapshot) ||
-            !instruction.trim() ||
-            requestPending
+            !generationAvailable || !activeAccountId || !instruction.trim() || requestPending
           }
         >
           {text.send}
@@ -1054,7 +1482,13 @@ export function AiMailPanel({
       <AiMailChatLayout header={header} context={context} composer={composer}>
         {visibleMessages.map((message) => (
           <article key={message.id} className={`ai-mail-message ai-mail-message-${message.role}`}>
-            <p className={message.tone === 'error' ? 'ai-mail-error' : undefined}>{message.text}</p>
+            {message.role === 'assistant' ? (
+              <AiMailMarkdown text={message.text} tone={message.tone} />
+            ) : (
+              <p className={message.tone === 'error' ? 'ai-mail-error' : undefined}>
+                {message.text}
+              </p>
+            )}
             {message.role === 'assistant' && !message.proposal && (
               <button
                 className="ai-mail-text-button"
@@ -1097,6 +1531,11 @@ export function AiMailPanel({
                     className="resize-none"
                     value={message.proposal.body.value}
                     disabled={message.proposal.body.busy}
+                    onInput={(event) => {
+                      const textarea = event.currentTarget
+                      textarea.style.height = 'auto'
+                      textarea.style.height = `${textarea.scrollHeight}px`
+                    }}
                     onChange={(event) =>
                       setMessages((current) =>
                         current.map((item) =>
@@ -1114,93 +1553,132 @@ export function AiMailPanel({
                     }
                   />
                 </label>
-                {(['subject', 'body'] as const).map((field) => {
-                  const state =
-                    field === 'body' ? message.proposal?.body : message.proposal?.subject
-                  if (!state) return null
+                {(() => {
+                  const fields = [message.proposal.subject, message.proposal.body].filter(
+                    (state): state is FieldState => state !== undefined
+                  )
+                  const appliedFields = fields.filter((state) => state.applied)
+                  const feedbackState =
+                    fields.find((state) =>
+                      ['error', 'stale', 'busy', 'unsupported'].includes(state.feedback ?? '')
+                    ) ?? fields.find((state) => state.feedback)
+                  const hasFeedbackError = Boolean(
+                    feedbackState &&
+                    ['error', 'stale', 'busy', 'unsupported'].includes(feedbackState.feedback ?? '')
+                  )
+                  const targetNotice =
+                    proposalTargetNotice?.messageId === message.id ? proposalTargetNotice : null
+                  const operationMessage = feedbackState?.feedback
+                    ? hasFeedbackError &&
+                      feedbackState.lastOperation === 'undo' &&
+                      appliedFields.length > 0
+                      ? text.undoPartial
+                      : aiMailFieldFeedback(
+                          feedbackState.feedback,
+                          feedbackState.lastOperation,
+                          text
+                        )
+                    : appliedFields.length > 0
+                      ? text.applied
+                      : ''
+                  const statusMessage =
+                    targetNotice?.kind === 'error'
+                      ? targetNotice.message
+                      : operationMessage ||
+                        targetNotice?.message ||
+                        (message.proposal.session !== captureSession
+                          ? text.draftSessionExpired
+                          : visibleCandidates.length === 0
+                            ? text.noComposeForApply
+                            : visibleCandidates.length > 1 && !target
+                              ? text.chooseDraftFirst
+                              : text.draftReady)
+                  const missingDefaultTarget = visibleCandidates.length > 1 && !target
+                  const statusIsError =
+                    targetNotice?.kind === 'error' || (Boolean(feedbackState) && hasFeedbackError)
+                  const copiedValue = message.proposal.subject
+                    ? `${message.proposal.subject.value}\n\n${message.proposal.body.value}`
+                    : message.proposal.body.value
+
                   return (
-                    <div key={field} className="ai-mail-proposal-actions">
-                      <button
-                        className="ai-mail-primary"
-                        type="button"
-                        disabled={
-                          state.busy ||
-                          state.applied ||
-                          target?.composeId !== message.proposal?.snapshot.composeId
-                        }
-                        onClick={() => void mutateField(message.id, field, 'apply')}
+                    <div className="ai-mail-proposal-footer">
+                      <p
+                        className={statusIsError ? 'ai-mail-error' : 'ai-mail-inline-status'}
+                        role={statusIsError ? 'alert' : 'status'}
                       >
-                        {state.busy
-                          ? text.checking
-                          : field === 'subject'
-                            ? text.applySubject
-                            : text.apply}
-                      </button>
-                      {state.applied && (
+                        {statusMessage}
+                      </p>
+                      <div
+                        className="ai-mail-proposal-actions"
+                        role="group"
+                        aria-label={text.draftActions}
+                      >
+                        <button
+                          className="ai-mail-primary"
+                          type="button"
+                          disabled={
+                            message.proposal.session !== captureSession ||
+                            proposalApplyingId === message.id ||
+                            missingDefaultTarget
+                          }
+                          onClick={() => void chooseProposalTarget(message.id)}
+                        >
+                          {proposalApplyingId === message.id
+                            ? text.checking
+                            : visibleCandidates.length === 0
+                              ? text.findDraft
+                              : text.reviewDraft}
+                        </button>
+                        {visibleCandidates.length > 1 && (
+                          <select
+                            className="ai-mail-target-menu"
+                            aria-label={text.chooseDraft}
+                            value=""
+                            disabled={
+                              message.proposal.session !== captureSession ||
+                              proposalApplyingId === message.id
+                            }
+                            onChange={(event) => {
+                              if (event.target.value)
+                                void chooseProposalTarget(message.id, event.target.value)
+                            }}
+                          >
+                            <option value="">{text.chooseDraft}</option>
+                            {visibleCandidates.map((candidate) => (
+                              <option key={candidate.composeId} value={candidate.composeId}>
+                                {candidate.label}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {appliedFields.length > 0 && (
+                          <button
+                            className="ai-mail-text-button"
+                            type="button"
+                            disabled={fields.some((state) => state.busy)}
+                            onClick={() => void undoAppliedProposal(message.id)}
+                          >
+                            {text.undo}
+                          </button>
+                        )}
                         <button
                           className="ai-mail-text-button"
                           type="button"
-                          disabled={state.busy}
-                          onClick={() => void mutateField(message.id, field, 'undo')}
+                          onClick={() => void copy(copiedValue)}
                         >
-                          {text.undo}
+                          {text.copy}
                         </button>
-                      )}
-                      <button
-                        className="ai-mail-text-button"
-                        type="button"
-                        onClick={() => void copy(state.value)}
-                      >
-                        {text.copy}
-                      </button>
-                      {state.conflict && (
-                        <div className="ai-mail-conflict" role="alert">
-                          <p>{text.conflictApply}</p>
-                          <details>
-                            <summary>{text.currentBody}</summary>
-                            <pre>{state.conflict.currentBody}</pre>
-                          </details>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void mutateField(
-                                message.id,
-                                field,
-                                state.conflict?.operation ?? 'apply',
-                                state.conflict?.currentVersion
-                              )
-                            }
-                          >
-                            {text.confirmApply}
-                          </button>
-                        </div>
-                      )}
-                      {state.feedback && (
-                        <p
-                          className={
-                            ['error', 'stale', 'busy', 'unsupported'].includes(state.feedback)
-                              ? 'ai-mail-error'
-                              : 'ai-mail-inline-status'
-                          }
-                          role={
-                            ['error', 'stale', 'busy', 'unsupported'].includes(state.feedback)
-                              ? 'alert'
-                              : 'status'
-                          }
-                        >
-                          {aiMailFieldFeedback(state.feedback, state.lastOperation, text)}
-                        </p>
-                      )}
+                      </div>
                     </div>
                   )
-                })}
+                })()}
               </div>
             )}
           </article>
         ))}
         {requestPending && (
           <div className="ai-mail-pending" role="status">
-            <span>{text.generating}</span>
+            <span>{text.thinking}</span>
             <button
               className="ai-mail-text-button"
               type="button"
@@ -1211,8 +1689,130 @@ export function AiMailPanel({
             {cancelError && <p className="ai-mail-error">{text.cancelFailed}</p>}
           </div>
         )}
-        {copyFeedback && <p role="status">{copyFeedback}</p>}
+        {copyFeedback && (
+          <p className="ai-mail-copy-feedback" role="status">
+            {copyFeedback}
+          </p>
+        )}
       </AiMailChatLayout>
+      {confirmOverwrite && (
+        <AppDialog
+          dialogRef={confirmationDialogRef}
+          className="app-dialog ai-mail-confirm-dialog"
+          ariaLabelledBy="ai-mail-confirm-title"
+          role="alertdialog"
+          onCancel={() => {
+            if (!proposalApplyingRef.current) setConfirmOverwrite(null)
+          }}
+        >
+          <div className="ai-mail-confirm-content">
+            <h2 id="ai-mail-confirm-title">
+              {confirmOverwrite.kind === 'draft' ? text.reviewDraftTitle : text.overwriteTitle}
+            </h2>
+            {confirmOverwrite.kind === 'draft' ? (
+              <div className="ai-mail-apply-review">
+                <p>
+                  {text.applyTargetLabel}: {confirmOverwrite.targetLabel}
+                </p>
+                <p>{text.applyReviewMessage}</p>
+                <fieldset>
+                  <legend>{text.applyScopeLabel}</legend>
+                  {confirmOverwrite.snapshot.subject !== undefined && (
+                    <label>
+                      <input
+                        type="radio"
+                        name="ai-mail-apply-scope"
+                        checked={confirmOverwrite.includeSubject}
+                        onChange={() =>
+                          setConfirmOverwrite({ ...confirmOverwrite, includeSubject: true })
+                        }
+                      />
+                      {text.applyBothFields}
+                    </label>
+                  )}
+                  <label>
+                    <input
+                      type="radio"
+                      name="ai-mail-apply-scope"
+                      checked={!confirmOverwrite.includeSubject}
+                      onChange={() =>
+                        setConfirmOverwrite({ ...confirmOverwrite, includeSubject: false })
+                      }
+                    />
+                    {text.applyBodyOnly}
+                  </label>
+                </fieldset>
+                <section>
+                  <h3>{text.subjectLabel}</h3>
+                  {confirmOverwrite.includeSubject ? (
+                    <>
+                      <div className="ai-mail-review-column">
+                        <p>{text.currentValueLabel}</p>
+                        <pre>{confirmOverwrite.snapshot.subject || text.emptyValue}</pre>
+                      </div>
+                      <div className="ai-mail-review-column">
+                        <p>{text.proposedValueLabel}</p>
+                        <pre className="ai-mail-review-proposed">
+                          {messages.find((item) => item.id === confirmOverwrite.messageId)?.proposal
+                            ?.subject?.value ?? ''}
+                        </pre>
+                      </div>
+                    </>
+                  ) : (
+                    <p>
+                      {text.keepSubjectMessage}:{' '}
+                      {confirmOverwrite.snapshot.subject || text.emptyValue}
+                    </p>
+                  )}
+                </section>
+                <section>
+                  <h3>{text.outputLabels.revise}</h3>
+                  <div className="ai-mail-review-column">
+                    <p>{text.currentValueLabel}</p>
+                    <pre>{confirmOverwrite.snapshot.body || text.emptyValue}</pre>
+                  </div>
+                  <div className="ai-mail-review-column">
+                    <p>{text.proposedValueLabel}</p>
+                    <pre className="ai-mail-review-proposed">
+                      {messages.find((item) => item.id === confirmOverwrite.messageId)?.proposal
+                        ?.body.value ?? ''}
+                    </pre>
+                  </div>
+                </section>
+              </div>
+            ) : (
+              <>
+                <p>
+                  {confirmOverwrite.kind === 'conflict'
+                    ? text.overwriteMessage
+                    : text.overwriteMessage}
+                </p>
+                <pre>{confirmOverwrite.currentValue}</pre>
+              </>
+            )}
+            <div className="ai-mail-confirm-actions">
+              <button
+                ref={confirmationCancelRef}
+                autoFocus
+                type="button"
+                className="ai-mail-text-button"
+                disabled={proposalApplyingId !== null}
+                onClick={() => setConfirmOverwrite(null)}
+              >
+                {text.cancelOverwrite}
+              </button>
+              <button
+                type="button"
+                className="ai-mail-primary"
+                onClick={confirmApply}
+                disabled={proposalApplyingId !== null}
+              >
+                {confirmOverwrite.kind === 'draft' ? text.applyDraft : text.confirmApply}
+              </button>
+            </div>
+          </div>
+        </AppDialog>
+      )}
     </aside>
   )
 }

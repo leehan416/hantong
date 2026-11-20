@@ -84,6 +84,18 @@ function fixture(overrides = {}) {
       validateModel: async () => undefined,
       dispose: () => undefined
     },
+    aiModel: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => ['qwen3:8b'],
+      generate: async () => ({ kind: 'answer', text: 'ready' }),
+      dispose: async () => undefined
+    },
+    ollamaCredentials: {
+      has: async () => false,
+      get: async () => null,
+      set: async () => undefined,
+      clear: async () => undefined
+    },
     ...overrides
   }
   registerMainIpc(dependencies)
@@ -107,14 +119,64 @@ test('provider model IPC is owner-frame only and Codex returns the live catalog 
     cloudDisabled: true
   })
   assert.deepEqual(JSON.parse(JSON.stringify(await models(event))), [
-    { name: 'qwen3:8b', size: 100 }
+    { name: 'qwen3:8b', size: null }
   ])
   assert.deepEqual(JSON.parse(JSON.stringify(await codexModels(event))), {
     state: 'available',
     models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
   })
-  assert.throws(() => status(event, 'http://127.0.0.1'), /Request rejected/)
-  assert.throws(() => models(invokeEvent(owner, {})), /Request rejected/)
+  await assert.rejects(status(event, 'http://127.0.0.1'), /Request rejected/)
+  await assert.rejects(models(invokeEvent(owner, {})), /Request rejected/)
+})
+
+test('clipboard IPC writes bounded text only from the owner frame', () => {
+  const writes = []
+  const { owner } = fixture({ writeClipboardText: (value) => writes.push(value) })
+  const copy = handlers.get('hantong:clipboard-write-text')
+  const event = invokeEvent(owner)
+
+  copy(event, 'revision text')
+  assert.deepEqual(writes, ['revision text'])
+  assert.throws(() => copy(event, 'x'.repeat(140_000)), /Request rejected/)
+  assert.throws(() => copy(invokeEvent(owner, {}), 'untrusted'), /Request rejected/)
+  assert.throws(() => copy(event, { text: 'not a string' }), /Request rejected/)
+})
+
+test('compose target selection uses owner-frame IPC and returns a freshly checked snapshot', async () => {
+  let selectedRequest
+  const snapshot = {
+    status: 'ready',
+    accountId,
+    composeId: 'opaque-compose-id',
+    accountLabel: 'Account',
+    documentVersion: 'document-version',
+    snapshotId: 'snapshot-id',
+    subject: 'Current subject',
+    recipients: [],
+    body: 'Current body',
+    candidates: [{ composeId: 'opaque-compose-id', label: 'Current subject', lastUsedAt: 10 }]
+  }
+  const { owner } = fixture({
+    composeTarget: () => ({
+      selectTarget: async (request) => {
+        selectedRequest = request
+        return snapshot
+      },
+      isResultCurrent: () => true,
+      isResultTargetCurrent: async () => true
+    })
+  })
+  const select = handlers.get('hantong:ai-mail-compose-select-target')
+  const event = invokeEvent(owner)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await select(event, { accountId, composeId: 'opaque-compose-id' }))),
+    snapshot
+  )
+  assert.deepEqual(selectedRequest, { accountId, composeId: 'opaque-compose-id' })
+  await assert.rejects(
+    select(invokeEvent(owner, {}), { accountId, composeId: 'opaque-compose-id' }),
+    /Request rejected/
+  )
 })
 
 test('settings IPC validates local Ollama model selection before persistence', async () => {

@@ -20,6 +20,8 @@ export function useAppSettings(): {
   setSettingsSection: (section: SettingsSection) => void
   setSettingsBackground: (snapshot: AccountViewSnapshot | null) => void
   setSettingsPanelFailed: (failed: boolean) => void
+  acquireViewCover: (owner: string) => Promise<AccountViewSnapshot | null>
+  releaseViewCover: (owner: string) => Promise<boolean>
 } {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -33,6 +35,58 @@ export function useAppSettings(): {
   const settingsWasOpenRef = useRef(false)
   const settingsOpeningRef = useRef(false)
   const settingsRevision = useRef(0)
+  const viewCoverOwners = useRef(new Set<string>())
+  const viewCoverSnapshot = useRef<AccountViewSnapshot | null>(null)
+  const viewCoverTransition = useRef(Promise.resolve())
+
+  const acquireViewCover = useCallback((owner: string): Promise<AccountViewSnapshot | null> => {
+    const transition = async (): Promise<AccountViewSnapshot | null> => {
+      if (viewCoverOwners.current.has(owner)) return viewCoverSnapshot.current
+      if (viewCoverOwners.current.size > 0) {
+        viewCoverOwners.current.add(owner)
+        return viewCoverSnapshot.current
+      }
+      const snapshot = await window.api.setSettingsPanelOpen(true)
+      viewCoverOwners.current.add(owner)
+      viewCoverSnapshot.current = snapshot
+      setSettingsBackground(snapshot)
+      return snapshot
+    }
+    const next = viewCoverTransition.current.then(transition, transition)
+    viewCoverTransition.current = next.then(
+      () => undefined,
+      () => undefined
+    )
+    return next
+  }, [])
+
+  const releaseViewCover = useCallback((owner: string): Promise<boolean> => {
+    const transition = async (): Promise<boolean> => {
+      if (!viewCoverOwners.current.has(owner)) return true
+      if (viewCoverOwners.current.size > 1) {
+        viewCoverOwners.current.delete(owner)
+        return true
+      }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await window.api.setSettingsPanelOpen(false)
+          viewCoverOwners.current.delete(owner)
+          viewCoverSnapshot.current = null
+          setSettingsBackground(null)
+          return true
+        } catch {
+          // Keep the owner lease when the native view could not be restored.
+        }
+      }
+      return false
+    }
+    const next = viewCoverTransition.current.then(transition, transition)
+    viewCoverTransition.current = next.then(
+      () => undefined,
+      () => undefined
+    )
+    return next
+  }, [])
 
   const openSettings = useCallback(async (): Promise<void> => {
     if (settingsDialogRef.current?.open || settingsOpeningRef.current) return
@@ -45,21 +99,19 @@ export function useAppSettings(): {
     let panelSetupFailed = false
     try {
       setSettingsPanelFailed(false)
-      let snapshot = await window.api.setSettingsPanelOpen(true)
+      const snapshot = await acquireViewCover('settings')
       if (snapshot) {
         const image = new Image()
         image.src = snapshot.dataUrl
         try {
           await image.decode()
         } catch {
-          snapshot = null
+          // A failed image decode must not release the native view cover early.
         }
       }
-      setSettingsBackground(snapshot)
     } catch {
-      setSettingsBackground(null)
       try {
-        await window.api.setSettingsPanelOpen(false)
+        if (!(await releaseViewCover('settings'))) panelSetupFailed = true
       } catch {
         panelSetupFailed = true
       }
@@ -68,7 +120,7 @@ export function useAppSettings(): {
       if (panelSetupFailed) setSettingsPanelFailed(true)
       setSettingsOpen(true)
     }
-  }, [])
+  }, [acquireViewCover, releaseViewCover])
 
   useEffect(() => {
     let active = true
@@ -116,23 +168,13 @@ export function useAppSettings(): {
   }, [settingsOpen])
 
   async function closeSettings(): Promise<void> {
-    let panelCloseFailed = false
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        await window.api.setSettingsPanelOpen(false)
-        panelCloseFailed = false
-        break
-      } catch {
-        panelCloseFailed = true
-      }
-    }
+    const panelCloseFailed = !(await releaseViewCover('settings'))
     if (panelCloseFailed) {
       setSettingsPanelFailed(true)
       return
     }
     setSettingsPanelFailed(false)
     try {
-      setSettingsBackground(null)
       setSettingsOpen(false)
     } catch {
       setSettingsFailed(true)
@@ -168,6 +210,8 @@ export function useAppSettings(): {
     setSettingsOpen,
     setSettingsSection,
     setSettingsBackground,
-    setSettingsPanelFailed
+    setSettingsPanelFailed,
+    acquireViewCover,
+    releaseViewCover
   }
 }

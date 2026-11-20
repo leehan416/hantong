@@ -1,6 +1,8 @@
 import { isAccountId, isValidGmailAccountDisplayName } from './account-state'
 import { isAccountColor } from '../shared/accounts'
 import { isSettingsPatch } from './settings-store'
+import { isValidRemoteOllamaEndpoint } from './ai-provider-policy'
+import { isAiMailConversationId } from '../shared/ipc'
 
 interface AppInfoRequest {
   ownerAlive: boolean
@@ -65,6 +67,7 @@ export function isAllowedAiMailOllamaRequest(request: AiMailOllamaRequest): bool
   return (
     isBoundedId(value.accountId) &&
     isBoundedId(value.composeId) &&
+    isAiMailConversationId(value.conversationId) &&
     isBoundedId(value.requestId) &&
     Number.isSafeInteger(value.generation) &&
     (value.generation as number) > 0 &&
@@ -75,7 +78,15 @@ export function isAllowedAiMailOllamaRequest(request: AiMailOllamaRequest): bool
       (typeof value.followUp === 'string' &&
         new TextEncoder().encode(value.followUp).byteLength <= 16 * 1024)) &&
     Object.keys(value).every((key) =>
-      ['accountId', 'composeId', 'requestId', 'generation', 'prompt', 'followUp'].includes(key)
+      [
+        'accountId',
+        'composeId',
+        'conversationId',
+        'requestId',
+        'generation',
+        'prompt',
+        'followUp'
+      ].includes(key)
     )
   )
 }
@@ -92,6 +103,38 @@ export function isAllowedProviderModelRequest(request: ProviderModelRequest): bo
     request.mainFrameMatches &&
     request.args.length === 0 &&
     isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
+export function isAllowedClipboardWriteRequest(request: AppInfoRequest): boolean {
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl) &&
+    request.args.length === 1 &&
+    typeof request.args[0] === 'string' &&
+    new TextEncoder().encode(request.args[0]).byteLength <= 128 * 1024
+  )
+}
+
+export function isAllowedOllamaCredentialRequest(
+  request: AppInfoRequest,
+  operation: 'status' | 'set' | 'clear'
+): boolean {
+  const endpoint = request.args[0]
+  return (
+    request.ownerAlive &&
+    request.senderMatches &&
+    request.mainFrameMatches &&
+    isTrustedRendererUrl(request.senderUrl, request.rendererUrl) &&
+    typeof endpoint === 'string' &&
+    isValidRemoteOllamaEndpoint(endpoint) &&
+    (operation === 'set'
+      ? request.args.length === 2 &&
+        typeof request.args[1] === 'string' &&
+        /^[\x21-\x7e]{1,4096}$/.test(request.args[1])
+      : request.args.length === 1)
   )
 }
 
@@ -143,6 +186,26 @@ export function isAllowedAiMailComposeTargetRequest(request: AppInfoRequest): bo
     request.mainFrameMatches &&
     request.args.length === 0 &&
     isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+}
+
+export function isAllowedAiMailComposeSelectionRequest(request: AppInfoRequest): boolean {
+  if (
+    !request.ownerAlive ||
+    !request.senderMatches ||
+    !request.mainFrameMatches ||
+    request.args.length !== 1 ||
+    !request.args[0] ||
+    typeof request.args[0] !== 'object' ||
+    Array.isArray(request.args[0]) ||
+    !isTrustedRendererUrl(request.senderUrl, request.rendererUrl)
+  )
+    return false
+  const value = request.args[0] as Record<string, unknown>
+  return (
+    isBoundedId(value.accountId) &&
+    isBoundedId(value.composeId) &&
+    Object.keys(value).every((key) => ['accountId', 'composeId'].includes(key))
   )
 }
 

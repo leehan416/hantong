@@ -2,12 +2,14 @@
 import assert from 'node:assert/strict'
 
 export const ALLOWED_API_OPERATIONS = Object.freeze([
+  'writeClipboardText',
   'getAiMailReadSnapshot',
   'isAiMailReadSnapshotCurrent',
   'applyAiMailSubject',
   'undoAiMailSubject',
   'getAiMailComposeTargetStatus',
   'getAiMailComposeSnapshot',
+  'selectAiMailComposeTarget',
   'applyAiMailDraft',
   'undoAiMailDraft',
   'onAiMailComposeTarget',
@@ -21,6 +23,9 @@ export const ALLOWED_API_OPERATIONS = Object.freeze([
   'onAiMailCodexStatus',
   'getOllamaStatus',
   'getOllamaModels',
+  'getOllamaCredentialStatus',
+  'setOllamaCredential',
+  'clearOllamaCredential',
   'getCodexModels',
   'getLoginLaunchState',
   'setLoginLaunchEnabled',

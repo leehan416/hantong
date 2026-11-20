@@ -10,6 +10,7 @@ import {
   type AppSettings,
   type AppSettingsPatch
 } from '../shared/settings'
+import { isValidRemoteOllamaEndpoint, normalizeRemoteOllamaEndpoint } from './ai-provider-policy'
 
 const BOOLEAN = [true, false] as const
 
@@ -23,9 +24,13 @@ const FIELDS = {
   hideHeaderButtons: BOOLEAN,
   hideSidePanel: BOOLEAN,
   hideStoragePromo: BOOLEAN,
-  aiMailProvider: ['codex', 'ollama']
+  aiMailProvider: ['codex', 'ollama'],
+  ollamaMode: ['local', 'remote']
 } as const satisfies Record<
-  Exclude<keyof AppSettingsPatch, 'ollamaModel' | 'codexModel'>,
+  Exclude<
+    keyof AppSettingsPatch,
+    'ollamaModel' | 'codexModel' | 'ollamaRemoteEndpoint' | 'ollamaRemoteModel'
+  >,
   readonly (string | boolean)[]
 >
 
@@ -46,7 +51,9 @@ export function isSettingsPatch(value: unknown): value is AppSettingsPatch {
   return (
     keys.length > 0 &&
     keys.every((key) => {
-      if (key === 'ollamaModel' || key === 'codexModel')
+      if (key === 'ollamaRemoteEndpoint')
+        return typeof value[key] === 'string' && isValidRemoteOllamaEndpoint(value[key])
+      if (key === 'ollamaModel' || key === 'codexModel' || key === 'ollamaRemoteModel')
         return (
           value[key] === null || (typeof value[key] === 'string' && MODEL_NAME.test(value[key]))
         )
@@ -73,6 +80,16 @@ export function parseSettings(value: unknown): AppSettings {
     (typeof value.codexModel === 'string' && MODEL_NAME.test(value.codexModel))
   ) {
     settings.codexModel = value.codexModel
+  }
+  if (isOption(['local', 'remote'], value.ollamaMode))
+    settings.ollamaMode = value.ollamaMode as 'local' | 'remote'
+  if (isValidRemoteOllamaEndpoint(value.ollamaRemoteEndpoint))
+    settings.ollamaRemoteEndpoint = normalizeRemoteOllamaEndpoint(value.ollamaRemoteEndpoint)
+  if (
+    value.ollamaRemoteModel === null ||
+    (typeof value.ollamaRemoteModel === 'string' && MODEL_NAME.test(value.ollamaRemoteModel))
+  ) {
+    settings.ollamaRemoteModel = value.ollamaRemoteModel
   }
   // `hideGemini` was folded into `hideHeaderButtons`; keep Gemini hidden for users who hid it.
   if (value.hideHeaderButtons === undefined && value.hideGemini === true) {

@@ -5,6 +5,8 @@ import type {
   AiMailComposeApplyRequest,
   AiMailComposeMutationResult,
   AiMailComposeUndoRequest,
+  ComposeCandidate,
+  ComposeCandidateSelectionRequest,
   ComposeSnapshotResult,
   ComposeTargetStatus
 } from '../shared/ipc'
@@ -30,6 +32,14 @@ interface Context {
 
 interface PageResult {
   targetId: string | null
+  targets?: Array<{
+    targetId: string
+    title: string
+    subject: string
+    recipients: string[]
+    supported: boolean
+    lastUsedAt: number
+  }>
   unsupported?: boolean
   snapshot: {
     subject: string
@@ -63,8 +73,10 @@ export function gmailComposeTargetPageSource(documentId: string): string {
     globalThis[key]?.revoke?.();
     const ids = new WeakMap();
     const targets = new Map();
+    const lastUsedAt = new Map();
     let sequence = 0;
     let selected = null;
+    let discoveryBaselineComplete = false;
     const candidateFor = (node) => {
       if (!(node instanceof Element)) return null;
       const editor = node.matches('[contenteditable="true"]') ? node : node.closest('[contenteditable="true"]');
@@ -85,6 +97,25 @@ export function gmailComposeTargetPageSource(documentId: string): string {
       }
       return null;
     };
+    const rememberTarget = (item, allowEvicted = false) => {
+      let id = ids.get(item.editor);
+      if (id && targets.has(id)) {
+        targets.set(id, item);
+        return id;
+      }
+      if (id && !allowEvicted) return null;
+      id = 'target-' + (++sequence);
+      if (targets.size >= 32) {
+        const oldest = targets.keys().next().value;
+        if (oldest) {
+          targets.delete(oldest);
+          lastUsedAt.delete(oldest);
+        }
+      }
+      ids.set(item.editor, id);
+      targets.set(id, item);
+      return id;
+    };
     const remember = (event) => {
       const item = candidateFor(event.target);
       if (!item) {
@@ -92,17 +123,9 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         if (node instanceof Element && (node.matches('[contenteditable="true"]') || node.closest('[contenteditable="true"]'))) selected = 'unsupported';
         return;
       }
-      let id = ids.get(item.editor);
-      if (!id) {
-        id = 'target-' + (++sequence);
-        if (targets.size >= 32) {
-          const oldest = targets.keys().next().value;
-          if (oldest) targets.delete(oldest);
-        }
-        ids.set(item.editor, id);
-        targets.set(id, item);
-      }
+      const id = rememberTarget(item, true);
       selected = id;
+      lastUsedAt.set(id, Date.now());
     };
     document.addEventListener('focusin', remember, true);
     document.addEventListener('click', remember, true);
@@ -110,25 +133,113 @@ export function gmailComposeTargetPageSource(documentId: string): string {
     document.addEventListener('input', remember, true);
     const inspect = (id) => {
       const item = targets.get(id);
-      if (!item || !item.root.isConnected || !item.editor.isConnected || (item.subject && !item.subject.isConnected)) return null;
-      const body = item.editor.innerText || '';
+      if (!item || !eligible(item.root) || !eligible(item.editor) || (item.subject && !eligible(item.subject))) return null;
+      const bodyText = item.editor.innerText || '';
+      const placeholder = item.editor.getAttribute('aria-placeholder') || item.editor.getAttribute('data-placeholder');
+      const tooLarge = bodyText.length > ${MAX_BODY_LENGTH};
+      const body = tooLarge || bodyText === placeholder || /^[\\s\\u200B\\uFEFF]*$/.test(bodyText) ? '' : bodyText;
       const recipients = [];
       for (const node of item.root.querySelectorAll('[email], input[name="to"]')) {
         const value = node.getAttribute('email') || node.value || '';
         if (value && recipients.length < ${MAX_RECIPIENTS} && value.length <= ${MAX_RECIPIENT_LENGTH} && !recipients.includes(value)) recipients.push(value);
       }
       const unsupported = item.editor.querySelector('.gmail_signature, .gmail_quote, blockquote, img, table') !== null || Array.from(item.editor.childNodes).some((node) => node.nodeType !== Node.TEXT_NODE && !(node.nodeType === Node.ELEMENT_NODE && node.nodeName === 'BR'));
-      return { subject: (item.subject?.value || '').slice(0, ${MAX_SUBJECT_LENGTH}), recipients, body, supported: !unsupported && body.length <= ${MAX_BODY_LENGTH} };
+      return { subject: (item.subject?.value || '').slice(0, ${MAX_SUBJECT_LENGTH}), recipients, body, supported: !unsupported && !tooLarge };
+    };
+    const eligible = (node) => {
+      if (!node || !node.isConnected) return false;
+      if (node.closest?.('[aria-hidden="true"]')) return false;
+      if (typeof node.getClientRects === 'function' && !node.getClientRects().length) return false;
+      if (typeof getComputedStyle === 'function') {
+        const style = getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+      }
+      return true;
+    };
+    const describe = (id) => {
+      const item = targets.get(id);
+      if (!item || !eligible(item.root) || !eligible(item.editor) || (item.subject && !eligible(item.subject))) return null;
+      const recipients = [];
+      for (const node of item.root.querySelectorAll('[email], input[name="to"]')) {
+        const value = node.getAttribute('email') || node.value || '';
+        if (value && recipients.length < ${MAX_RECIPIENTS} && value.length <= ${MAX_RECIPIENT_LENGTH} && !recipients.includes(value)) recipients.push(value);
+      }
+      const unsupported = item.editor.querySelector('.gmail_signature, .gmail_quote, blockquote, img, table') !== null || Array.from(item.editor.childNodes).some((node) => node.nodeType !== Node.TEXT_NODE && !(node.nodeType === Node.ELEMENT_NODE && node.nodeName === 'BR'));
+      const subject = (item.subject?.value || '').slice(0, ${MAX_SUBJECT_LENGTH});
+      const title = item.root.querySelector('[aria-label]')?.getAttribute('aria-label') || subject || recipients[0] || 'New message';
+      return { targetId: id, title: String(title).slice(0, 160), subject, recipients, supported: !unsupported, lastUsedAt: lastUsedAt.get(id) || 0 };
+    };
+    const discoverOpenComposes = () => {
+      if (typeof document.querySelectorAll !== 'function') return;
+      const candidates = new Map();
+      for (const editor of document.querySelectorAll('[contenteditable="true"]')) {
+        if (!(editor instanceof Element)) continue;
+        const item = candidateFor(editor);
+        if (!item || !eligible(item.root) || !eligible(editor) || (item.subject && !eligible(item.subject))) continue;
+        candidates.set(item.editor, item);
+      }
+      const newlyDiscoveredIds = [];
+      for (const item of candidates.values()) {
+        const hadIdentity = ids.has(item.editor);
+        const id = rememberTarget(item);
+        if (id && discoveryBaselineComplete && !hadIdentity) newlyDiscoveredIds.push(id);
+      }
+      if (!discoveryBaselineComplete) {
+        discoveryBaselineComplete = true;
+      } else if (newlyDiscoveredIds.length) {
+        const openedAt = Date.now();
+        for (const id of newlyDiscoveredIds) lastUsedAt.set(id, openedAt);
+      }
+      if (selected && !candidates.has(targets.get(selected)?.editor)) selected = null;
+      if (!selected && candidates.size === 1) {
+        const item = candidates.values().next().value;
+        const id = ids.get(item.editor);
+        if (id) selected = id;
+      }
+      return candidates.size;
     };
     let active = true;
+    let discoveryTimer = null;
+    const observer = typeof MutationObserver === 'function' ? new MutationObserver(() => {
+      if (discoveryTimer !== null) return;
+      discoveryTimer = setTimeout(() => {
+        discoveryTimer = null;
+        if (active) discoverOpenComposes();
+      }, 100);
+    }) : null;
+    if (document.documentElement) observer?.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['contenteditable', 'name']
+    });
     globalThis[key] = {
       documentId,
-      revoke() { active = false; document.removeEventListener('focusin', remember, true); document.removeEventListener('click', remember, true); document.removeEventListener('pointerdown', remember, true); document.removeEventListener('input', remember, true); globalThis[key] = null; },
+      revoke() { active = false; observer?.disconnect(); if (discoveryTimer !== null) clearTimeout(discoveryTimer); document.removeEventListener('focusin', remember, true); document.removeEventListener('click', remember, true); document.removeEventListener('pointerdown', remember, true); document.removeEventListener('input', remember, true); globalThis[key] = null; },
       read() {
         if (!active) return null;
-        if (selected === 'unsupported') return { targetId: 'unsupported', unsupported: true, snapshot: null };
-        const snapshot = selected ? inspect(selected) : null;
-        return { targetId: snapshot ? selected : null, snapshot };
+        if (selected === 'unsupported') selected = null;
+        if (!selected) discoverOpenComposes();
+        let snapshot = selected ? inspect(selected) : null;
+        if (selected && !snapshot) {
+          selected = null;
+        }
+        if (!selected) {
+          discoverOpenComposes();
+          snapshot = selected ? inspect(selected) : null;
+        }
+        discoverOpenComposes();
+        return { targetId: snapshot ? selected : null, snapshot, targets: Array.from(targets.keys()).map(describe).filter(Boolean).sort((a, b) => b.lastUsedAt - a.lastUsedAt) };
+      },
+      listTargets() {
+        if (!active) return [];
+        discoverOpenComposes();
+        return Array.from(targets.keys()).map(describe).filter(Boolean).sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+      },
+      selectTarget(targetId) {
+        if (!active || !targets.has(targetId) || !inspect(targetId)) return false;
+        selected = targetId;
+        return true;
       },
       readTarget(targetId) {
         if (!active) return null;
@@ -136,7 +247,7 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         return snapshot ? { targetId, snapshot } : null;
       },
       replace(targetId, expectedBody, replacement) {
-        if (!active) return { status: 'stale_target' };
+        if (!active || selected !== targetId) return { status: 'stale_target' };
         const item = targets.get(targetId);
         const snapshot = inspect(targetId);
         if (!snapshot || !item) return { status: 'stale_target' };
@@ -156,7 +267,7 @@ export function gmailComposeTargetPageSource(documentId: string): string {
         return { status: 'applied' };
       },
       replaceSubject(targetId, expectedSubject, replacement) {
-        if (!active) return { status: 'stale_target' };
+        if (!active || selected !== targetId) return { status: 'stale_target' };
         const item = targets.get(targetId);
         const snapshot = inspect(targetId);
         if (!snapshot || !item || !item.subject) return { status: 'stale_target' };
@@ -180,6 +291,31 @@ function execute(contents: WebContents, code: string): Promise<unknown> {
 function validPageResult(value: unknown): value is PageResult {
   if (!value || typeof value !== 'object') return false
   const result = value as Record<string, unknown>
+  const validCandidates =
+    result.targets === undefined ||
+    (Array.isArray(result.targets) &&
+      result.targets.length <= 32 &&
+      result.targets.every((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return false
+        const item = candidate as Record<string, unknown>
+        return (
+          typeof item.targetId === 'string' &&
+          item.targetId.length <= 64 &&
+          typeof item.title === 'string' &&
+          item.title.length <= 160 &&
+          typeof item.subject === 'string' &&
+          item.subject.length <= MAX_SUBJECT_LENGTH &&
+          Array.isArray(item.recipients) &&
+          item.recipients.length <= MAX_RECIPIENTS &&
+          item.recipients.every(
+            (entry) => typeof entry === 'string' && entry.length <= MAX_RECIPIENT_LENGTH
+          ) &&
+          typeof item.supported === 'boolean' &&
+          typeof item.lastUsedAt === 'number' &&
+          Number.isFinite(item.lastUsedAt)
+        )
+      }))
+  if (!validCandidates) return false
   if (result.targetId === null && result.snapshot === null) return true
   if (result.targetId === 'unsupported' && result.unsupported === true && result.snapshot === null)
     return true
@@ -222,6 +358,7 @@ export function createGmailComposeTargetService(options: {
 }): {
   getStatus(): Promise<ComposeTargetStatus>
   getSnapshot(): Promise<ComposeSnapshotResult>
+  selectTarget(request: ComposeCandidateSelectionRequest): Promise<ComposeSnapshotResult>
   applyDraft(request: AiMailComposeApplyRequest): Promise<AiMailComposeMutationResult>
   undoDraft(request: AiMailComposeUndoRequest): Promise<AiMailComposeMutationResult>
   applySubject(request: AiMailComposeApplyRequest): Promise<AiMailComposeMutationResult>
@@ -236,6 +373,7 @@ export function createGmailComposeTargetService(options: {
   let documentId: string | null = null
   let selectedId: string | null = null
   let selectedDomId: string | null = null
+  const candidateIds = new Map<string, { composeId: string; lastUsedAt: number; title: string }>()
   let disposed = false
   let generation = 0
   let navListener:
@@ -279,6 +417,7 @@ export function createGmailComposeTargetService(options: {
     documentId = null
     selectedId = null
     selectedDomId = null
+    candidateIds.clear()
     snapshotLeases.clear()
     applyRecords.clear()
     confirmedBodies.clear()
@@ -289,7 +428,13 @@ export function createGmailComposeTargetService(options: {
   }
 
   function current(): Context | null {
-    if (disposed || options.window.isDestroyed()) return null
+    if (
+      disposed ||
+      options.window.isDestroyed() ||
+      options.window.isMinimized() ||
+      !options.window.isVisible()
+    )
+      return null
     const accountId = options.views.getActiveAccountId()
     if (!accountId || !options.getAccounts().some((account) => account.id === accountId))
       return null
@@ -392,19 +537,30 @@ export function createGmailComposeTargetService(options: {
         return { status: 'stale' }
       }
       if (!validPageResult(value)) return { status: 'unsupported' }
+      for (const candidate of value.targets ?? []) {
+        const previous = candidateIds.get(candidate.targetId)
+        candidateIds.set(candidate.targetId, {
+          composeId: previous?.composeId ?? randomUUID(),
+          lastUsedAt: candidate.lastUsedAt,
+          title: candidate.title
+        })
+      }
+      for (const targetId of candidateIds.keys())
+        if (!(value.targets ?? []).some((candidate) => candidate.targetId === targetId))
+          candidateIds.delete(targetId)
       if (!value.targetId || !value.snapshot) {
         if (value.unsupported) {
           selectedId = null
           selectedDomId = null
-          return { status: 'unsupported' }
+          return { status: 'unsupported', result: value, ctx: capturedContext }
         }
         selectedId = null
         selectedDomId = null
-        return { status: 'none' }
+        return { status: 'none', result: value, ctx: capturedContext }
       }
       if (value.targetId !== selectedDomId) {
         selectedDomId = value.targetId
-        selectedId = randomUUID()
+        selectedId = candidateIds.get(value.targetId)?.composeId ?? randomUUID()
       }
       return {
         status: value.snapshot.supported ? 'ready' : 'unsupported',
@@ -419,9 +575,29 @@ export function createGmailComposeTargetService(options: {
 
   async function result(snapshot: boolean): Promise<ComposeTargetStatus | ComposeSnapshotResult> {
     const captured = await capture()
+    const candidatesFor = (pageResult?: PageResult): ComposeCandidate[] =>
+      (pageResult?.targets ?? [])
+        .map((candidate) => {
+          const identity = candidateIds.get(candidate.targetId)
+          return identity
+            ? {
+                composeId: identity.composeId,
+                label: identity.title,
+                lastUsedAt: identity.lastUsedAt
+              }
+            : null
+        })
+        .filter((candidate): candidate is ComposeCandidate => candidate !== null)
     if (captured.status !== 'ready') {
       if (captured.status === 'unsupported')
-        return { status: 'unsupported', code: 'unsupported_content' }
+        return {
+          status: 'unsupported',
+          code: 'unsupported_content',
+          ...(captured.result ? { candidates: candidatesFor(captured.result) } : {})
+        }
+      if (captured.status === 'none') {
+        return { status: 'none', candidates: candidatesFor(captured.result) }
+      }
       return { status: captured.status }
     }
     const capturedResult = captured.result
@@ -443,6 +619,7 @@ export function createGmailComposeTargetService(options: {
       recipients: capturedResult.snapshot.recipients,
       subject: capturedResult.snapshot.subject
     }
+    const candidates = candidatesFor(capturedResult)
     const lease = {
       generation,
       accountId: capturedContext.accountId,
@@ -454,7 +631,7 @@ export function createGmailComposeTargetService(options: {
       probeDocumentId: documentId ?? ''
     }
     if (!snapshot) {
-      const status = { status: 'ready' as const, ...metadata }
+      const status = { status: 'ready' as const, ...metadata, candidates }
       resultLeases.set(status, lease)
       return status
     }
@@ -467,7 +644,8 @@ export function createGmailComposeTargetService(options: {
       snapshotId: randomUUID(),
       recipients: metadata.recipients,
       subject: metadata.subject,
-      body: capturedResult.snapshot.body
+      body: capturedResult.snapshot.body,
+      candidates
     }
     resultLeases.set(snapshotResult, lease)
     snapshotLeases.set(snapshotResult.snapshotId, {
@@ -491,6 +669,8 @@ export function createGmailComposeTargetService(options: {
       documentId === lease.probeDocumentId &&
       context.documentVersion === lease.documentVersion &&
       context.lifecycleVersion === lease.lifecycleVersion &&
+      selectedId === lease.composeId &&
+      selectedDomId === lease.targetId &&
       latest?.accountId === lease.accountId &&
       latest.contents === lease.contents &&
       latest.lifecycleVersion === lease.lifecycleVersion
@@ -615,12 +795,15 @@ export function createGmailComposeTargetService(options: {
         if (result.status !== 'applied')
           return { status: result.status === 'unsupported' ? 'unsupported' : 'stale_target' }
         const applyId = randomUUID()
-        applyRecords.clear()
         applyRecords.set(applyId, {
           lease,
           originalBody: confirmation?.body ?? snapshot.body,
           appliedBody: replacement
         })
+        if (applyRecords.size > 32) {
+          const oldest = applyRecords.keys().next().value
+          if (oldest) applyRecords.delete(oldest)
+        }
         return { status: 'applied', applyId }
       }
       const record = applyRecords.get(request.applyId)
@@ -740,12 +923,15 @@ export function createGmailComposeTargetService(options: {
         return { status: value.status === 'unsupported' ? 'unsupported' : 'stale_target' }
       if (operation === 'apply') {
         const applyId = randomUUID()
-        subjectApplyRecords.clear()
         subjectApplyRecords.set(applyId, {
           lease,
           originalSubject: confirmation?.subject ?? expected,
           appliedSubject: replacement
         })
+        if (subjectApplyRecords.size > 32) {
+          const oldest = subjectApplyRecords.keys().next().value
+          if (oldest) subjectApplyRecords.delete(oldest)
+        }
         const snapshot = snapshotLeases.get(leaseId)
         if (snapshot) snapshotLeases.set(leaseId, { ...snapshot, subject: replacement })
         return { status: 'applied', applyId }
@@ -786,6 +972,44 @@ export function createGmailComposeTargetService(options: {
     },
     async getSnapshot() {
       return (await result(true)) as ComposeSnapshotResult
+    },
+    async selectTarget(request) {
+      if (request.accountId !== current()?.accountId) return { status: 'stale' }
+      const target = [...candidateIds.entries()].find(
+        ([, identity]) => identity.composeId === request.composeId
+      )
+      if (!target) return { status: 'stale' }
+      const [targetId] = target
+      const ctx = context
+      const localDocumentId = documentId
+      const localGeneration = generation
+      if (!ctx || !localDocumentId) return { status: 'stale' }
+      try {
+        const selected = await execute(
+          ctx.contents,
+          `globalThis.__hantongComposeTarget?.documentId === ${JSON.stringify(localDocumentId)} ? globalThis.__hantongComposeTarget.selectTarget(${JSON.stringify(targetId)}) : false`
+        )
+        if (
+          selected !== true ||
+          generation !== localGeneration ||
+          !leaseIsCurrent({
+            generation: localGeneration,
+            accountId: ctx.accountId,
+            composeId: request.composeId,
+            targetId,
+            contents: ctx.contents,
+            lifecycleVersion: ctx.lifecycleVersion,
+            documentVersion: ctx.documentVersion,
+            probeDocumentId: localDocumentId
+          })
+        )
+          return { status: 'stale' }
+        selectedDomId = targetId
+        selectedId = request.composeId
+        return await this.getSnapshot()
+      } catch {
+        return { status: 'stale' }
+      }
     },
     applyDraft(request) {
       return mutate(request, 'apply')

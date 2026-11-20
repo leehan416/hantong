@@ -1,15 +1,38 @@
 import type { OllamaGenerationRequest, OllamaGenerationResult } from '../shared/ipc'
 import type { AppSettings } from '../shared/settings'
-import type { createOllamaService } from './ollama-service'
+import type { AiModelPort } from './ai-model-port'
+import { isAiMailConversationId } from '../shared/ipc'
 
 const MAX_REQUESTS = 8
 const MAX_REQUEST_BYTES = 48 * 1024
 
-type Entry = { controller: AbortController; owner: object; generation: number; model: string }
+async function awaitWithAbort<T>(value: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new Error('cancelled')
+  let onAbort: (() => void) | undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new Error('cancelled'))
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([value, aborted])
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
+  }
+}
+
+type Entry = {
+  controller: AbortController
+  owner: object
+  generation: number
+  model: string
+  mode: 'local' | 'remote'
+  endpoint: string
+}
 
 export function createAiMailOllamaGenerationService(options: {
-  ollama: ReturnType<typeof createOllamaService>
+  provider: AiModelPort
   settings: () => AppSettings | null
+  remoteCredential: (endpoint: string) => Promise<string | null>
 }): {
   generate(
     request: OllamaGenerationRequest,
@@ -18,7 +41,7 @@ export function createAiMailOllamaGenerationService(options: {
   ): Promise<OllamaGenerationResult>
   cancel(requestId: string): boolean
   cancelOwner(owner: object): void
-  dispose(): void
+  dispose(): Promise<void>
 } {
   const pending = new Map<string, Entry>()
   let disposed = false
@@ -36,7 +59,11 @@ export function createAiMailOllamaGenerationService(options: {
       !entry.controller.signal.aborted &&
       entry.owner === owner &&
       entry.generation === request.generation &&
-      entry.model === settings?.ollamaModel &&
+      settings !== null &&
+      entry.model ===
+        (settings?.ollamaMode === 'remote' ? settings.ollamaRemoteModel : settings?.ollamaModel) &&
+      entry.mode === settings.ollamaMode &&
+      entry.endpoint === settings.ollamaRemoteEndpoint &&
       settings?.aiMailProvider === 'ollama' &&
       isCurrent()
     )
@@ -55,29 +82,66 @@ export function createAiMailOllamaGenerationService(options: {
       new TextEncoder().encode(JSON.stringify(request)).byteLength > MAX_REQUEST_BYTES
     )
       return { ok: false, error: 'failed', reason: 'request_limit' }
+    if (!isAiMailConversationId(request.conversationId))
+      return { ok: false, error: 'failed', reason: 'invalid_conversation' }
     const initial = options.settings()
-    if (initial?.aiMailProvider !== 'ollama' || !initial.ollamaModel)
+    const initialModel =
+      initial?.ollamaMode === 'remote' ? initial.ollamaRemoteModel : initial?.ollamaModel
+    if (initial?.aiMailProvider !== 'ollama' || !initialModel)
       return { ok: false, error: 'unavailable', reason: 'provider_unavailable' }
     const entry: Entry = {
       controller: new AbortController(),
       owner,
       generation: request.generation,
-      model: initial.ollamaModel
+      model: initialModel,
+      mode: initial.ollamaMode,
+      endpoint: initial.ollamaRemoteEndpoint
     }
     pending.set(request.requestId, entry)
     try {
-      const status = await options.ollama.getStatus(entry.controller.signal)
+      const apiKey =
+        entry.mode === 'remote'
+          ? await awaitWithAbort(options.remoteCredential(entry.endpoint), entry.controller.signal)
+          : null
+      if (!current(entry, request, owner, isCurrent))
+        return {
+          ok: false,
+          error: 'cancelled',
+          reason: entry.controller.signal.aborted ? 'cancelled' : 'stale'
+        }
+      if (entry.mode === 'remote' && !apiKey)
+        return { ok: false, error: 'unavailable', reason: 'remote_credential_missing' }
+      const configuration = {
+        provider: 'ollama' as const,
+        mode: entry.mode,
+        endpoint: entry.endpoint,
+        apiKey,
+        model: entry.model
+      }
+      const status = await options.provider.getStatus(configuration, entry.controller.signal)
       if (!current(entry, request, owner, isCurrent))
         return { ok: false, error: 'cancelled', reason: 'stale' }
-      if (status.state !== 'available' || !status.cloudDisabled)
-        return { ok: false, error: 'unavailable', reason: 'local_model_unavailable' }
-      await options.ollama.validateModel(entry.model, entry.controller.signal)
+      if (status.state !== 'available' || (entry.mode === 'local' && !status.cloudDisabled))
+        return { ok: false, error: 'unavailable', reason: 'model_unavailable' }
+      const models = await options.provider.getModels(configuration, entry.controller.signal)
+      if (!current(entry, request, owner, isCurrent))
+        return {
+          ok: false,
+          error: 'cancelled',
+          reason: entry.controller.signal.aborted ? 'cancelled' : 'stale'
+        }
+      if (!models.includes(entry.model))
+        return { ok: false, error: 'unavailable', reason: 'model_unavailable' }
       if (!current(entry, request, owner, isCurrent))
         return { ok: false, error: 'cancelled', reason: 'stale' }
-      const output = await options.ollama.generateChat(
-        entry.model,
-        request.prompt,
-        request.followUp,
+      const output = await options.provider.generate(
+        {
+          ...configuration,
+          accountId: request.accountId,
+          conversationId: request.conversationId,
+          prompt: request.prompt,
+          isCurrent: () => current(entry, request, owner, isCurrent)
+        },
         entry.controller.signal
       )
       if (!current(entry, request, owner, isCurrent))
@@ -87,6 +151,12 @@ export function createAiMailOllamaGenerationService(options: {
         ? { ok: true, output: validated }
         : { ok: false, error: 'failed', reason: 'invalid_output' }
     } catch {
+      if (!current(entry, request, owner, isCurrent))
+        return {
+          ok: false,
+          error: 'cancelled',
+          reason: entry.controller.signal.aborted ? 'cancelled' : 'stale'
+        }
       return {
         ok: false,
         error: entry.controller.signal.aborted ? 'cancelled' : 'failed',
@@ -108,10 +178,11 @@ export function createAiMailOllamaGenerationService(options: {
     for (const entry of pending.values()) if (entry.owner === owner) entry.controller.abort()
   }
 
-  function dispose(): void {
+  async function dispose(): Promise<void> {
     disposed = true
     for (const entry of pending.values()) entry.controller.abort()
     pending.clear()
+    await options.provider.dispose()
   }
 
   return { generate, cancel, cancelOwner, dispose }
@@ -122,9 +193,20 @@ function validateOutput(
 ): Extract<OllamaGenerationResult, { ok: true }>['output'] | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const output = value as Record<string, unknown>
-  if (typeof output.text !== 'string' || output.text.length > 20_000) return null
   if (output.kind === 'answer' && Object.keys(output).sort().join(',') === 'kind,text')
-    return { kind: 'answer', text: output.text }
+    return typeof output.text === 'string' && output.text.length <= 20_000
+      ? { kind: 'answer', text: output.text }
+      : null
+  if (
+    output.kind === 'proposal' &&
+    typeof output.subject === 'string' &&
+    output.subject.length <= 998 &&
+    typeof output.body === 'string' &&
+    output.body.length <= 20_000 &&
+    Object.keys(output).sort().join(',') === 'body,kind,subject'
+  )
+    return { kind: 'proposal', subject: output.subject, body: output.body }
+  if (typeof output.text !== 'string' || output.text.length > 20_000) return null
   if (
     output.kind === 'proposal' &&
     output.field === 'body' &&

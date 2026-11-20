@@ -7,7 +7,8 @@ import {
   nativeImage,
   Tray,
   nativeTheme,
-  shell
+  shell,
+  safeStorage
 } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -51,6 +52,8 @@ import { createLoginLaunchStartupController } from './login-launch-startup'
 import { createAiMailCodexService } from './ai-mail-codex-service'
 import { createOllamaService } from './ollama-service'
 import { createAiMailOllamaGenerationService } from './ai-mail-ollama-service'
+import { createMastraOllamaProvider } from './mastra-ollama-provider'
+import { createOllamaCredentialStore } from './ollama-credential-store'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
 import {
@@ -131,9 +134,15 @@ const aiMailCodex = createAiMailCodexService({
   }
 })
 const ollama = createOllamaService()
+const ollamaCredentials = createOllamaCredentialStore({
+  directory: app.getPath('userData'),
+  safeStorage
+})
+const aiModel = createMastraOllamaProvider({ local: ollama })
 const aiMailOllama = createAiMailOllamaGenerationService({
-  ollama,
-  settings: () => settingsStore?.get() ?? null
+  provider: aiModel,
+  settings: () => settingsStore?.get() ?? null,
+  remoteCredential: (endpoint) => ollamaCredentials.get(endpoint)
 })
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
@@ -646,6 +655,9 @@ void app
       access: () => accountAccessController,
       notifications: () => notificationConnectionController,
       settings: () => settingsStore,
+      writeClipboardText: (text) => clipboard.writeText(text),
+      aiModel,
+      ollamaCredentials,
       isQuitting: () => appQuitting,
       requireAccountStore,
       requireAccountRemoval,

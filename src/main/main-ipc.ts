@@ -51,8 +51,13 @@ import {
   OLLAMA_STATUS_CHANNEL,
   OLLAMA_MODELS_CHANNEL,
   CODEX_MODELS_CHANNEL,
+  CLIPBOARD_WRITE_TEXT_CHANNEL,
+  OLLAMA_CREDENTIAL_STATUS_CHANNEL,
+  OLLAMA_CREDENTIAL_SET_CHANNEL,
+  OLLAMA_CREDENTIAL_CLEAR_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
   AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_READ_SNAPSHOT_CHANNEL,
@@ -72,7 +77,10 @@ import {
   isAllowedAiMailCodexRequest,
   isAllowedAiMailOllamaRequest,
   isAllowedProviderModelRequest,
+  isAllowedClipboardWriteRequest,
+  isAllowedOllamaCredentialRequest,
   isAllowedAiMailComposeTargetRequest,
+  isAllowedAiMailComposeSelectionRequest,
   isAllowedAiMailComposeMutationRequest,
   isAllowedAiMailReadRequest,
   isAllowedAiMailReadLeaseRequest,
@@ -82,6 +90,8 @@ import type { createLoginLaunchController } from './login-launch'
 import type { createAiMailCodexService } from './ai-mail-codex-service'
 import type { createAiMailOllamaGenerationService } from './ai-mail-ollama-service'
 import type { createOllamaService } from './ollama-service'
+import type { createOllamaCredentialStore } from './ollama-credential-store'
+import type { AiModelPort } from './ai-model-port'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
 
@@ -92,6 +102,7 @@ export interface MainIpcDependencies {
   readonly access: () => ReturnType<typeof createAccountAccessController> | null
   readonly notifications: () => ReturnType<typeof createNotificationConnectionController> | null
   readonly settings: () => ReturnType<typeof createSettingsStore> | null
+  readonly writeClipboardText: (text: string) => void
   readonly isQuitting: () => boolean
   readonly requireAccountStore: () => ReturnType<typeof createAccountStore>
   readonly requireAccountRemoval: () => ReturnType<typeof createAccountRemovalController>
@@ -108,6 +119,8 @@ export interface MainIpcDependencies {
   readonly aiMailCodex: ReturnType<typeof createAiMailCodexService>
   readonly aiMailOllama: ReturnType<typeof createAiMailOllamaGenerationService>
   readonly ollama: ReturnType<typeof createOllamaService>
+  readonly aiModel: AiModelPort
+  readonly ollamaCredentials: ReturnType<typeof createOllamaCredentialStore>
   readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
   readonly readTarget: () => ReturnType<typeof createGmailReadTargetService> | null
 }
@@ -213,6 +226,134 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       return result
     })
   }
+  ipcMain.handle(AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL, async (event, ...args: unknown[]) => {
+    const owner = dependencies.window()
+    const request = {
+      ownerAlive: Boolean(owner && !owner.isDestroyed()),
+      senderMatches: Boolean(owner && event.sender === owner.webContents),
+      mainFrameMatches: event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+      senderUrl: event.senderFrame?.url ?? '',
+      rendererUrl: dependencies.rendererUrl,
+      args
+    }
+    if (!isAllowedAiMailComposeSelectionRequest(request) || !owner)
+      throw new Error('Request rejected')
+    const service = dependencies.composeTarget()
+    if (!service) return { status: 'access_locked' }
+    const result = await service.selectTarget(
+      args[0] as import('../shared/ipc').ComposeCandidateSelectionRequest
+    )
+    const trusted = (): boolean => {
+      const current = dependencies.window()
+      return Boolean(
+        current === owner &&
+        !owner.isDestroyed() &&
+        isAllowedAiMailComposeSelectionRequest({
+          ...request,
+          ownerAlive: true,
+          senderMatches: event.sender === owner.webContents,
+          mainFrameMatches:
+            event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+          senderUrl: event.senderFrame?.url ?? ''
+        })
+      )
+    }
+    if (!trusted()) throw new Error('Request rejected')
+    const resultCurrent =
+      service.isResultCurrent(result) && (await service.isResultTargetCurrent(result))
+    if (!trusted()) throw new Error('Request rejected')
+    if (!resultCurrent) return { status: 'stale' }
+    if (result.status === 'ready')
+      owner.webContents.send(AI_MAIL_COMPOSE_TARGET_EVENT, {
+        status: 'ready',
+        accountId: result.accountId,
+        composeId: result.composeId,
+        accountLabel: result.accountLabel,
+        recipients: result.recipients,
+        subject: result.subject,
+        candidates: result.candidates
+      })
+    return result
+  })
+  ipcMain.handle(CLIPBOARD_WRITE_TEXT_CHANNEL, (event, ...args: unknown[]) => {
+    const owner = dependencies.window()
+    if (
+      !isAllowedClipboardWriteRequest({
+        ownerAlive: Boolean(owner && !owner.isDestroyed()),
+        senderMatches: Boolean(owner && event.sender === owner.webContents),
+        mainFrameMatches:
+          event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+        senderUrl: event.senderFrame?.url ?? '',
+        rendererUrl: dependencies.rendererUrl,
+        args
+      })
+    )
+      throw new Error('Request rejected')
+    dependencies.writeClipboardText(args[0] as string)
+  })
+  for (const [channel, operation] of [
+    [OLLAMA_CREDENTIAL_STATUS_CHANNEL, 'status'],
+    [OLLAMA_CREDENTIAL_SET_CHANNEL, 'set'],
+    [OLLAMA_CREDENTIAL_CLEAR_CHANNEL, 'clear']
+  ] as const) {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      const owner = dependencies.window()
+      const frame = event.senderFrame
+      const frameUrl = frame?.url ?? ''
+      const allowed = (): boolean =>
+        Boolean(
+          owner &&
+          frame &&
+          dependencies.window() === owner &&
+          !owner.isDestroyed() &&
+          event.sender === owner.webContents &&
+          event.senderFrame === frame &&
+          event.sender.mainFrame === frame &&
+          frame.url === frameUrl &&
+          isAllowedOllamaCredentialRequest(
+            {
+              ownerAlive: true,
+              senderMatches: true,
+              mainFrameMatches: true,
+              senderUrl: frameUrl,
+              rendererUrl: dependencies.rendererUrl,
+              args
+            },
+            operation
+          )
+        )
+      if (
+        !isAllowedOllamaCredentialRequest(
+          {
+            ownerAlive: Boolean(owner && !owner.isDestroyed()),
+            senderMatches: Boolean(owner && event.sender === owner.webContents),
+            mainFrameMatches:
+              event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+            senderUrl: event.senderFrame?.url ?? '',
+            rendererUrl: dependencies.rendererUrl,
+            args
+          },
+          operation
+        )
+      )
+        throw new Error('Request rejected')
+      if (!owner || !frame) throw new Error('Request rejected')
+      if (operation === 'status') {
+        const result = await dependencies.ollamaCredentials.has(args[0] as string)
+        if (!allowed()) throw new Error('Request rejected')
+        return result
+      }
+      const beforeCommit = (): void => {
+        if (!allowed()) throw new Error('Request rejected')
+      }
+      if (operation === 'clear')
+        await dependencies.ollamaCredentials.clear(args[0] as string, beforeCommit)
+      else
+        await dependencies.ollamaCredentials.set(args[0] as string, args[1] as string, beforeCommit)
+      if (!allowed()) throw new Error('Request rejected')
+      return undefined
+    })
+  }
   for (const [channel, operation] of [
     [AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL, 'status'],
     [AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL, 'snapshot']
@@ -262,7 +403,8 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
               composeId: result.composeId,
               accountLabel: result.accountLabel,
               recipients: result.recipients,
-              subject: result.subject
+              subject: result.subject,
+              candidates: result.candidates
             }
       owner.webContents.send(AI_MAIL_COMPOSE_TARGET_EVENT, targetStatus)
       return result
@@ -321,6 +463,28 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       const owner = dependencies.window()
       const ownerAlive = owner !== null && !owner.isDestroyed()
+      const frame = event.senderFrame
+      const frameUrl = frame?.url ?? ''
+      const stillAllowed = (): boolean =>
+        Boolean(
+          owner &&
+          frame &&
+          dependencies.window() === owner &&
+          !owner.isDestroyed() &&
+          event.sender === owner.webContents &&
+          event.senderFrame === frame &&
+          event.sender.mainFrame === frame &&
+          frame.url === frameUrl &&
+          isAllowedAiMailCodexRequest({
+            ownerAlive: true,
+            senderMatches: true,
+            mainFrameMatches: true,
+            senderUrl: frameUrl,
+            rendererUrl: dependencies.rendererUrl,
+            operation,
+            args
+          })
+        )
       if (
         !isAllowedAiMailCodexRequest({
           ownerAlive,
@@ -334,14 +498,17 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         })
       )
         throw new Error('Request rejected')
-      if (operation === 'status') return dependencies.aiMailCodex.getStatus()
-      if (operation === 'connect') return dependencies.aiMailCodex.connect()
-      if (operation === 'disconnect') return dependencies.aiMailCodex.disconnect()
-      if (operation === 'generate')
-        return dependencies.aiMailCodex.generate(
+      let result: unknown
+      if (operation === 'status') result = await dependencies.aiMailCodex.getStatus()
+      else if (operation === 'connect') result = await dependencies.aiMailCodex.connect()
+      else if (operation === 'disconnect') result = await dependencies.aiMailCodex.disconnect()
+      else if (operation === 'generate')
+        result = await dependencies.aiMailCodex.generate(
           args[0] as import('../shared/ipc').CodexGenerationRequest
         )
-      return dependencies.aiMailCodex.cancel(args[0] as string)
+      else result = await dependencies.aiMailCodex.cancel(args[0] as string)
+      if (!stillAllowed()) throw new Error('Request rejected')
+      return result
     })
   }
   for (const [channel, operation] of [
@@ -365,20 +532,31 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         return { cancelled: dependencies.aiMailOllama.cancel(args[0] as string) }
       const frame = event.senderFrame
       const frameUrl = frame?.url ?? ''
+      const settingsStore = dependencies.settings()
       const generationRequest = args[0] as import('../shared/ipc').OllamaGenerationRequest
       return dependencies.aiMailOllama.generate(generationRequest, owner, () => {
         const liveOwner = dependencies.window()
-        const settings = dependencies.settings()?.get()
+        const settings = settingsStore?.get()
+        const selectedModel =
+          settings?.ollamaMode === 'remote' ? settings.ollamaRemoteModel : settings?.ollamaModel
         return (
           liveOwner === owner &&
           !owner.isDestroyed() &&
+          dependencies.settings() === settingsStore &&
           event.sender === owner.webContents &&
           event.senderFrame === frame &&
           event.sender.mainFrame === frame &&
           frame?.url === frameUrl &&
           isTrustedRendererUrl(frameUrl, dependencies.rendererUrl) &&
+          isAllowedAiMailOllamaRequest({
+            ...request,
+            ownerAlive: true,
+            senderMatches: event.sender === owner.webContents,
+            mainFrameMatches: event.senderFrame === frame && event.sender.mainFrame === frame,
+            senderUrl: frameUrl
+          }) &&
           settings?.aiMailProvider === 'ollama' &&
-          settings.ollamaModel !== null
+          selectedModel !== null
         )
       })
     })
@@ -388,7 +566,7 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     [OLLAMA_MODELS_CHANNEL, 'models'],
     [CODEX_MODELS_CHANNEL, 'codex-models']
   ] as const) {
-    ipcMain.handle(channel, (event, ...args: unknown[]) => {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       const owner = dependencies.window()
       const ownerAlive = owner !== null && !owner.isDestroyed()
       if (
@@ -404,9 +582,64 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         })
       )
         throw new Error('Request rejected')
-      if (operation === 'status') return dependencies.ollama.getStatus()
-      if (operation === 'models') return dependencies.ollama.getModels()
-      return dependencies.aiMailCodex.getModels()
+      if (operation === 'status' || operation === 'models') {
+        const settingsStore = dependencies.settings()
+        const settings = settingsStore?.get()
+        const frame = event.senderFrame
+        const frameUrl = frame?.url ?? ''
+        const stillAllowed = (): boolean =>
+          Boolean(
+            owner &&
+            frame &&
+            dependencies.window() === owner &&
+            !owner.isDestroyed() &&
+            (!settingsStore || dependencies.settings() === settingsStore) &&
+            (!settingsStore || JSON.stringify(settingsStore.get()) === JSON.stringify(settings)) &&
+            event.sender === owner.webContents &&
+            event.senderFrame === frame &&
+            event.sender.mainFrame === frame &&
+            frame.url === frameUrl &&
+            isAllowedProviderModelRequest({
+              ownerAlive: true,
+              senderMatches: true,
+              mainFrameMatches: true,
+              senderUrl: frameUrl,
+              rendererUrl: dependencies.rendererUrl,
+              operation,
+              args
+            })
+          )
+        const configuration = {
+          provider: 'ollama' as const,
+          mode: settings?.ollamaMode ?? 'local',
+          endpoint: settings?.ollamaRemoteEndpoint ?? 'https://ollama.com/v1',
+          apiKey:
+            settings?.ollamaMode === 'remote'
+              ? await dependencies.ollamaCredentials.get(settings.ollamaRemoteEndpoint)
+              : null,
+          model:
+            settings?.ollamaMode === 'remote' ? settings.ollamaRemoteModel : settings?.ollamaModel
+        }
+        if (!stillAllowed()) throw new Error('Request rejected')
+        if (operation === 'status') {
+          const result = await dependencies.aiModel.getStatus(configuration)
+          if (!stillAllowed()) throw new Error('Request rejected')
+          return result
+        }
+        const models = await dependencies.aiModel.getModels(configuration)
+        if (!stillAllowed()) throw new Error('Request rejected')
+        return models.map((name) => ({ name, size: null }))
+      }
+      const result = await dependencies.aiMailCodex.getModels()
+      const ownerAfter = dependencies.window()
+      if (
+        !owner ||
+        ownerAfter !== owner ||
+        owner.isDestroyed() ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error('Request rejected')
+      return result
     })
   }
   for (const [channel, operation] of [
@@ -683,19 +916,57 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       const settingsStore = dependencies.settings()
       if (!settingsStore) throw new Error('Request rejected')
       const currentSettings = settingsStore.get()
+      const snapshotCurrent = (): boolean =>
+        dependencies.settings() === settingsStore &&
+        JSON.stringify(settingsStore.get()) === JSON.stringify(currentSettings)
+      const nextMode = patch.ollamaMode ?? currentSettings.ollamaMode ?? 'local'
       const nextProvider = patch.aiMailProvider ?? currentSettings.aiMailProvider
       const selectedModel =
-        patch.ollamaModel === undefined ? currentSettings.ollamaModel : patch.ollamaModel
+        nextMode === 'remote'
+          ? patch.ollamaRemoteModel === undefined
+            ? currentSettings.ollamaRemoteModel
+            : patch.ollamaRemoteModel
+          : patch.ollamaModel === undefined
+            ? currentSettings.ollamaModel
+            : patch.ollamaModel
       const ollamaProviderChanged =
         patch.aiMailProvider === 'ollama' && currentSettings.aiMailProvider !== 'ollama'
-      if (nextProvider === 'ollama' && selectedModel === null)
+      const ollamaModelChanged =
+        (patch.ollamaModel !== undefined && patch.ollamaModel !== null) ||
+        (patch.ollamaRemoteModel !== undefined && patch.ollamaRemoteModel !== null)
+      if (ollamaProviderChanged && selectedModel === null)
         throw new Error('Select an available Ollama model first')
       if (
-        (patch.ollamaModel !== undefined && patch.ollamaModel !== null) ||
-        ollamaProviderChanged
-      ) {
-        if (selectedModel === null) throw new Error('Select an available Ollama model first')
-        await dependencies.ollama.validateModel(selectedModel)
+        nextProvider === 'ollama' &&
+        ((nextMode === 'remote' && patch.ollamaRemoteModel === null) ||
+          (nextMode === 'local' && patch.ollamaModel === null))
+      )
+        throw new Error('Select an available Ollama model first')
+      if (ollamaModelChanged || ollamaProviderChanged) {
+        if (!selectedModel) throw new Error('Select an available Ollama model first')
+        const endpoint = patch.ollamaRemoteEndpoint ?? currentSettings.ollamaRemoteEndpoint
+        const credential =
+          nextMode === 'remote' ? await dependencies.ollamaCredentials.get(endpoint) : null
+        if (!requestStillAllowed(settingsStore) || !snapshotCurrent())
+          throw new Error('Request rejected')
+        const configuration = {
+          provider: 'ollama' as const,
+          mode: nextMode,
+          endpoint,
+          apiKey: credential,
+          model: selectedModel
+        }
+        if (nextMode === 'remote') {
+          const models = await dependencies.aiModel.getModels(configuration)
+          if (!requestStillAllowed(settingsStore) || !snapshotCurrent())
+            throw new Error('Request rejected')
+          if (!models.includes(selectedModel))
+            throw new Error('Select an available Ollama model first')
+        } else {
+          await dependencies.ollama.validateModel(selectedModel)
+        }
+        if (!requestStillAllowed(settingsStore) || !snapshotCurrent())
+          throw new Error('Request rejected')
       }
 
       const selectedCodexModel =
@@ -707,6 +978,8 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         selectedCodexModel !== null
       ) {
         const inventory = await dependencies.aiMailCodex.getModels()
+        if (!requestStillAllowed(settingsStore) || !snapshotCurrent())
+          throw new Error('Request rejected')
         if (
           inventory.state !== 'available' ||
           !inventory.models.some(
@@ -715,7 +988,8 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         )
           throw new Error('Select an available Codex model first')
       }
-      if (!requestStillAllowed(settingsStore)) throw new Error('Request rejected')
+      if (!requestStillAllowed(settingsStore) || !snapshotCurrent())
+        throw new Error('Request rejected')
       if (!owner) throw new Error('Request rejected')
       const settings = settingsStore.update(patch) // validated by the policy
       nativeTheme.themeSource = settings.theme

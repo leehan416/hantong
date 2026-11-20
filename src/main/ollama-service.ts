@@ -2,6 +2,7 @@ import type { OllamaConnectionStatus, OllamaModel } from '../shared/ipc'
 
 const ORIGIN = 'http://127.0.0.1:11434'
 const REQUEST_TIMEOUT_MS = 3000
+const CHAT_TIMEOUT_MS = 180_000
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_MODELS = 256
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/
@@ -19,12 +20,16 @@ const CHAT_FORMAT = {
   additionalProperties: false,
   oneOf: [
     {
-      properties: { kind: { const: 'answer' } },
+      properties: { kind: { const: 'answer' }, text: { type: 'string' } },
       required: ['kind', 'text'],
       additionalProperties: false
     },
     {
-      properties: { kind: { const: 'proposal' }, field: { const: 'body' } },
+      properties: {
+        kind: { const: 'proposal' },
+        field: { const: 'body' },
+        text: { type: 'string' }
+      },
       required: ['kind', 'field', 'text'],
       additionalProperties: false
     },
@@ -32,7 +37,8 @@ const CHAT_FORMAT = {
       properties: {
         kind: { const: 'proposal' },
         field: { const: 'subject' },
-        subject: { type: 'string' }
+        subject: { type: 'string' },
+        text: { type: 'string' }
       },
       required: ['kind', 'field', 'text', 'subject'],
       additionalProperties: false
@@ -58,7 +64,9 @@ function isCloudAlias(model: string): boolean {
   return /(?:^|[:_-])cloud$/i.test(model)
 }
 
-export function createOllamaService(options: { fetch?: FetchLike; timeoutMs?: number } = {}): {
+export function createOllamaService(
+  options: { fetch?: FetchLike; timeoutMs?: number; chatTimeoutMs?: number } = {}
+): {
   getStatus(signal?: AbortSignal): Promise<OllamaConnectionStatus>
   getModels(signal?: AbortSignal): Promise<OllamaModel[]>
   validateModel(name: string, signal?: AbortSignal): Promise<void>
@@ -78,12 +86,13 @@ export function createOllamaService(options: { fetch?: FetchLike; timeoutMs?: nu
     path: '/api/status' | '/api/tags' | '/api/show' | '/api/chat',
     body?: object,
     externalSignal?: AbortSignal,
-    responseLimit = MAX_RESPONSE_BYTES
+    responseLimit = MAX_RESPONSE_BYTES,
+    timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS
   ): Promise<unknown> {
     if (disposed) throw new Error('Ollama service disposed')
     const controller = new AbortController()
     controllers.add(controller)
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
     const abortFromCaller = (): void => controller.abort()
     externalSignal?.addEventListener('abort', abortFromCaller, { once: true })
     if (externalSignal?.aborted) controller.abort()
@@ -220,7 +229,8 @@ export function createOllamaService(options: { fetch?: FetchLike; timeoutMs?: nu
         tools: []
       },
       signal,
-      MAX_CHAT_OUTPUT_BYTES
+      MAX_CHAT_OUTPUT_BYTES,
+      options.chatTimeoutMs ?? CHAT_TIMEOUT_MS
     )
     if (
       !isRecord(response) ||

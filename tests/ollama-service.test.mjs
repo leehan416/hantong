@@ -151,7 +151,51 @@ test('chat uses fixed local endpoint, schema and non-streaming response', async 
   const body = JSON.parse(chat.init.body)
   assert.equal(body.stream, false)
   assert.ok(body.format.oneOf)
+  for (const variant of body.format.oneOf) {
+    assert.equal(variant.properties.text.type, 'string')
+    assert.ok(variant.required.includes('text'))
+    assert.equal(variant.additionalProperties, false)
+  }
   assert.deepEqual(body.tools, [])
+})
+
+test('chat gets a separate bounded timeout longer than discovery requests', async () => {
+  const service = createOllamaService({
+    timeoutMs: 50,
+    chatTimeoutMs: 200,
+    fetch: async (url, init) => {
+      const path = new URL(url).pathname
+      if (path === '/api/status') return response(200, { cloud: { disabled: true } })
+      if (path === '/api/tags') return response(200, { models: [{ name: 'gemma4:e2b' }] })
+      if (path === '/api/show') return response(200, { capabilities: ['completion'] })
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 75)
+        init.signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer)
+            reject(new Error('chat request timed out'))
+          },
+          { once: true }
+        )
+      })
+      return response(200, { message: { content: '{"kind":"answer","text":"ok"}' } })
+    }
+  })
+
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        await service.generateChat(
+          'gemma4:e2b',
+          'synthetic test prompt',
+          undefined,
+          new AbortController().signal
+        )
+      )
+    ),
+    { kind: 'answer', text: 'ok' }
+  )
 })
 
 test('chat output is bounded and caller cancellation aborts transport', async () => {

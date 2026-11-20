@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   getAccountViewBounds,
   getAiMailPanelWidth,
@@ -16,6 +16,7 @@ import { SettingsDialog, type SettingsSection } from './SettingsDialog'
 import { GeneralSettings } from './GeneralSettings'
 import { AccountSettings } from './AccountSettings'
 import { AppearanceSettings } from './AppearanceSettings'
+import { AgentSettings } from './AgentSettings'
 import { AccountAccessGate } from './AccountAccessGate'
 import { AiMailPanel } from './AiMailPanel'
 import { NotificationStatusStrip, type StatusAction } from './NotificationStatusStrip'
@@ -75,6 +76,8 @@ function App(): React.JSX.Element {
     settingsSection,
     settingsDialogRef,
     settingsButtonRef,
+    acquireViewCover,
+    releaseViewCover,
     openSettings,
     closeSettings,
     changeSettings,
@@ -87,6 +90,14 @@ function App(): React.JSX.Element {
   const [aiMailPanelLayoutBusy, setAiMailPanelLayoutBusy] = useState(false)
   const aiMailToggleRef = useRef<HTMLButtonElement>(null)
   const statusStripLayoutRevision = useRef(0)
+  const coverAiMailConfirmation = useCallback(
+    async (open: boolean) => {
+      if (open) return acquireViewCover('ai-mail-confirmation')
+      await releaseViewCover('ai-mail-confirmation')
+      return null
+    },
+    [acquireViewCover, releaseViewCover]
+  )
   const locale =
     settings && settings.language !== 'system'
       ? settings.language
@@ -95,7 +106,8 @@ function App(): React.JSX.Element {
   const sectionTitles: Record<SettingsSection, string> = {
     general: text.settingsGeneral,
     accounts: text.settingsAccounts,
-    appearance: text.settingsAppearance
+    appearance: text.settingsAppearance,
+    agent: text.settingsAgent
   }
   const position = settings?.accountSelectorPosition ?? 'top'
   const sidebarCollapsed = settings?.sidebarCollapsed ?? false
@@ -371,9 +383,7 @@ function App(): React.JSX.Element {
         captureSession={aiMailPanelCaptureSession}
         text={text.aiMail}
         settings={settings}
-        onChangeSettings={async (patch): Promise<boolean> => {
-          return changeSettings(patch)
-        }}
+        onConfirmationCover={coverAiMailConfirmation}
         onClose={() => void changeAiMailPanel(false)}
       />
       {settingsBackground && snapshotBounds && (
@@ -428,10 +438,17 @@ function App(): React.JSX.Element {
             onRemove={(accountId) => void removeAccount(accountId, connections.removeAccount)}
             onAccountsChange={setAccounts}
           />
-        ) : (
+        ) : settingsSection === 'appearance' ? (
           <AppearanceSettings
             settings={settings}
             position={position}
+            text={text}
+            failed={settingsFailed}
+            onChange={changeSettings}
+          />
+        ) : (
+          <AgentSettings
+            settings={settings}
             text={text}
             failed={settingsFailed}
             onChange={changeSettings}

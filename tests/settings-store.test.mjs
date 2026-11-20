@@ -22,7 +22,10 @@ const defaults = {
   sidebarCollapsed: false,
   aiMailProvider: 'codex',
   ollamaModel: null,
-  codexModel: null
+  codexModel: null,
+  ollamaMode: 'local',
+  ollamaRemoteEndpoint: 'https://ollama.com/v1',
+  ollamaRemoteModel: null
 }
 
 function withDirectory(run) {

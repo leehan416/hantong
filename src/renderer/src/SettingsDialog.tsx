@@ -1,7 +1,38 @@
 import type { RefObject } from 'react'
 import type { AppMessages } from './app-messages'
 
-export type SettingsSection = 'general' | 'accounts' | 'appearance'
+export type SettingsSection = 'general' | 'accounts' | 'appearance' | 'agent'
+
+export function AppDialog({
+  dialogRef,
+  className,
+  ariaLabelledBy,
+  role,
+  onCancel,
+  children
+}: {
+  dialogRef: RefObject<HTMLDialogElement | null>
+  className: string
+  ariaLabelledBy: string
+  role?: 'dialog' | 'alertdialog'
+  onCancel: () => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <dialog
+      ref={dialogRef}
+      className={className}
+      aria-labelledby={ariaLabelledBy}
+      role={role}
+      onCancel={(event) => {
+        event.preventDefault()
+        onCancel()
+      }}
+    >
+      {children}
+    </dialog>
+  )
+}
 
 export function SettingsRow({
   label,
@@ -38,15 +69,15 @@ export function SettingsDialog({
   children: React.ReactNode
 }): React.JSX.Element {
   return (
-    <dialog
-      ref={dialogRef}
-      className="settings-panel"
-      aria-labelledby="settings-title"
-      onCancel={(event) => event.preventDefault()}
+    <AppDialog
+      dialogRef={dialogRef}
+      className="app-dialog settings-panel"
+      ariaLabelledBy="settings-title"
+      onCancel={() => undefined}
     >
       <nav className="settings-navigation" aria-labelledby="settings-title" role="tablist">
         <h1 id="settings-title">{text.settings}</h1>
-        {(['general', 'accounts', 'appearance'] as const).map((item) => (
+        {(['general', 'accounts', 'appearance', 'agent'] as const).map((item) => (
           <button
             key={item}
             className="settings-navigation-item"
@@ -81,6 +112,6 @@ export function SettingsDialog({
         )}
         {children}
       </section>
-    </dialog>
+    </AppDialog>
   )
 }

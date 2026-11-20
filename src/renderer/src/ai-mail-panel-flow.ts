@@ -7,7 +7,8 @@ import type {
   ComposeSnapshotResult,
   ComposeTargetStatus,
   HantongApi,
-  ReadMailSnapshotResult
+  ReadMailSnapshotResult,
+  ComposeCandidate
 } from '../../shared/ipc'
 import prompts from './ai-mail-prompts.json'
 
@@ -153,8 +154,14 @@ export async function captureAiMailTargetSnapshot<T>(
 }
 
 export type AiMailConversationOutput =
-  | { kind: 'answer'; text: string }
-  | { kind: 'proposal'; field: 'body' | 'subject'; text: string; subject?: string }
+  { kind: 'answer'; text: string } | { kind: 'proposal'; subject: string; body: string }
+
+export function isAiMailConversationVisible(
+  conversationAccountId: string | null,
+  activeAccountId: string | null
+): boolean {
+  return activeAccountId !== null && conversationAccountId === activeAccountId
+}
 
 export function parseAiMailConversationOutput(value: string): AiMailConversationOutput | null {
   try {
@@ -163,24 +170,34 @@ export function parseAiMailConversationOutput(value: string): AiMailConversation
     const record = output as Record<string, unknown>
     if (record.kind === 'answer' && Object.keys(record).sort().join(',') === 'kind,text')
       return typeof record.text === 'string' ? { kind: 'answer', text: record.text } : null
-    if (record.kind !== 'proposal' || typeof record.text !== 'string') return null
-    if (record.field === 'body' && Object.keys(record).sort().join(',') === 'field,kind,text')
-      return { kind: 'proposal', field: 'body', text: record.text }
     if (
-      record.field === 'subject' &&
+      record.kind === 'proposal' &&
+      Object.keys(record).sort().join(',') === 'body,kind,subject' &&
       typeof record.subject === 'string' &&
-      Object.keys(record).sort().join(',') === 'field,kind,subject,text'
+      typeof record.body === 'string'
     )
-      return {
-        kind: 'proposal',
-        field: 'subject',
-        text: record.text,
-        subject: record.subject
-      }
+      return { kind: 'proposal', subject: record.subject, body: record.body }
     return null
   } catch {
     return null
   }
+}
+
+function parseLabeledEmailProposal(
+  value: string
+): Extract<AiMailConversationOutput, { kind: 'proposal' }> | null {
+  const match = value.match(/^(?:제목|subject):[ \t]*(.+?)[ \t]*\r?\n([\s\S]+)$/i)
+  if (!match) return null
+  const subject = match[1].trim()
+  const body = match[2].replace(/^(?:본문|body):[ \t]*/i, '').trim()
+  if (!subject || subject.length > 998 || !body || body.length > 20_000) return null
+  return { kind: 'proposal', subject, body }
+}
+
+function explicitlyRequestsEmailDraft(instruction: string): boolean {
+  return /\b(?:write|draft|compose|revise|rewrite|edit)\b.{0,40}\b(?:email|mail|reply|message)\b|\b(?:email|mail|reply|message)\b.{0,40}\b(?:write|draft|compose|revise|rewrite|edit)\b|메일.{0,30}(?:작성|써|다듬|수정|초안)|(?:작성|써|다듬|수정).{0,20}메일|답장.{0,20}(?:작성|써|초안)/i.test(
+    instruction
+  )
 }
 
 export type AiMailProposalOutcome =
@@ -209,6 +226,41 @@ export type AiMailContext = {
 
 export type AiMailFieldMutationOutcome =
   AiMailComposeMutationResult | { status: 'stale' | 'unsupported' | 'error' }
+
+export async function applyAiMailFieldsTogether<T extends { status: string; applyId?: string }>(
+  applySubject: () => Promise<T>,
+  applyBody: () => Promise<T>,
+  undoSubject: (applyId: string) => Promise<T>
+): Promise<{
+  status: 'applied' | 'failed' | 'rolled_back' | 'partial'
+  subject: T
+  body?: T | { status: 'failed' }
+}> {
+  const subject = await applySubject()
+  if (subject.status !== 'applied' || !subject.applyId) return { status: 'failed', subject }
+  let body: T | { status: 'failed' }
+  try {
+    body = await applyBody()
+  } catch {
+    body = { status: 'failed' }
+  }
+  if (body.status === 'applied') return { status: 'applied', subject, body }
+  try {
+    const rollback = await undoSubject(subject.applyId)
+    return { status: rollback.status === 'undone' ? 'rolled_back' : 'partial', subject, body }
+  } catch {
+    return { status: 'partial', subject, body }
+  }
+}
+
+export function chooseNewestComposeCandidate(candidates: ComposeCandidate[]): string | null {
+  if (candidates.length === 1) return candidates[0].composeId
+  if (candidates.length < 2 || candidates.some((candidate) => candidate.lastUsedAt <= 0))
+    return null
+  const newest = Math.max(...candidates.map((candidate) => candidate.lastUsedAt))
+  const matches = candidates.filter((candidate) => candidate.lastUsedAt === newest)
+  return matches.length === 1 ? matches[0].composeId : null
+}
 
 export function createAiMailFieldMutationCoordinator(api: AiMailPanelApi): {
   mutate: (request: {
@@ -289,7 +341,7 @@ export function buildAiMailConversationPrompt(message: string, context: AiMailCo
     prompts.conversation,
     context.compose
       ? 'A current compose draft exists. A proposal may be edited by the user and explicitly applied.'
-      : 'No current compose draft exists. Return discussion or a reply suggestion as an answer; never return an applicable proposal.',
+      : 'No current compose draft exists. Explicit requests to write or revise an email still require a typed proposal; it remains unbound until the user explicitly binds it to a fresh same-account compose.',
     `User message (untrusted data):\n${message}`
   ].join('\n\n')
   const contextBudget = Math.max(0, 3900 - base.length - headers.join('').length - 16)
@@ -312,7 +364,7 @@ export function buildAiMailConversationPrompt(message: string, context: AiMailCo
     prompts.conversation,
     context.compose
       ? 'A current compose draft exists. A proposal may be edited by the user and explicitly applied.'
-      : 'No current compose draft exists. Return discussion or a reply suggestion as an answer; never return an applicable proposal.',
+      : 'No current compose draft exists. Explicit requests to write or revise an email still require a typed proposal; it remains unbound until the user explicitly binds it to a fresh same-account compose.',
     ...contextSections,
     `User message (untrusted data):\n${message}`
   ].join('\n\n')
@@ -327,7 +379,8 @@ export async function requestAiMailProposal(
   requestId: string,
   generation: number,
   provider: 'codex' | 'ollama',
-  followUp?: string
+  followUp?: string,
+  conversationId?: string
 ): Promise<AiMailProposalOutcome> {
   if (context.accountId !== target?.accountId && target) return { status: 'stale' }
   if (context.read) {
@@ -353,6 +406,9 @@ export async function requestAiMailProposal(
     compose = currentCompose
   } else if (compose) return { status: 'stale' }
 
+  if (target && (context.accountId !== target.accountId || compose?.composeId !== target.composeId))
+    return { status: 'stale' }
+
   const request = {
     accountId: context.accountId,
     composeId: compose?.composeId ?? context.read?.captureId ?? 'read-only',
@@ -363,7 +419,8 @@ export async function requestAiMailProposal(
   }
   let generatedText: string
   if (provider === 'ollama') {
-    const generated = await api.generateAiMailWithOllama(request)
+    if (!conversationId) return { status: 'failed', result: { error: 'invalid_conversation' } }
+    const generated = await api.generateAiMailWithOllama({ ...request, conversationId })
     if (!generated.ok) return { status: 'failed', result: generated }
     generatedText = JSON.stringify(generated.output)
   } else {
@@ -385,14 +442,16 @@ export async function requestAiMailProposal(
     )
       return { status: 'stale' }
   }
-  const output = parseAiMailConversationOutput(generatedText)
+  let output = parseAiMailConversationOutput(generatedText)
   if (!output) return { status: 'invalid_output' }
+  if (compose && output.kind === 'answer' && explicitlyRequestsEmailDraft(instruction))
+    output = parseLabeledEmailProposal(output.text) ?? output
   if (output.kind === 'proposal' && !compose)
     return {
       status: 'ready',
       owner: 'none',
       readSnapshot: context.read ?? undefined,
-      output: { kind: 'answer', text: output.text }
+      output
     }
   return {
     status: 'ready',

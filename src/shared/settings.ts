@@ -27,6 +27,9 @@ export interface AppSettings {
   aiMailProvider: 'codex' | 'ollama'
   ollamaModel: string | null
   codexModel: string | null
+  ollamaMode: 'local' | 'remote'
+  ollamaRemoteEndpoint: string
+  ollamaRemoteModel: string | null
 }
 
 export type AppSettingsPatch = Partial<Omit<AppSettings, 'version'>>
@@ -44,5 +47,8 @@ export const DEFAULT_SETTINGS: AppSettings = Object.freeze({
   sidebarCollapsed: false,
   aiMailProvider: 'codex',
   ollamaModel: null,
-  codexModel: null
+  codexModel: null,
+  ollamaMode: 'local',
+  ollamaRemoteEndpoint: 'https://ollama.com/v1',
+  ollamaRemoteModel: null
 })
