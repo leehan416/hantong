@@ -118,3 +118,107 @@ test('Codex settings do not display the Ollama connection mode selector', () => 
   assert.match(markup, /Codex/)
   assert.doesNotMatch(markup, /Ollama connection/)
 })
+
+test('stale persisted local model keeps the Ollama picker reachable from Codex', async () => {
+  const hooks = (() => {
+    const slots = []
+    const effects = []
+    let index = 0
+    return {
+      beginRender() {
+        index = 0
+        effects.length = 0
+      },
+      useState(initial) {
+        const slot = index++
+        slots[slot] ??= { value: initial }
+        return [slots[slot].value, (value) => (slots[slot].value = value)]
+      },
+      useRef(initial) {
+        const slot = index++
+        slots[slot] ??= { value: { current: initial } }
+        return slots[slot].value
+      },
+      useCallback(callback) {
+        index++
+        return callback
+      },
+      useEffect(callback) {
+        index++
+        effects.push(callback)
+      },
+      flushEffects() {
+        for (const effect of effects.splice(0)) effect()
+      }
+    }
+  })()
+  const { AgentSettings } = loadTypeScript(
+    new URL('../src/renderer/src/AgentSettings.tsx', import.meta.url),
+    {
+      react: hooks,
+      window: {
+        api: {
+          getOllamaStatus: async () => ({ state: 'available', cloudDisabled: true }),
+          getOllamaModels: async () => [{ name: 'gemma4:e2b', size: 1 }],
+          getOllamaCredentialStatus: async () => false,
+          getAiMailCodexStatus: async () => ({ state: 'connected' }),
+          getCodexModels: async () => ({ state: 'available', models: [] }),
+          onAiMailCodexStatus: () => () => undefined
+        }
+      },
+      './SettingsDialog': { SettingsRow: (props) => ({ type: 'row', props }) }
+    }
+  )
+  const { messages } = loadTypeScript(
+    new URL('../src/renderer/src/app-messages.ts', import.meta.url)
+  )
+  const settings = {
+    aiMailProvider: 'codex',
+    ollamaMode: 'local',
+    ollamaRemoteEndpoint: 'https://ollama.com/v1',
+    ollamaModel: 'qwen3:8b',
+    ollamaRemoteModel: null,
+    codexModel: null
+  }
+  const patches = []
+  const props = {
+    settings,
+    text: messages.en,
+    failed: false,
+    onChange: async (patch) => {
+      patches.push(patch)
+      return true
+    }
+  }
+  const render = () => {
+    hooks.beginRender()
+    const tree = AgentSettings(props)
+    hooks.flushEffects()
+    return tree
+  }
+  const find = (node, predicate) => {
+    if (Array.isArray(node)) return node.map((child) => find(child, predicate)).find(Boolean)
+    if (!node || typeof node !== 'object') return null
+    if (predicate(node)) return node
+    const children = node.props?.children
+    return Array.isArray(children)
+      ? children.map((child) => find(child, predicate)).find(Boolean)
+      : find(children, predicate)
+  }
+  render()
+  await new Promise(setImmediate)
+  let tree = render()
+  find(tree, (node) => node.type === 'select' && node.props.value === 'codex').props.onChange({
+    target: { value: 'ollama' }
+  })
+  tree = render()
+  assert.ok(find(tree, (node) => node.type === 'select' && node.props.value === ''))
+  assert.deepEqual(patches, [])
+  find(tree, (node) => node.type === 'select' && node.props.value === '').props.onChange({
+    target: { value: 'gemma4:e2b' }
+  })
+  await new Promise(setImmediate)
+  assert.deepEqual(JSON.parse(JSON.stringify(patches)), [
+    { ollamaModel: 'gemma4:e2b', aiMailProvider: 'ollama' }
+  ])
+})

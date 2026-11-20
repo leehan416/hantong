@@ -120,9 +120,14 @@ export function AgentSettings({
     if (!settings || busy) return
     const hasModel =
       settings.ollamaMode === 'remote' ? settings.ollamaRemoteModel : settings.ollamaModel
-    if (provider === 'ollama' && !hasModel) {
-      setPendingProvider('ollama')
-      return
+    if (provider === 'ollama') {
+      const localModelAvailable =
+        settings.ollamaMode !== 'local' ||
+        (hasModel !== null && ollamaModels.some((model) => model.name === hasModel))
+      if (!hasModel || !localModelAvailable) {
+        setPendingProvider('ollama')
+        return
+      }
     }
     if (await save({ aiMailProvider: provider })) setPendingProvider(null)
   }
@@ -278,7 +283,7 @@ export function AgentSettings({
         <SettingsRow label={`${text.agentOllama} · ${text.agentModel}`}>
           <select
             className="settings-select"
-            value={selectedOllamaModel ?? ''}
+            value={pendingProvider === 'ollama' ? '' : (selectedOllamaModel ?? '')}
             disabled={busy || ollamaModels.length === 0}
             onChange={(event) => void changeModel(event.target.value)}
           >
