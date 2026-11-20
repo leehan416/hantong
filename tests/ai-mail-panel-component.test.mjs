@@ -7,13 +7,12 @@ const { aiMailFieldFeedback } = loadTypeScript(
   new URL('../src/renderer/src/ai-mail-panel-flow.ts', import.meta.url)
 )
 
-test('copy feedback and data-sharing caption use compact rules from the loaded panel stylesheet', async () => {
+test('data-sharing caption uses compact rules from the loaded panel stylesheet', async () => {
   const mainStylesheetUrl = new URL('../src/renderer/src/assets/main.css', import.meta.url)
   const mainStylesheet = await readFile(mainStylesheetUrl, 'utf8')
   assert.match(mainStylesheet, /@import ['"]\.\/ai-mail-panel\.css['"]/)
   const panelStylesheet = await readFile(new URL('ai-mail-panel.css', mainStylesheetUrl), 'utf8')
-  assert.match(panelStylesheet, /\.ai-mail-copy-feedback\s*\{[^}]*font-size:\s*10px/s)
-  assert.match(panelStylesheet, /\.ai-mail-data-sharing\s*\{[^}]*font-size:\s*9px/s)
+  assert.match(panelStylesheet, /\.ai-mail-data-sharing\s*\{[^}]*font-size:\s*11px/s)
   assert.match(panelStylesheet, /\.ai-mail-proposal textarea\s*\{[^}]*max-height:\s*none/s)
   assert.match(panelStylesheet, /\.ai-mail-proposal textarea\s*\{[^}]*overflow:\s*hidden/s)
   assert.doesNotMatch(panelStylesheet, /\.ai-mail-confirm-dialog\s*>\s*div/)
@@ -142,6 +141,8 @@ function setup(api, timers = []) {
           props: { ...props, children: props.children }
         })
       },
+      // Header icon buttons render as plain buttons so tests find them by aria-label.
+      './IconActionButton': { IconActionButton: 'button' },
       setTimeout: (callback, delay) => {
         const timer = { callback, delay }
         timers.push(timer)
@@ -258,15 +259,17 @@ test('unsupported generation is stated honestly while the composer stays editabl
   assert.notEqual(composer.props.disabled, true)
   composer.props.onChange({ target: { value: 'A message to send later' } })
   assert.equal(
-    findElement(app.render(), (node) => node.type === 'button' && node.props.children === 'Send')
-      .props.disabled,
+    findElement(
+      app.render(),
+      (node) => node.type === 'button' && node.props['aria-label'] === 'Send'
+    ).props.disabled,
     true
   )
   assert.ok(
     findElement(
       tree,
       (node) =>
-        node.type === 'span' &&
+        node.type === 'p' &&
         node.props.children === app.messages.en.aiMail.codexGenerationUnavailable
     )
   )
@@ -478,6 +481,49 @@ test('account A-B-A invalidation clears pending UI and fences the cancelled resp
   pendingResolvers[1]({ ok: true, output: { kind: 'answer', text: 'New response' } })
 })
 
+test('no open draft shows no hint, and an open draft shows as a chip before it is read', async () => {
+  let status = { status: 'none' }
+  const api = {
+    getAiMailComposeTargetStatus: async () => status,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'available', cloudDisabled: true }),
+    getOllamaModels: async () => [{ name: 'qwen3:8b', size: 10 }],
+    getAiMailReadSnapshot: async () => ({ status: 'none' }),
+    isAiMailReadSnapshotCurrent: async () => false,
+    getAiMailComposeSnapshot: async () => ({ status: 'none' })
+  }
+  let app = setup(api)
+  app.setProps({ open: true })
+  app.render()
+  await new Promise(setImmediate)
+  let tree = app.render()
+  const noTarget = app.messages.en.aiMail.noTarget
+  assert.equal(JSON.stringify(tree).includes(noTarget), false)
+  assert.equal(
+    findElement(tree, (node) => node.props?.className === 'ai-mail-context-chip'),
+    null
+  )
+
+  status = {
+    status: 'none',
+    candidates: [{ composeId: 'opaque-open-draft', label: 'Quarterly update', lastUsedAt: 0 }]
+  }
+  app = setup(api)
+  app.setProps({ open: true })
+  app.render()
+  await new Promise(setImmediate)
+  tree = app.render()
+  const chip = findElement(
+    tree,
+    (node) => node.type === 'span' && node.props.className === 'ai-mail-context-chip'
+  )
+  assert.ok(chip)
+  assert.ok(JSON.stringify(chip).includes('Quarterly update'))
+  assert.equal(JSON.stringify(tree).includes(noTarget), false)
+})
+
 test('the panel accepts general chat without mail context and keeps answers non-applicable', async () => {
   const requests = []
   const api = {
@@ -533,7 +579,7 @@ test('the panel accepts general chat without mail context and keeps answers non-
   composer.props.onChange({ target: { value: 'What can you do?' } })
   tree = app.render()
   assert.equal(
-    findElement(tree, (node) => node.type === 'button' && node.props.children === 'Send').props
+    findElement(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Send').props
       .disabled,
     false
   )
@@ -836,9 +882,24 @@ test('new conversation archives the current turn and earlier conversation select
   ).props.onSubmit({ preventDefault: () => undefined })
   await new Promise(setImmediate)
   assert.equal(generationRequests[1].conversationId, generationRequests[0].conversationId)
+  // History lives behind the header's "Earlier conversations" button as a list of entries.
+  const toggleHistory = (current) => {
+    findElement(
+      current,
+      (node) => node.type === 'button' && node.props['aria-label'] === 'Earlier conversations'
+    ).props.onClick()
+    return app.render()
+  }
+  const historyList = (current) =>
+    findElement(
+      current,
+      (node) => node.type === 'nav' && node.props['aria-label'] === 'Earlier conversations'
+    )
+  const historyEntries = (current) =>
+    findElements(historyList(current), (node) => node.type === 'button')
   findElement(
     tree,
-    (node) => node.type === 'button' && node.props.children === 'New conversation'
+    (node) => node.type === 'button' && node.props['aria-label'] === 'New conversation'
   ).props.onClick()
   tree = app.render()
   const freshInput = findElement(
@@ -854,23 +915,15 @@ test('new conversation archives the current turn and earlier conversation select
   await new Promise(setImmediate)
   tree = app.render()
   assert.notEqual(generationRequests[2].conversationId, generationRequests[0].conversationId)
-  const history = findElement(
-    tree,
-    (node) => node.type === 'select' && node.props['aria-label'] === 'Earlier conversations'
-  )
-  assert.ok(history)
-  assert.equal(
-    findElements(
-      tree,
-      (node) => node.type === 'select' && node.props['aria-label'] === 'Earlier conversations'
-    ).length,
-    1
-  )
-  const savedId = findElement(history, (node) => node.type === 'option' && node.props.value)?.props
-    .value
-  assert.ok(savedId)
-  history.props.onChange({ target: { value: savedId } })
+  assert.equal(historyList(tree), null, 'the list stays closed until asked for')
+  tree = toggleHistory(tree)
+  const savedEntries = historyEntries(tree)
+  assert.equal(savedEntries.length, 1)
+  assert.ok(JSON.stringify(savedEntries[0]).includes('Remember this turn'))
+  const savedEntry = savedEntries[0]
+  savedEntry.props.onClick()
   tree = app.render()
+  assert.equal(historyList(tree), null, 'choosing an entry closes the list')
   const restoredInput = findElement(
     tree,
     (node) => node.type === 'textarea' && node.props['aria-label']
@@ -886,46 +939,31 @@ test('new conversation archives the current turn and earlier conversation select
   tree = app.render()
   assert.ok(JSON.stringify(tree).includes('Remember this turn'))
   assert.ok(JSON.stringify(tree).includes('Saved assistant reply'))
-  assert.ok(
-    findElement(
-      tree,
-      (node) => node.type === 'select' && node.props['aria-label'] === 'Earlier conversations'
-    )
-  )
   assert.ok(JSON.stringify(tree).includes(app.messages.en.aiMail.conversationRestored))
+  tree = toggleHistory(tree)
+  assert.ok(historyEntries(tree).length > 0, 'the conversation left behind is archived')
   app.setProps({ activeAccountId: 'account-b', captureSession: 1 })
   app.render()
-  history.props.onChange({ target: { value: savedId } })
+  // An entry captured under account A cannot restore into account B.
+  savedEntry.props.onClick()
   tree = app.render()
   assert.ok(JSON.stringify(tree).includes(app.messages.en.aiMail.conversationUnavailable))
-  assert.equal(
-    findElement(
-      tree,
-      (node) => node.type === 'select' && node.props['aria-label'] === 'Earlier conversations'
-    ),
-    null
-  )
+  if (!historyList(tree)) tree = toggleHistory(tree)
+  assert.equal(historyEntries(tree).length, 0, 'account B sees none of account A history')
+  assert.ok(JSON.stringify(historyList(tree)).includes(app.messages.en.aiMail.noConversations))
   app.setProps({ activeAccountId: 'account-a', captureSession: 2 })
   app.render()
   tree = app.render()
   assert.ok(JSON.stringify(tree).includes('Remember this turn'))
-  assert.ok(
-    findElement(
-      tree,
-      (node) => node.type === 'select' && node.props['aria-label'] === 'Earlier conversations'
-    )
-  )
+  if (!historyList(tree)) tree = toggleHistory(tree)
+  assert.ok(historyEntries(tree).length > 0)
   findElement(
     tree,
-    (node) => node.type === 'button' && node.props.children === 'New conversation'
+    (node) => node.type === 'button' && node.props['aria-label'] === 'New conversation'
   ).props.onClick()
   tree = app.render()
-  assert.ok(
-    findElement(
-      tree,
-      (node) => node.type === 'select' && node.props['aria-label'] === 'Earlier conversations'
-    )
-  )
+  tree = toggleHistory(tree)
+  assert.ok(historyEntries(tree).length > 0)
 })
 
 test('a blank compose always opens confirmation before a proposal can be applied', async () => {
@@ -1082,7 +1120,8 @@ test('a blank compose always opens confirmation before a proposal can be applied
   )
   assert.ok(actions)
   assert.equal((JSON.stringify(tree).match(/Undo applied revision/g) ?? []).length, 1)
-  assert.equal((JSON.stringify(tree).match(/Copy revision/g) ?? []).length, 1)
+  // The proposal has no copy action; apply / undo are the only actions.
+  assert.equal((JSON.stringify(tree).match(/Copy revision/g) ?? []).length, 0)
   findElement(
     actions,
     (node) => node.type === 'button' && node.props.children === 'Undo applied revision'
@@ -1100,6 +1139,78 @@ test('a blank compose always opens confirmation before a proposal can be applied
   tree = app.render()
   assert.deepEqual(undoCalls, ['body', 'subject', 'body'])
   assert.equal((JSON.stringify(tree).match(/Undo applied revision/g) ?? []).length, 0)
+})
+
+test('review uses the visible ready compose when refreshed candidates omit it', async () => {
+  const readyTarget = {
+    status: 'ready',
+    accountId: 'account-a',
+    composeId: 'compose-open',
+    accountLabel: 'A',
+    recipients: [],
+    subject: 'Existing subject',
+    candidates: [{ composeId: 'compose-other', label: 'Other draft', lastUsedAt: 10 }]
+  }
+  const snapshot = {
+    ...readyTarget,
+    documentVersion: 'version-a',
+    snapshotId: 'snapshot-a',
+    body: 'Existing body'
+  }
+  let selections = 0
+  const api = {
+    getAiMailComposeTargetStatus: async () => readyTarget,
+    onAiMailComposeTarget: () => () => undefined,
+    onAiMailCodexStatus: () => () => undefined,
+    getAiMailCodexStatus: async () => ({ state: 'disconnected' }),
+    getOllamaStatus: async () => ({ state: 'available', cloudDisabled: true }),
+    getOllamaModels: async () => [{ name: 'qwen3:8b', size: 10 }],
+    cancelAiMailGeneration: async () => ({ cancelled: true }),
+    cancelAiMailOllamaGeneration: async () => ({ cancelled: true }),
+    getAiMailReadSnapshot: async () => ({ status: 'none' }),
+    getAiMailComposeSnapshot: async () => snapshot,
+    selectAiMailComposeTarget: async ({ accountId, composeId }) => {
+      selections += 1
+      assert.equal(accountId, 'account-a')
+      assert.equal(composeId, 'compose-open')
+      return snapshot
+    },
+    setSettingsPanelOpen: async (open) =>
+      open ? { accountId: 'account-a', dataUrl: 'data:image/png;base64,AA==', bounds: {} } : null,
+    generateAiMailWithOllama: async () => ({
+      ok: true,
+      output: { kind: 'proposal', subject: 'Suggested subject', body: 'Suggested body' }
+    })
+  }
+  const app = setup(api)
+  app.setProps({ open: true, settings: { aiMailProvider: 'ollama', ollamaModel: 'qwen3:8b' } })
+  app.render()
+  await new Promise(setImmediate)
+  let tree = app.render()
+  const input = findElement(tree, (node) => node.type === 'textarea' && node.props['aria-label'])
+  input.props.onChange({ target: { value: 'Write an email' } })
+  tree = app.render()
+  findElement(
+    tree,
+    (node) => node.type === 'form' && node.props.className === 'ai-mail-compose'
+  ).props.onSubmit({ preventDefault: () => undefined })
+  await new Promise(setImmediate)
+  tree = app.render()
+  const review = findElement(
+    tree,
+    (node) => node.type === 'button' && node.props.children === 'Review changes'
+  )
+  assert.ok(review)
+  review.props.onClick()
+  await new Promise(setImmediate)
+  tree = app.render()
+  assert.equal(selections, 1)
+  assert.ok(
+    findElement(
+      tree,
+      (node) => node.props?.role === 'alertdialog' && node.type?.name === 'AppDialog'
+    )
+  )
 })
 
 test('a compose edited after confirmation is rejected without a Gmail mutation', async () => {
@@ -1253,7 +1364,7 @@ test('Ollama errors keep the composer editable and move retry controls to settin
   textarea.props.onChange({ target: { value: 'Wait for Ollama' } })
   tree = app.render()
   assert.equal(
-    findElement(tree, (node) => node.type === 'button' && node.props.children === 'Send').props
+    findElement(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Send').props
       .disabled,
     true
   )
@@ -1262,7 +1373,7 @@ test('Ollama errors keep the composer editable and move retry controls to settin
     null
   )
   assert.equal(
-    findElement(tree, (node) => node.type === 'button' && node.props.children === 'Send').props
+    findElement(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Send').props
       .disabled,
     true
   )

@@ -1,6 +1,7 @@
 import { forwardRef, type ButtonHTMLAttributes } from 'react'
 
-type IconAction = 'settings' | 'sidebar-collapse' | 'sidebar-expand'
+type IconAction =
+  'settings' | 'sidebar-collapse' | 'sidebar-expand' | 'ai' | 'history' | 'new-chat' | 'close'
 
 interface IconActionButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> {
   action: IconAction
@@ -24,7 +25,26 @@ const icons: Record<IconAction, React.JSX.Element> = {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <path d="M9 4v16m3-7 3 3-3 3" />
     </>
-  )
+  ),
+  ai: (
+    <>
+      <path d="M11 4.5 12.6 9.4 17.5 11 12.6 12.6 11 17.5 9.4 12.6 4.5 11 9.4 9.4Z" />
+      <path d="M18 3.5v3M16.5 5h3M18 16.5v3M16.5 18h3" />
+    </>
+  ),
+  history: (
+    <>
+      <path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7" />
+      <path d="M4 4v4.7h4.7M12 8v4l2.8 2" />
+    </>
+  ),
+  'new-chat': (
+    <>
+      <path d="M20 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5" />
+      <path d="m17.5 3.5 3 3L12 15l-4 1 1-4Z" />
+    </>
+  ),
+  close: <path d="M6 6l12 12M18 6 6 18" />
 }
 
 export const IconActionButton = forwardRef<HTMLButtonElement, IconActionButtonProps>(

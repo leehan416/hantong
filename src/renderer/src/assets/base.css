@@ -13,6 +13,8 @@
   --color-hover: #f1f1ef;
   --color-danger: #8e4141;
   --color-danger-hover: #f5e9e9;
+  --color-success: #2f7d5b;
+  --color-warning: #a8701c;
   --color-scrollbar: #c4c4c2;
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   color: var(--color-text);
@@ -39,6 +41,8 @@
     --color-hover: #262626;
     --color-danger: #e4a0a0;
     --color-danger-hover: #3b2a30;
+    --color-success: #7cc4a2;
+    --color-warning: #e2b46a;
     --color-scrollbar: #5a5a5a;
   }
 }
@@ -58,6 +62,8 @@
   --color-hover: #f1f1ef;
   --color-danger: #8e4141;
   --color-danger-hover: #f5e9e9;
+  --color-success: #2f7d5b;
+  --color-warning: #a8701c;
   --color-scrollbar: #c4c4c2;
 }
 
@@ -81,6 +87,8 @@
   --color-hover: #262626;
   --color-danger: #e4a0a0;
   --color-danger-hover: #3b2a30;
+  --color-success: #7cc4a2;
+  --color-warning: #e2b46a;
   --color-scrollbar: #5a5a5a;
 }
 

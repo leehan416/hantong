@@ -10,6 +10,8 @@ import type {
   AccountViewSnapshot,
   CodexConnectionStatus,
   ComposeSnapshotResult,
+  ComposeCandidate,
+  ComposeDiscoverySummary,
   ComposeTargetStatus,
   AiMailComposeMutationResult,
   OllamaConnectionStatus,
@@ -20,6 +22,7 @@ import type { AppSettings } from '../../shared/settings'
 import type { AppMessages } from './app-messages'
 import { AiMailChatLayout } from './AiMailChatLayout'
 import { AiMailMarkdown } from './ai-mail-markdown'
+import { IconActionButton } from './IconActionButton'
 import { AppDialog } from './SettingsDialog'
 import {
   createAiMailGenerationSequence,
@@ -46,6 +49,26 @@ type FieldState = {
   feedback?: 'applied' | 'undone' | 'error' | 'stale' | 'busy' | 'unsupported'
   lastOperation?: 'apply' | 'undo'
   conflict?: { currentVersion: string; currentBody: string; operation: 'apply' | 'undo' }
+}
+
+function eligibleComposeCandidates(
+  status: ComposeTargetStatus,
+  accountId: string | null
+): ComposeCandidate[] {
+  if (status.status === 'ready' && status.accountId !== accountId) return []
+  const candidates = [...('candidates' in status ? (status.candidates ?? []) : [])]
+  if (
+    status.status === 'ready' &&
+    accountId &&
+    !candidates.some((candidate) => candidate.composeId === status.composeId)
+  ) {
+    candidates.unshift({
+      composeId: status.composeId,
+      label: status.accountLabel,
+      lastUsedAt: 0
+    })
+  }
+  return candidates
 }
 type Proposal = {
   snapshot?: ReadySnapshot
@@ -149,12 +172,12 @@ export function AiMailPanel({
   const [messagesAccountId, setMessagesAccountId] = useState<string | null>(null)
   const [archivedConversations, setArchivedConversations] = useState<ArchivedConversation[]>([])
   const archivedConversationsRef = useRef<ArchivedConversation[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [conversationStatus, setConversationStatus] = useState('')
   const [instruction, setInstruction] = useState('')
   const [pending, setPending] = useState(false)
   const [pendingContext, setPendingContext] = useState('')
   const [cancelError, setCancelError] = useState(false)
-  const [copyFeedback, setCopyFeedback] = useState('')
   const [confirmOverwrite, setConfirmOverwrite] = useState<OverwriteConfirmation | null>(null)
   const [proposalTargetNotice, setProposalTargetNotice] = useState<{
     messageId: string
@@ -176,6 +199,23 @@ export function AiMailPanel({
   const activeAccountRef = useRef(activeAccountId)
   const sessionRef = useRef(captureSession)
   const currentTargetKey = useRef('')
+  const composeDiagnosticCorrelation = useRef('')
+  const reportComposeDiagnostic = (
+    stage: 'review_click' | 'fresh_status' | 'target_selection' | 'cover' | 'apply' | 'conflict',
+    outcome: 'started' | 'ready' | 'none' | 'stale' | 'unsupported' | 'failure' | 'applied',
+    extra: {
+      candidateCount?: number
+      discovery?: ComposeDiscoverySummary
+      reason?:
+        'no_candidate' | 'multiple_candidates' | 'stale_target' | 'unsupported_content' | 'failed'
+    } = {}
+  ): void => {
+    const correlationId = composeDiagnosticCorrelation.current
+    if (!correlationId) return
+    const record = window.api.recordAiMailComposeDiagnostic
+    if (typeof record !== 'function') return
+    void record({ correlationId, stage, outcome, ...extra }).catch(() => undefined)
+  }
   const targetStatusRef = useRef<ComposeTargetStatus>({ status: 'none' })
   const lastCaptureKey = useRef('')
   const captureSequence = useRef(0)
@@ -739,6 +779,10 @@ export function AiMailPanel({
     const accountId = activeAccountId
     const session = captureSession
     if (!proposal || !accountId || proposal.session !== session || proposalApplyingId) return
+    if (!requestedComposeId) {
+      composeDiagnosticCorrelation.current = crypto.randomUUID()
+      reportComposeDiagnostic('review_click', 'started')
+    }
     setProposalApplyingId(messageId)
     setProposalTargetNotice(null)
     try {
@@ -747,9 +791,33 @@ export function AiMailPanel({
       setTargetStatus(refreshed)
       targetStatusRef.current = refreshed
       setReadyTargetContext({ accountId, session })
-      const candidates = 'candidates' in refreshed ? (refreshed.candidates ?? []) : []
+      const candidates = eligibleComposeCandidates(refreshed, accountId)
+      reportComposeDiagnostic(
+        'fresh_status',
+        refreshed.status === 'ready'
+          ? 'ready'
+          : refreshed.status === 'unsupported'
+            ? 'unsupported'
+            : refreshed.status === 'stale'
+              ? 'stale'
+              : 'none',
+        {
+          candidateCount: candidates.length,
+          ...(refreshed.discovery ? { discovery: refreshed.discovery } : {}),
+          ...(candidates.length === 0
+            ? { reason: 'no_candidate' as const }
+            : candidates.length > 1
+              ? { reason: 'multiple_candidates' as const }
+              : {})
+        }
+      )
       let composeId = requestedComposeId
-      if (!composeId) composeId = chooseNewestComposeCandidate(candidates) ?? ''
+      if (!composeId) {
+        composeId =
+          refreshed.status === 'ready' && refreshed.accountId === accountId
+            ? refreshed.composeId
+            : (chooseNewestComposeCandidate(candidates) ?? '')
+      }
       if (!composeId) {
         setProposalTargetNotice({
           messageId,
@@ -772,6 +840,20 @@ export function AiMailPanel({
         return
       }
       const result = await window.api.selectAiMailComposeTarget({ accountId, composeId })
+      reportComposeDiagnostic(
+        'target_selection',
+        result.status === 'ready'
+          ? 'ready'
+          : result.status === 'unsupported'
+            ? 'unsupported'
+            : 'stale',
+        {
+          candidateCount: candidates.length,
+          ...(result.status !== 'ready'
+            ? { reason: result.status === 'unsupported' ? 'unsupported_content' : 'stale_target' }
+            : {})
+        }
+      )
       if (
         activeAccountRef.current !== accountId ||
         sessionRef.current !== session ||
@@ -795,6 +877,7 @@ export function AiMailPanel({
         includeSubject: Boolean(proposal.subject)
       })
     } catch {
+      reportComposeDiagnostic('target_selection', 'failure', { reason: 'failed' })
       setProposalTargetNotice({ messageId, message: text.staleTarget, kind: 'error' })
     } finally {
       setProposalApplyingId(null)
@@ -858,6 +941,11 @@ export function AiMailPanel({
     void onConfirmationCover(true)
       .then(
         async (snapshot) => {
+          reportComposeDiagnostic(
+            'cover',
+            snapshot ? 'ready' : 'failure',
+            snapshot ? {} : { reason: 'failed' }
+          )
           if (activeAccountId && snapshot?.accountId !== activeAccountId)
             throw new Error('Unable to capture the active Gmail view')
           if (snapshot) {
@@ -877,6 +965,7 @@ export function AiMailPanel({
           confirmationCancelRef.current?.focus()
         },
         () => {
+          reportComposeDiagnostic('cover', 'failure', { reason: 'failed' })
           if (active) {
             setProposalTargetNotice({
               messageId: confirmationMessageId ?? '',
@@ -888,6 +977,7 @@ export function AiMailPanel({
         }
       )
       .catch(() => {
+        reportComposeDiagnostic('cover', 'failure', { reason: 'failed' })
         if (active) {
           void onConfirmationCover(false)
           setProposalTargetNotice({
@@ -1037,6 +1127,7 @@ export function AiMailPanel({
     })
     setField((state) => {
       if (result.status === 'conflict') {
+        reportComposeDiagnostic('conflict', 'stale', { reason: 'stale_target' })
         setConfirmOverwrite({
           kind: 'conflict',
           messageId,
@@ -1056,6 +1147,17 @@ export function AiMailPanel({
           }
         }
       }
+      if (operation === 'apply' && result.status === 'applied')
+        reportComposeDiagnostic('apply', 'applied')
+      else if (operation === 'apply' && result.status === 'unsupported')
+        reportComposeDiagnostic('apply', 'unsupported', { reason: 'unsupported_content' })
+      else if (
+        operation === 'apply' &&
+        ['stale_target', 'busy', 'failed', 'stale', 'error'].includes(result.status)
+      )
+        reportComposeDiagnostic('apply', result.status === 'stale_target' ? 'stale' : 'failure', {
+          reason: result.status === 'stale_target' ? 'stale_target' : 'failed'
+        })
       if (result.status === 'applied')
         return {
           ...state,
@@ -1087,15 +1189,6 @@ export function AiMailPanel({
       }
     })
     return result
-  }
-
-  async function copy(value: string): Promise<void> {
-    try {
-      await window.api.writeClipboardText(value)
-      setCopyFeedback(text.copied)
-    } catch {
-      setCopyFeedback(text.copyError)
-    }
   }
 
   function confirmApply(): void {
@@ -1331,19 +1424,7 @@ export function AiMailPanel({
   }
 
   if (!open) return null
-  const targetCandidates =
-    targetStatus.status === 'ready' && targetStatus.accountId !== activeAccountId
-      ? []
-      : 'candidates' in targetStatus
-        ? (targetStatus.candidates ?? [])
-        : []
-  const visibleCandidates = [...targetCandidates]
-  if (target && !visibleCandidates.some((candidate) => candidate.composeId === target.composeId))
-    visibleCandidates.unshift({
-      composeId: target.composeId,
-      label: target.accountLabel,
-      lastUsedAt: 0
-    })
+  const visibleCandidates = eligibleComposeCandidates(targetStatus, activeAccountId)
   const statusLabel =
     selectedProvider === 'ollama'
       ? inventoryLoading
@@ -1368,51 +1449,175 @@ export function AiMailPanel({
       ? `${text.draftChip}: ${currentComposeSnapshot.subject || text.newMessage}`
       : ''
   ].filter(Boolean)
+  const codexLabel = statusFailed ? text.connectionError : statusText(codexStatus, text)
   const header = (
     <>
       <div className="ai-mail-heading">
-        <div>
-          <h1 id="ai-mail-title">{text.title}</h1>
-          <p>{text.caption}</p>
+        <h1 id="ai-mail-title">{text.title}</h1>
+        <div className="ai-mail-heading-actions">
+          <IconActionButton
+            action="history"
+            aria-label={text.earlierConversations}
+            title={text.earlierConversations}
+            aria-expanded={historyOpen}
+            aria-controls="ai-mail-history"
+            onClick={() => setHistoryOpen((current) => !current)}
+          />
+          <IconActionButton
+            action="new-chat"
+            aria-label={text.newConversation}
+            title={text.newConversation}
+            onClick={() => {
+              setHistoryOpen(false)
+              startNewConversation()
+            }}
+          />
+          <IconActionButton
+            ref={closeButtonRef}
+            action="close"
+            aria-label={text.close}
+            title={text.close}
+            onClick={onClose}
+          />
         </div>
-        <button className="ai-mail-text-button" type="button" onClick={startNewConversation}>
-          {text.newConversation}
-        </button>
-        <button
-          ref={closeButtonRef}
-          className="ai-mail-close"
-          type="button"
-          aria-label={text.close}
-          title={text.close}
-          onClick={onClose}
-        >
-          <span aria-hidden="true">×</span>
-        </button>
       </div>
+      {historyOpen && (
+        <nav
+          id="ai-mail-history"
+          className="ai-mail-history"
+          aria-label={text.earlierConversations}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setHistoryOpen(false)
+          }}
+        >
+          {accountConversations.length ? (
+            <ul>
+              {accountConversations.map((conversation) => (
+                <li key={conversation.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHistoryOpen(false)
+                      restoreConversation(conversation.id)
+                    }}
+                  >
+                    {conversation.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>{text.noConversations}</p>
+          )}
+        </nav>
+      )}
+      {provider === 'codex' && (
+        <section className="ai-mail-connection" aria-label={text.codex}>
+          <span
+            className={`ai-mail-connection-dot ai-mail-state-${codexStatus?.state ?? 'checking'}`}
+            aria-hidden="true"
+          />
+          <div className="ai-mail-connection-copy">
+            <strong>{codexLabel}</strong>
+            {codexStatus?.state === 'connected' && <p>{text.generationBlocked}</p>}
+          </div>
+          {codexStatus?.state === 'connected' ? (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              onClick={() => void window.api.disconnectAiMailCodex()}
+            >
+              {text.disconnect}
+            </button>
+          ) : codexStatus?.state === 'connecting' ? (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              onClick={() => void window.api.disconnectAiMailCodex()}
+            >
+              {text.cancelLogin}
+            </button>
+          ) : (
+            <button
+              className="ai-mail-text-button"
+              type="button"
+              onClick={() => void window.api.connectAiMailCodex()}
+            >
+              {text.reconnect}
+            </button>
+          )}
+        </section>
+      )}
     </>
   )
-  const context = (
-    <div className="ai-mail-context-chips">
-      {accountConversations.length > 0 && (
-        <label className="ai-mail-history-picker">
-          <span>{text.earlierConversations}</span>
-          <select
-            aria-label={text.earlierConversations}
-            value=""
-            onChange={(event) => restoreConversation(event.target.value)}
-          >
-            <option value="">{text.chooseConversation}</option>
-            {accountConversations.map((conversation) => (
-              <option key={conversation.id} value={conversation.id}>
-                {conversation.title}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
+  // A disabled send button states why; when sending works, no caption is needed.
+  const blockedReason = !generationAvailable
+    ? provider === 'codex'
+      ? text.codexGenerationUnavailable
+      : statusLabel
+    : provider === 'ollama'
+      ? ''
+      : text.codexGenerationUnavailable
+  // Only something the user can act on gets a line here; "no draft open" is not news.
+  // Capture code also writes the "no draft open" hint and a loading note into contextStatus;
+  // neither is something to act on, so only real failures pass through.
+  const actionableContextStatus =
+    contextStatus === text.noTarget || contextStatus === text.loadingSnapshot ? '' : contextStatus
+  const targetNotice = contextDetails.length
+    ? ''
+    : actionableContextStatus ||
+      (targetStatus.status === 'unsupported'
+        ? text.unsupportedTarget
+        : targetStatus.status === 'access_locked'
+          ? text.lockedTarget
+          : '')
+  const context =
+    conversationStatus || targetNotice ? (
+      <div className="ai-mail-context-chips">
+        {conversationStatus && (
+          <span className="ai-mail-conversation-status" role="status">
+            {conversationStatus}
+          </span>
+        )}
+        {targetNotice && (
+          <span className="ai-mail-inline-status" role="status">
+            {targetNotice}
+          </span>
+        )}
+      </div>
+    ) : null
+  const mailIcon = (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <rect
+        x="2"
+        y="3.5"
+        width="12"
+        height="9"
+        rx="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      />
+      <path
+        d="m2.5 4.5 5.5 4 5.5-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+  // Drafts open in Gmail but not yet read: shown so the user sees what the panel can work
+  // with, like a desktop assistant that notices another window. Their content is read only
+  // when the user asks.
+  const openDrafts = currentComposeSnapshot ? [] : visibleCandidates.slice(0, 3)
+  // The mail the assistant reads, shown like an attachment above the field.
+  const workingWith = (contextDetails.length > 0 || openDrafts.length > 0) && (
+    <div className="ai-mail-working-with">
       {contextDetails.map((detail) => (
         <details key={detail} className="ai-mail-captured">
           <summary className="ai-mail-context-chip">
+            {mailIcon}
             <strong>{detail}</strong>
           </summary>
           <pre>
@@ -1422,59 +1627,59 @@ export function AiMailPanel({
           </pre>
         </details>
       ))}
-      {conversationStatus && (
-        <span className="ai-mail-conversation-status" role="status">
-          {conversationStatus}
+      {openDrafts.map((candidate) => (
+        <span key={candidate.composeId} className="ai-mail-context-chip">
+          {mailIcon}
+          <strong>{`${text.draftChip}: ${candidate.label || text.newMessage}`}</strong>
         </span>
-      )}
-      {!contextDetails.length && (
-        <span className="ai-mail-inline-status" role="status">
-          {contextStatus ||
-            (targetStatus.status === 'unsupported'
-              ? text.unsupportedTarget
-              : targetStatus.status === 'access_locked'
-                ? text.lockedTarget
-                : text.noTarget)}
-        </span>
-      )}
+      ))}
     </div>
   )
   const composer = (
     <form className="ai-mail-compose" noValidate onSubmit={handleSubmit}>
-      <textarea
-        className="resize-none"
-        ref={textareaRef}
-        value={instruction}
-        maxLength={2000}
-        aria-label={text.requestLabel}
-        placeholder={text.requestPlaceholder}
-        onChange={(event) => setInstruction(event.target.value)}
-        onKeyDown={handleKeyDown}
-        onCompositionStart={() => {
-          composing.current = true
-        }}
-        onCompositionEnd={() => {
-          composing.current = false
-        }}
-      />
-      <div className="ai-mail-chat-composer-actions">
-        <span className="ai-mail-data-sharing">
-          {!generationAvailable
-            ? provider === 'codex'
-              ? text.codexGenerationUnavailable
-              : statusLabel
-            : text.sendContextNotice}
-        </span>
+      <label htmlFor="ai-mail-instruction">{text.requestLabel}</label>
+      {workingWith}
+      <div className="ai-mail-input-pill">
+        <textarea
+          id="ai-mail-instruction"
+          className="resize-none"
+          ref={textareaRef}
+          rows={1}
+          value={instruction}
+          maxLength={2000}
+          aria-label={text.requestLabel}
+          placeholder={text.requestPlaceholder}
+          onChange={(event) => setInstruction(event.target.value)}
+          onKeyDown={handleKeyDown}
+          onCompositionStart={() => {
+            composing.current = true
+          }}
+          onCompositionEnd={() => {
+            composing.current = false
+          }}
+        />
         <button
-          className="ai-mail-primary"
+          className="ai-mail-send"
           type="submit"
+          aria-label={requestPending ? text.thinking : text.send}
+          title={requestPending ? text.thinking : text.send}
           disabled={
             !generationAvailable || !activeAccountId || !instruction.trim() || requestPending
           }
         >
-          {text.send}
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+            <path
+              d="M8 13V3M3.5 7.5 8 3l4.5 4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>
       </div>
+      {blockedReason && <p className="ai-mail-privacy">{blockedReason}</p>}
     </form>
   )
   return (
@@ -1488,15 +1693,6 @@ export function AiMailPanel({
               <p className={message.tone === 'error' ? 'ai-mail-error' : undefined}>
                 {message.text}
               </p>
-            )}
-            {message.role === 'assistant' && !message.proposal && (
-              <button
-                className="ai-mail-text-button"
-                type="button"
-                onClick={() => void copy(message.text)}
-              >
-                {text.copy}
-              </button>
             )}
             {message.proposal && (
               <div className="ai-mail-proposal">
@@ -1596,10 +1792,6 @@ export function AiMailPanel({
                   const missingDefaultTarget = visibleCandidates.length > 1 && !target
                   const statusIsError =
                     targetNotice?.kind === 'error' || (Boolean(feedbackState) && hasFeedbackError)
-                  const copiedValue = message.proposal.subject
-                    ? `${message.proposal.subject.value}\n\n${message.proposal.body.value}`
-                    : message.proposal.body.value
-
                   return (
                     <div className="ai-mail-proposal-footer">
                       <p
@@ -1661,13 +1853,6 @@ export function AiMailPanel({
                             {text.undo}
                           </button>
                         )}
-                        <button
-                          className="ai-mail-text-button"
-                          type="button"
-                          onClick={() => void copy(copiedValue)}
-                        >
-                          {text.copy}
-                        </button>
                       </div>
                     </div>
                   )
@@ -1688,11 +1873,6 @@ export function AiMailPanel({
             </button>
             {cancelError && <p className="ai-mail-error">{text.cancelFailed}</p>}
           </div>
-        )}
-        {copyFeedback && (
-          <p className="ai-mail-copy-feedback" role="status">
-            {copyFeedback}
-          </p>
         )}
       </AiMailChatLayout>
       {confirmOverwrite && (

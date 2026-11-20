@@ -284,19 +284,16 @@ function App(): React.JSX.Element {
                 />
               </div>
               <div className="sidebar-footer">
-                <button
+                <IconActionButton
                   ref={aiMailToggleRef}
-                  className="ai-mail-toggle ai-mail-toggle-sidebar"
-                  type="button"
+                  action="ai"
+                  className="ai-mail-toggle"
                   disabled={aiMailPanelLayoutBusy}
                   aria-label={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
                   title={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
                   aria-pressed={aiMailPanelOpen}
                   onClick={() => void changeAiMailPanel(!aiMailPanelOpen)}
-                >
-                  <span aria-hidden="true">✦</span>
-                  <span>AI</span>
-                </button>
+                />
                 <IconActionButton
                   action={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'}
                   className="sidebar-action"
@@ -341,19 +338,16 @@ function App(): React.JSX.Element {
                 aria-pressed={settingsOpen}
                 onClick={() => void openSettings()}
               />
-              <button
+              <IconActionButton
                 ref={aiMailToggleRef}
-                className="ai-mail-toggle"
-                type="button"
+                action="ai"
+                className="ai-mail-toggle settings-trigger"
                 disabled={aiMailPanelLayoutBusy}
                 aria-label={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
                 title={aiMailPanelOpen ? text.aiMail.close : text.aiMail.open}
                 aria-pressed={aiMailPanelOpen}
                 onClick={() => void changeAiMailPanel(!aiMailPanelOpen)}
-              >
-                <span aria-hidden="true">✦</span>
-                <span>AI</span>
-              </button>
+              />
             </>
           )}
         </header>
