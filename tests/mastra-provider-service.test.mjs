@@ -102,6 +102,64 @@ test('provider retains a subject and body proposal in the mail prompt contract',
   await provider.dispose()
 })
 
+test('provider accepts one fenced JSON object returned by a local chat model', async () => {
+  const provider = createMastraOllamaProvider({
+    fetch: async (url) => {
+      if (String(url).includes('/chat/completions'))
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: { content: '```json\n{"kind":"answer","text":"Hello!"}\n```' }
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      throw new Error('unexpected request')
+    },
+    local
+  })
+  const result = await provider.generate(request(), new AbortController().signal)
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { kind: 'answer', text: 'Hello!' })
+  await provider.dispose()
+})
+
+test('provider does not normalize fenced JSON for remote generation', async () => {
+  const provider = createMastraOllamaProvider({
+    fetch: async (url) => {
+      if (String(url).endsWith('/models'))
+        return new Response(JSON.stringify({ data: [{ id: 'remote-model' }] }), { status: 200 })
+      if (String(url).includes('/chat/completions'))
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: { content: '```json\n{"kind":"answer","text":"Hello!"}\n```' }
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      throw new Error('unexpected request')
+    },
+    local
+  })
+  await assert.rejects(
+    provider.generate(
+      request({
+        mode: 'remote',
+        endpoint: 'https://ollama.com/v1',
+        apiKey: 'synthetic-key',
+        model: 'remote-model'
+      }),
+      new AbortController().signal
+    ),
+    /generation failed/i
+  )
+  await provider.dispose()
+})
+
 test('memory is isolated by account, conversation, mode, and canonical endpoint', async () => {
   const bodies = []
   const provider = createMastraOllamaProvider({

@@ -261,7 +261,9 @@ export function createMastraOllamaProvider(options: {
           await removeThread(thread)
           return null
         }
-        const output: unknown = JSON.parse(response.text)
+        const output: unknown = JSON.parse(
+          request.mode === 'local' ? extractJsonObject(response.text) : response.text.trim()
+        )
         const outputBytes = new TextEncoder().encode(
           JSON.stringify({ role: 'assistant', content: response.text })
         ).byteLength
@@ -314,5 +316,11 @@ function isSafeOutput(value: unknown): boolean {
     output.subject.length <= 998 &&
     Object.keys(output).sort().join(',') === 'field,kind,subject,text'
   )
+}
+
+function extractJsonObject(text: string): string {
+  const trimmed = text.trim()
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed)
+  return fenced?.[1] ?? trimmed
 }
 import { createHash } from 'node:crypto'
