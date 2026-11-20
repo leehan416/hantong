@@ -281,6 +281,34 @@ test('remote redirects and oversized responses are rejected', async () => {
   await provider.dispose()
 })
 
+test('bounded remote fetch aborts on early response failures but not after a complete read', async () => {
+  const signals = []
+  const responses = [
+    new Response('failure body', { status: 503 }),
+    new Response('oversized body', {
+      status: 200,
+      headers: { 'content-length': '9999999' }
+    }),
+    new Response(JSON.stringify({ data: [{ id: 'remote-model' }] }), { status: 200 })
+  ]
+  const provider = createMastraOllamaProvider({
+    fetch: async (_url, init) => {
+      signals.push(init.signal)
+      return responses.shift()
+    },
+    local
+  })
+  const configuration = { mode: 'remote', endpoint: 'https://ollama.com/v1', apiKey: 'key' }
+
+  await assert.rejects(provider.getModels(configuration), /failed/i)
+  assert.equal(signals.at(-1).aborted, true)
+  await assert.rejects(provider.getModels(configuration), /too large/i)
+  assert.equal(signals.at(-1).aborted, true)
+  assert.deepEqual(await provider.getModels(configuration), ['remote-model'])
+  assert.equal(signals.at(-1).aborted, false)
+  await provider.dispose()
+})
+
 test('remote credential changes do not retain an old credential-bearing Agent', async () => {
   const createdAgents = []
   class TestMemory {

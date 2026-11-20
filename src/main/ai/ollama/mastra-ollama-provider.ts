@@ -102,6 +102,7 @@ export function createMastraOllamaProvider(options: {
       const abort = (): void => controller.abort()
       init.signal?.addEventListener('abort', abort, { once: true })
       if (init.signal?.aborted) controller.abort()
+      let bodyConsumed = false
       try {
         const response = await fetcher(input, {
           ...init,
@@ -119,7 +120,10 @@ export function createMastraOllamaProvider(options: {
         let total = 0
         while (true) {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done) {
+            bodyConsumed = true
+            break
+          }
           total += value.byteLength
           if (total > MAX_RESPONSE_BYTES) {
             await reader.cancel()
@@ -135,6 +139,7 @@ export function createMastraOllamaProvider(options: {
         }
         return new Response(bytes, { status: response.status, headers: response.headers })
       } finally {
+        if (!bodyConsumed) controller.abort()
         clearTimeout(timer)
         init.signal?.removeEventListener('abort', abort)
       }

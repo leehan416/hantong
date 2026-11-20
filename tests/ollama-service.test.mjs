@@ -106,6 +106,25 @@ test('redirects and oversized responses are rejected without following them', as
     state: 'unavailable',
     cloudDisabled: false
   })
+  assert.equal(oversized.calls[0].init.signal.aborted, true)
+})
+
+test('early response failures abort unread bodies while successful reads remain undisturbed', async () => {
+  for (const failedResponse of [
+    response(503, { error: 'unavailable' }),
+    response(200, { cloud: { disabled: true } }, { 'content-length': '9999999' }),
+    response(200, { payload: 'x'.repeat(600 * 1024) })
+  ]) {
+    const pending = fixture(new Map([['GET /api/status', failedResponse]]))
+    await pending.service.getStatus()
+    assert.equal(pending.calls[0].init.signal.aborted, true)
+  }
+
+  const successful = fixture(
+    new Map([['GET /api/status', response(200, { cloud: { disabled: true } })]])
+  )
+  await successful.service.getStatus()
+  assert.equal(successful.calls[0].init.signal.aborted, false)
 })
 
 test('selection confirms the candidate with /api/show and refuses remote metadata', async () => {

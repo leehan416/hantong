@@ -96,6 +96,7 @@ export function createOllamaService(
     const abortFromCaller = (): void => controller.abort()
     externalSignal?.addEventListener('abort', abortFromCaller, { once: true })
     if (externalSignal?.aborted) controller.abort()
+    let bodyConsumed = false
     try {
       const response = await fetcher(`${ORIGIN}${path}`, {
         method: body ? 'POST' : 'GET',
@@ -114,7 +115,10 @@ export function createOllamaService(
       let total = 0
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
+        if (done) {
+          bodyConsumed = true
+          break
+        }
         total += value.byteLength
         if (total > responseLimit) {
           await reader.cancel()
@@ -130,6 +134,7 @@ export function createOllamaService(
       }
       return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown
     } finally {
+      if (!bodyConsumed) controller.abort()
       clearTimeout(timeout)
       externalSignal?.removeEventListener('abort', abortFromCaller)
       controllers.delete(controller)
