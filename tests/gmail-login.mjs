@@ -10,7 +10,9 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 // No existing app profile, browser cookies, or OAuth credentials are imported.
 app.setPath('userData', mkdtempSync(join(tmpdir(), 'hantong-gmail-login-')))
 app.setName('Hantong Gmail login check')
-const { createGmailView } = loadTypeScript(new URL('../src/main/gmail-view.ts', import.meta.url))
+const { createGmailView } = loadTypeScript(
+  new URL('../src/main/gmail/gmail-view.ts', import.meta.url)
+)
 
 await app.whenReady()
 

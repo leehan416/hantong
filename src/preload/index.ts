@@ -34,12 +34,23 @@ import {
   AI_MAIL_CODEX_DISCONNECT_CHANNEL,
   AI_MAIL_CODEX_GENERATE_CHANNEL,
   AI_MAIL_CODEX_CANCEL_CHANNEL,
+  AI_MAIL_OLLAMA_GENERATE_CHANNEL,
+  AI_MAIL_OLLAMA_CANCEL_CHANNEL,
   AI_MAIL_CODEX_STATUS_EVENT,
+  OLLAMA_STATUS_CHANNEL,
+  OLLAMA_MODELS_CHANNEL,
+  CODEX_MODELS_CHANNEL,
+  CLIPBOARD_WRITE_TEXT_CHANNEL,
+  OLLAMA_CREDENTIAL_STATUS_CHANNEL,
+  OLLAMA_CREDENTIAL_SET_CHANNEL,
+  OLLAMA_CREDENTIAL_CLEAR_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL,
   AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL,
+  AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL,
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
   AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT,
+  AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL,
   AI_MAIL_READ_SNAPSHOT_CHANNEL,
   AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL,
   AI_MAIL_SUBJECT_APPLY_CHANNEL,
@@ -55,14 +66,21 @@ import {
   type NotificationConnectionStates,
   type ComposeTargetStatus,
   type HantongApi
-} from '../shared/ipc'
-import type { AccountState } from '../shared/accounts'
-import type { AppSettings } from '../shared/settings'
+} from '~/shared/ipc'
+import type { AccountState } from '~/shared/accounts'
+import type { AppSettings } from '~/shared/settings'
 
 if (!process.contextIsolated) throw new Error('Context isolation is required')
 
 // Expose operations rather than a generic channel sender or Electron objects.
 const api: HantongApi = Object.freeze({
+  writeClipboardText: (text) => ipcRenderer.invoke(CLIPBOARD_WRITE_TEXT_CHANNEL, text),
+  getOllamaCredentialStatus: (endpoint) =>
+    ipcRenderer.invoke(OLLAMA_CREDENTIAL_STATUS_CHANNEL, endpoint),
+  setOllamaCredential: (endpoint, credential) =>
+    ipcRenderer.invoke(OLLAMA_CREDENTIAL_SET_CHANNEL, endpoint, credential),
+  clearOllamaCredential: (endpoint) =>
+    ipcRenderer.invoke(OLLAMA_CREDENTIAL_CLEAR_CHANNEL, endpoint),
   getAiMailReadSnapshot: () => ipcRenderer.invoke(AI_MAIL_READ_SNAPSHOT_CHANNEL),
   isAiMailReadSnapshotCurrent: (captureId) =>
     ipcRenderer.invoke(AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL, captureId),
@@ -70,6 +88,8 @@ const api: HantongApi = Object.freeze({
   undoAiMailSubject: (request) => ipcRenderer.invoke(AI_MAIL_SUBJECT_UNDO_CHANNEL, request),
   getAiMailComposeTargetStatus: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL),
   getAiMailComposeSnapshot: () => ipcRenderer.invoke(AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL),
+  selectAiMailComposeTarget: (request) =>
+    ipcRenderer.invoke(AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL, request),
   applyAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_APPLY_CHANNEL, request),
   undoAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_COMPOSE_UNDO_CHANNEL, request),
   onAiMailComposeTarget: (listener) => {
@@ -78,20 +98,29 @@ const api: HantongApi = Object.freeze({
     ipcRenderer.on(AI_MAIL_COMPOSE_TARGET_EVENT, handler)
     return () => ipcRenderer.removeListener(AI_MAIL_COMPOSE_TARGET_EVENT, handler)
   },
+  recordAiMailComposeDiagnostic: (event) =>
+    ipcRenderer.invoke(AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL, event),
   getAiMailCodexStatus: () => ipcRenderer.invoke(AI_MAIL_CODEX_STATUS_CHANNEL),
   connectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_CONNECT_CHANNEL),
   disconnectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_DISCONNECT_CHANNEL),
   generateAiMailDraft: (request) => ipcRenderer.invoke(AI_MAIL_CODEX_GENERATE_CHANNEL, request),
+  generateAiMailWithOllama: (request) =>
+    ipcRenderer.invoke(AI_MAIL_OLLAMA_GENERATE_CHANNEL, request),
+  cancelAiMailOllamaGeneration: (requestId) =>
+    ipcRenderer.invoke(AI_MAIL_OLLAMA_CANCEL_CHANNEL, requestId),
   cancelAiMailGeneration: (requestId) =>
     ipcRenderer.invoke(AI_MAIL_CODEX_CANCEL_CHANNEL, requestId),
   onAiMailCodexStatus: (listener) => {
     const handler = (
       _event: IpcRendererEvent,
-      status: import('../shared/ipc').CodexConnectionStatus
+      status: import('~/shared/ipc').CodexConnectionStatus
     ): void => listener(status)
     ipcRenderer.on(AI_MAIL_CODEX_STATUS_EVENT, handler)
     return () => ipcRenderer.removeListener(AI_MAIL_CODEX_STATUS_EVENT, handler)
   },
+  getOllamaStatus: () => ipcRenderer.invoke(OLLAMA_STATUS_CHANNEL),
+  getOllamaModels: () => ipcRenderer.invoke(OLLAMA_MODELS_CHANNEL),
+  getCodexModels: () => ipcRenderer.invoke(CODEX_MODELS_CHANNEL),
   getLoginLaunchState: () => ipcRenderer.invoke(LOGIN_LAUNCH_GET_CHANNEL),
   setLoginLaunchEnabled: (enabled) => ipcRenderer.invoke(LOGIN_LAUNCH_SET_CHANNEL, enabled),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),

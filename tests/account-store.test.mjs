@@ -14,7 +14,7 @@ const first = {
   accounts: [{ id: firstId }],
   activeAccountId: firstId
 }
-const sourceUrl = new URL('../src/main/account-store.ts', import.meta.url)
+const sourceUrl = new URL('../src/main/accounts/account-store.ts', import.meta.url)
 
 test('a fresh account store does not create files until a change is saved', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'hantong-accounts-'))

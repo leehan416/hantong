@@ -5,13 +5,13 @@ import { runInNewContext } from 'node:vm'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createGmailComposeTargetService } = loadTypeScript(
-  new URL('../src/main/gmail-compose-target.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-compose-target.ts', import.meta.url)
 )
 const { gmailComposeTargetPageSource } = loadTypeScript(
-  new URL('../src/main/gmail-compose-target.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-compose-target.ts', import.meta.url)
 )
 const { isAllowedAiMailComposeTargetRequest } = loadTypeScript(
-  new URL('../src/main/security-policy.ts', import.meta.url)
+  new URL('../src/main/security/security-policy.ts', import.meta.url)
 )
 
 const renderer = 'file:///Applications/Hantong.app/Contents/Resources/app/index.html'
@@ -19,6 +19,8 @@ const renderer = 'file:///Applications/Hantong.app/Contents/Resources/app/index.
 function fixture(options = {}) {
   let activeAccountId = 'account-a'
   let ready = true
+  let visible = true
+  let minimized = false
   let destroyed = false
   let targetId = 'target-7'
   let documentRevision = '4:9'
@@ -38,6 +40,13 @@ function fixture(options = {}) {
     },
     async executeJavaScriptInIsolatedWorld(_world, scripts) {
       const code = scripts[0].code
+      if (code.includes('__hantongComposeTarget.selectTarget(')) {
+        const match = code.match(/\.selectTarget\(("(?:\\.|[^"])*")\)/)
+        if (!match) return false
+        const requestedTarget = JSON.parse(match[1])
+        if (requestedTarget !== targetId) return false
+        return true
+      }
       if (code.includes('__hantongComposeTarget.replace(')) {
         if (options.deferReplace) await options.deferReplace()
         const match = code.match(
@@ -65,6 +74,16 @@ function fixture(options = {}) {
         if (options.deferReadBeforeReplace) await options.deferReadBeforeReplace()
         return {
           targetId,
+          targets: [
+            {
+              targetId,
+              title: subject || 'recipient@example.test',
+              subject,
+              recipients: ['recipient@example.test'],
+              supported: options.supported !== false,
+              lastUsedAt: 123
+            }
+          ],
           snapshot: {
             subject,
             recipients: ['recipient@example.test'],
@@ -77,6 +96,16 @@ function fixture(options = {}) {
         if (options.deferRead) await options.deferRead()
         return {
           targetId,
+          targets: [
+            {
+              targetId,
+              title: subject || 'recipient@example.test',
+              subject,
+              recipients: ['recipient@example.test'],
+              supported: options.supported !== false,
+              lastUsedAt: 123
+            }
+          ],
           snapshot: {
             subject,
             recipients: ['recipient@example.test'],
@@ -93,7 +122,11 @@ function fixture(options = {}) {
     { id: 'account-b', email: 'synthetic-b@example.test', displayName: 'Synthetic B' }
   ]
   const service = createGmailComposeTargetService({
-    window: { isDestroyed: () => false },
+    window: {
+      isDestroyed: () => false,
+      isVisible: () => visible,
+      isMinimized: () => minimized
+    },
     views: {
       getActiveAccountId: () => activeAccountId,
       getComposeProbeView: (accountId) =>
@@ -116,6 +149,10 @@ function fixture(options = {}) {
     },
     setReady(value) {
       ready = value
+    },
+    setWindowState(nextVisible, nextMinimized) {
+      visible = nextVisible
+      minimized = nextMinimized
     },
     setRevision(value) {
       documentRevision = value
@@ -141,7 +178,212 @@ function fixture(options = {}) {
   }
 }
 
+function composeProbeFixture() {
+  const listeners = new Map()
+  const observers = []
+  const scheduled = []
+  const composeItems = []
+  let now = 100
+
+  class SyntheticElement {
+    constructor(selector = '', parentElement = null, text = '') {
+      this.selector = selector
+      this.parentElement = parentElement
+      this.children = []
+      this.innerText = text
+      this.value = ''
+      this.isConnected = true
+      this.childNodes = text ? [{ nodeType: 3, textContent: text }] : []
+      parentElement?.children.push(this)
+    }
+    matches(selector) {
+      return this.selector === selector
+    }
+    closest(selector) {
+      return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null)
+    }
+    getClientRects() {
+      return this.isConnected && this.visible !== false ? [{ width: 120, height: 24 }] : []
+    }
+    querySelectorAll(selector) {
+      const matches = []
+      const visit = (node) => {
+        for (const child of node.children) {
+          if (child.matches(selector)) matches.push(child)
+          visit(child)
+        }
+      }
+      for (const child of this.children) {
+        if (child.matches(selector)) matches.push(child)
+        visit(child)
+      }
+      return matches
+    }
+    querySelector() {
+      return null
+    }
+    getAttribute(name) {
+      return name === 'aria-placeholder' || name === 'data-placeholder' ? null : null
+    }
+    replaceChildren(...nodes) {
+      this.childNodes = nodes
+      this.innerText = nodes.map((node) => node.textContent ?? '\n').join('')
+    }
+    dispatchEvent() {
+      return true
+    }
+  }
+  class SyntheticInput extends SyntheticElement {}
+  class SyntheticObserver {
+    constructor(callback) {
+      this.callback = callback
+      observers.push(this)
+    }
+    observe() {
+      return undefined
+    }
+    disconnect() {
+      return undefined
+    }
+  }
+
+  const document = {
+    documentElement: {},
+    querySelectorAll: (selector) =>
+      selector === '[contenteditable="true"]'
+        ? composeItems.filter((item) => item.editor.isConnected).map((item) => item.editor)
+        : [],
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    removeEventListener: (name) => listeners.delete(name),
+    createElement: (name) => ({ nodeType: 1, nodeName: name.toUpperCase() }),
+    createTextNode: (textContent) => ({ nodeType: 3, textContent })
+  }
+  const context = {
+    document,
+    Element: SyntheticElement,
+    HTMLInputElement: SyntheticInput,
+    Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
+    MutationObserver: SyntheticObserver,
+    Date: { now: () => now },
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay }
+      scheduled.push(timer)
+      return timer
+    },
+    clearTimeout: () => undefined,
+    Event: class Event {}
+  }
+  runInNewContext(gmailComposeTargetPageSource('recency-fixture'), context)
+
+  return {
+    probe: context.__hantongComposeTarget,
+    // Gmail nests the body editor more than 12 elements below the element it shares with
+    // the subject box (seen in live structure diagnostics).
+    addDeepCompose(label, depth) {
+      const root = new SyntheticElement('compose-root')
+      let parent = root
+      for (let level = 0; level < depth; level += 1) parent = new SyntheticElement('div', parent)
+      const editor = new SyntheticElement('[contenteditable="true"]', parent, 'Draft body')
+      const subject = new SyntheticInput('input[name="subjectbox"]', root)
+      subject.value = label
+      const item = { root, editor, subject }
+      composeItems.push(item)
+      return item
+    },
+    addCompose(label) {
+      const root = new SyntheticElement('compose-root')
+      const editor = new SyntheticElement('[contenteditable="true"]', root, 'Draft body')
+      const subject = new SyntheticInput('input[name="subjectbox"]', root)
+      subject.value = label
+      const item = { root, editor, subject }
+      composeItems.push(item)
+      return item
+    },
+    addUnmatchedEditor() {
+      const editor = new SyntheticElement('[contenteditable="true"]', null, 'Unmatched')
+      composeItems.push({ editor })
+      return editor
+    },
+    addHiddenCompose(label) {
+      const item = this.addCompose(label)
+      item.editor.visible = false
+      return item
+    },
+    setNow(value) {
+      now = value
+    },
+    focus(editor) {
+      listeners.get('focusin')({ target: editor })
+    },
+    discoverLater() {
+      observers[0].callback()
+      const timer = scheduled.at(-1)
+      assert.equal(timer.delay, 100)
+      timer.callback()
+    }
+  }
+}
+
 const plain = (value) => JSON.parse(JSON.stringify(value))
+
+test('an inline reply with Gmail hidden subject box is discovered without a subject', () => {
+  const fixture = composeProbeFixture()
+  const reply = fixture.addDeepCompose('Re: kept by Gmail', 20)
+  reply.subject.visible = false
+  const result = plain(fixture.probe.read())
+  assert.equal(result.discovery.candidateCount, 1)
+  assert.equal(result.discovery.rejectedNotVisible, 0)
+  assert.equal(result.targets.length, 1)
+  assert.equal(result.targets[0].subject, '')
+})
+
+test('a compose whose body sits deep below the subject box is still discovered', () => {
+  const fixture = composeProbeFixture()
+  fixture.addDeepCompose('Deep draft', 20)
+  const result = plain(fixture.probe.read())
+  assert.equal(result.discovery.candidateCount, 1)
+  assert.equal(result.discovery.rejectedNoMatch, 0)
+  assert.equal(result.targets.length, 1)
+})
+
+test('two deep composes stay separate targets', () => {
+  const fixture = composeProbeFixture()
+  fixture.addDeepCompose('First deep draft', 20)
+  fixture.addDeepCompose('Second deep draft', 20)
+  const result = plain(fixture.probe.read())
+  assert.equal(result.discovery.candidateCount, 2)
+  assert.equal(result.targets.length, 2)
+})
+
+test('DOM discovery reports bounded editor and fixed rejection counts without DOM content', () => {
+  const fixture = composeProbeFixture()
+  for (let index = 0; index < 33; index += 1) fixture.addCompose(`Draft ${index}`)
+  fixture.addHiddenCompose('Hidden draft')
+  fixture.addUnmatchedEditor()
+  const result = plain(fixture.probe.read())
+  const { structure, ...counts } = result.discovery
+  assert.deepEqual(counts, {
+    editorCount: 35,
+    candidateCount: 33,
+    rejectedNoMatch: 1,
+    rejectedNotVisible: 1,
+    capacityEvictions: 1
+  })
+  assert.doesNotMatch(JSON.stringify(counts), /Draft|Unmatched|subject|recipient|target-/i)
+  // Structure keys name DOM features (e.g. subjectBoxCount), so check its values instead:
+  // only counts, flags and the fixed tag categories may leave the page.
+  const leaves = (value) =>
+    value && typeof value === 'object' ? Object.values(value).flatMap(leaves) : [value]
+  assert.ok(structure && typeof structure === 'object')
+  for (const leaf of leaves(structure)) {
+    assert.ok(
+      typeof leaf === 'number' ||
+        typeof leaf === 'boolean' ||
+        ['document', 'container', 'form', 'input', 'other'].includes(leaf),
+      `unexpected structure value: ${String(leaf)}`
+    )
+  }
+})
 
 test('snapshot request returns only bounded current compose data and opaque identity', async () => {
   const f = fixture()
@@ -157,6 +399,66 @@ test('snapshot request returns only bounded current compose data and opaque iden
   assert.match(snapshot.documentVersion, /^[0-9a-f-]{36}$/)
   assert.equal(await f.service.isResultTargetCurrent(snapshot), true)
   f.service.dispose()
+})
+
+test('candidate selection returns a fresh snapshot for its opaque identity', async () => {
+  const f = fixture()
+  const status = await f.service.getStatus()
+  assert.equal(status.status, 'ready')
+  if (status.status !== 'ready') assert.fail('compose status should be ready')
+  assert.equal(status.candidates.length, 1)
+  assert.equal(status.candidates[0].label, 'Synthetic subject')
+  assert.notEqual(status.candidates[0].composeId, 'target-7')
+  const snapshot = await f.service.selectTarget({
+    accountId: 'account-a',
+    composeId: status.candidates[0].composeId
+  })
+  assert.equal(snapshot.status, 'ready')
+  if (snapshot.status !== 'ready') assert.fail('explicit target selection should return a snapshot')
+  assert.equal(snapshot.composeId, status.candidates[0].composeId)
+  assert.equal(snapshot.body, 'Synthetic body')
+  f.service.dispose()
+})
+
+test('removed compose candidates cannot be explicitly selected', async () => {
+  const f = fixture()
+  const status = await f.service.getStatus()
+  assert.equal(status.status, 'ready')
+  if (status.status !== 'ready') assert.fail('compose status should be ready')
+  const staleIdentity = status.candidates[0].composeId
+  f.setTarget('target-8')
+  const refreshed = await f.service.getStatus()
+  assert.equal(refreshed.status, 'ready')
+  if (refreshed.status !== 'ready') assert.fail('updated compose should be ready')
+  assert.equal(
+    (await f.service.selectTarget({ accountId: 'account-a', composeId: staleIdentity })).status,
+    'stale'
+  )
+  f.service.dispose()
+})
+
+test('a replaced compose candidate is rejected before any editor mutation', async () => {
+  const f = fixture()
+  const status = await f.service.getStatus()
+  assert.equal(status.status, 'ready')
+  if (status.status !== 'ready') assert.fail('compose status should be ready')
+  const staleIdentity = status.candidates[0].composeId
+  f.setTarget('target-replaced')
+  assert.equal(
+    (await f.service.selectTarget({ accountId: 'account-a', composeId: staleIdentity })).status,
+    'stale'
+  )
+  assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
+test('compose probe tracks subject and focused descendants while guarding non-compose editors', () => {
+  const source = gmailComposeTargetPageSource('document-test')
+  assert.match(source, /document\.addEventListener\('focusin', remember, true\)/)
+  assert.match(source, /document\.addEventListener\('click', remember, true\)/)
+  assert.match(source, /node\.closest\('\[contenteditable="true"\]'\)/)
+  assert.match(source, /input\[name="subjectbox"\]/)
+  assert.match(source, /replyMarker/)
 })
 
 test('a target switch invalidates an already captured snapshot lease', async () => {
@@ -190,6 +492,28 @@ test('active account or document changes fence an in-flight snapshot', async () 
   f.service.dispose()
 })
 
+test('hidden or minimized owner windows cannot select or mutate a compose', async () => {
+  for (const state of [
+    { visible: false, minimized: false },
+    { visible: true, minimized: true }
+  ]) {
+    const f = fixture()
+    const status = await f.service.getStatus()
+    assert.equal(status.status, 'ready')
+    if (status.status !== 'ready') assert.fail('visible compose should be available')
+    f.setWindowState(state.visible, state.minimized)
+    assert.equal(
+      (await f.service.selectTarget({ accountId: 'account-a', composeId: status.composeId }))
+        .status,
+      'stale'
+    )
+    const snapshot = await f.service.getSnapshot()
+    assert.equal(snapshot.status, 'none')
+    assert.equal(f.getBody(), 'Synthetic body')
+    f.service.dispose()
+  }
+})
+
 test('explicit apply and undo mutate only the captured synthetic compose body', async () => {
   const f = fixture()
   const snapshot = await f.service.getSnapshot()
@@ -216,6 +540,38 @@ test('explicit apply and undo mutate only the captured synthetic compose body', 
     { status: 'undone' }
   )
   assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
+})
+
+test('focus changes fence an undo receipt before it can reach another compose', async () => {
+  const f = fixture()
+  const snapshot = await f.service.getSnapshot()
+  assert.equal(snapshot.status, 'ready')
+  const applied = await f.service.applyDraft({
+    accountId: snapshot.accountId,
+    composeId: snapshot.composeId,
+    documentVersion: snapshot.documentVersion,
+    snapshotId: snapshot.snapshotId,
+    replacement: 'First compose revision'
+  })
+  assert.equal(applied.status, 'applied')
+  if (applied.status !== 'applied') assert.fail('apply should return an undo receipt')
+  f.setTarget('target-8')
+  const otherTarget = await f.service.getStatus()
+  assert.equal(otherTarget.status, 'ready')
+  assert.notEqual(otherTarget.composeId, snapshot.composeId)
+  assert.equal(
+    (
+      await f.service.undoDraft({
+        accountId: snapshot.accountId,
+        composeId: snapshot.composeId,
+        documentVersion: snapshot.documentVersion,
+        applyId: applied.applyId
+      })
+    ).status,
+    'stale_target'
+  )
+  assert.equal(f.getBody(), 'First compose revision')
   f.service.dispose()
 })
 
@@ -275,6 +631,47 @@ test('body and subject apply and undo remain independent in either apply order',
     assert.equal(f.getSubject(), 'Synthetic subject')
     f.service.dispose()
   }
+})
+
+test('a later body apply preserves earlier body undo receipts', async () => {
+  const f = fixture()
+  const firstSnapshot = await f.service.getSnapshot()
+  assert.equal(firstSnapshot.status, 'ready')
+  const first = await f.service.applyDraft({
+    accountId: firstSnapshot.accountId,
+    composeId: firstSnapshot.composeId,
+    documentVersion: firstSnapshot.documentVersion,
+    snapshotId: firstSnapshot.snapshotId,
+    replacement: 'First proposal'
+  })
+  assert.equal(first.status, 'applied')
+  if (first.status !== 'applied') assert.fail('first apply should return an undo receipt')
+  const secondSnapshot = await f.service.getSnapshot()
+  assert.equal(secondSnapshot.status, 'ready')
+  const second = await f.service.applyDraft({
+    accountId: secondSnapshot.accountId,
+    composeId: secondSnapshot.composeId,
+    documentVersion: secondSnapshot.documentVersion,
+    snapshotId: secondSnapshot.snapshotId,
+    replacement: 'Second proposal'
+  })
+  assert.equal(second.status, 'applied')
+  const undoSecond = await f.service.undoDraft({
+    accountId: secondSnapshot.accountId,
+    composeId: secondSnapshot.composeId,
+    documentVersion: secondSnapshot.documentVersion,
+    applyId: second.applyId
+  })
+  assert.deepEqual(plain(undoSecond), { status: 'undone' })
+  const undoFirst = await f.service.undoDraft({
+    accountId: firstSnapshot.accountId,
+    composeId: firstSnapshot.composeId,
+    documentVersion: firstSnapshot.documentVersion,
+    applyId: first.applyId
+  })
+  assert.deepEqual(plain(undoFirst), { status: 'undone' })
+  assert.equal(f.getBody(), 'Synthetic body')
+  f.service.dispose()
 })
 
 test('subject apply and undo conflicts require fresh single-use confirmation', async () => {
@@ -690,9 +1087,15 @@ test('duplicate explicit apply clicks are serialized while the first mutation is
 
 test('unsupported compose body formats fail closed before apply', async () => {
   const f = fixture({ supported: false })
+  const status = await f.service.getStatus()
+  assert.equal(status.status, 'unsupported')
+  if (status.status !== 'unsupported') assert.fail('unsupported compose should remain unavailable')
+  assert.equal(status.candidates?.length, 1)
+  assert.equal(status.candidates?.[0].lastUsedAt, 123)
   assert.deepEqual(plain(await f.service.getSnapshot()), {
     status: 'unsupported',
-    code: 'unsupported_content'
+    code: 'unsupported_content',
+    candidates: plain(status.candidates)
   })
   assert.equal(f.getBody(), 'Synthetic body')
   f.service.dispose()
@@ -791,7 +1194,9 @@ test('synthetic reply editor remains explicitly selected and carries no guessed 
   }
   const source = gmailComposeTargetPageSource('synthetic-document-version')
   runInNewContext(source, context)
-  listeners.get('click')({ target: editor })
+  const focusedChild = new SyntheticElement('span', editor)
+  nodes.push(focusedChild)
+  listeners.get('focusin')({ target: focusedChild })
   const result = context.__hantongComposeTarget.read()
   assert.equal(result.targetId, 'target-1')
   assert.equal(result.snapshot.subject, '')
@@ -886,7 +1291,7 @@ test('plain-text apply leaves synthetic subject, recipient and attachment nodes 
     }
   }
   runInNewContext(gmailComposeTargetPageSource('synthetic-preservation-document'), context)
-  listeners.get('click')({ target: editor })
+  listeners.get('click')({ target: subject })
   const read = context.__hantongComposeTarget.read()
   assert.equal(read.snapshot.subject, 'Preserved subject')
   assert.deepEqual(plain(read.snapshot.recipients), ['person@example.test'])
@@ -900,6 +1305,231 @@ test('plain-text apply leaves synthetic subject, recipient and attachment nodes 
   assert.equal(attachment.isConnected, true)
   assert.equal(root.children.includes(attachment), true)
   context.__hantongComposeTarget.revoke()
+})
+
+test('an empty unfocused compose is discovered beside an unrelated editor and keeps its target', () => {
+  class SyntheticElement {
+    constructor(selector = '', parentElement = null, text = '', placeholder = null) {
+      this.selector = selector
+      this.parentElement = parentElement
+      this.innerText = text
+      this.placeholder = placeholder
+      this.value = ''
+      this.isConnected = true
+      this.childNodes = text.trim()
+        ? [{ nodeType: 3, textContent: text }]
+        : [{ nodeType: 1, nodeName: 'BR' }]
+    }
+    matches(selector) {
+      return this.selector === selector
+    }
+    closest(selector) {
+      return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null)
+    }
+    getClientRects() {
+      return [{ width: 120, height: 24 }]
+    }
+    querySelectorAll(selector) {
+      if (selector === '[contenteditable="true"]')
+        return this === composeRoot
+          ? composeMounted
+            ? [editor]
+            : []
+          : this === unrelatedRoot
+            ? [unrelatedEditor]
+            : []
+      if (selector === 'input[name="subjectbox"]')
+        return this === composeRoot && composeMounted ? [subject] : []
+      if (selector === '[email], input[name="to"]') return []
+      return []
+    }
+    querySelector() {
+      return null
+    }
+    getAttribute(name) {
+      if (name === 'aria-placeholder' || name === 'data-placeholder') return this.placeholder
+      return null
+    }
+    replaceChildren(...nodes) {
+      this.childNodes = nodes
+      this.innerText = nodes.map((node) => node.textContent ?? '\n').join('')
+    }
+    dispatchEvent() {
+      return true
+    }
+  }
+  class SyntheticInput extends SyntheticElement {}
+  const composeRoot = new SyntheticElement('compose-root')
+  const editor = new SyntheticElement(
+    '[contenteditable="true"]',
+    composeRoot,
+    ' \n ',
+    'Message body'
+  )
+  const subject = new SyntheticInput('input[name="subjectbox"]', composeRoot)
+  const unrelatedRoot = new SyntheticElement('search-root')
+  const unrelatedEditor = new SyntheticElement('[contenteditable="true"]', unrelatedRoot, 'Search')
+  const listeners = new Map()
+  const observers = []
+  const scheduled = []
+  let composeMounted = false
+  class SyntheticObserver {
+    constructor(callback) {
+      this.callback = callback
+      observers.push(this)
+    }
+    observe(target, options) {
+      this.target = target
+      this.options = options
+    }
+    disconnect() {
+      this.disconnected = true
+    }
+  }
+  const context = {
+    document: {
+      documentElement: {},
+      querySelectorAll: (selector) =>
+        selector === '[contenteditable="true"]'
+          ? composeMounted
+            ? [unrelatedEditor, editor]
+            : [unrelatedEditor]
+          : [],
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      removeEventListener: (name) => listeners.delete(name),
+      createElement: (name) => ({ nodeType: 1, nodeName: name.toUpperCase() }),
+      createTextNode: (textContent) => ({ nodeType: 3, textContent })
+    },
+    Element: SyntheticElement,
+    HTMLInputElement: SyntheticInput,
+    Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
+    MutationObserver: SyntheticObserver,
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay }
+      scheduled.push(timer)
+      return timer
+    },
+    clearTimeout: () => undefined,
+    Event: class Event {
+      constructor(_type, options) {
+        this.bubbles = options?.bubbles === true
+      }
+    }
+  }
+  runInNewContext(gmailComposeTargetPageSource('synthetic-blank-compose'), context)
+  assert.equal(context.__hantongComposeTarget.read().targetId, null)
+  composeMounted = true
+  observers[0].callback()
+  assert.equal(scheduled[0].delay, 100)
+  scheduled[0].callback()
+  listeners.get('click')({ target: unrelatedEditor })
+  const result = context.__hantongComposeTarget.read()
+  assert.equal(result.targetId, 'target-1')
+  assert.equal(result.snapshot.subject, '')
+  assert.equal(result.snapshot.body, '')
+  assert.equal(result.snapshot.supported, true)
+  editor.innerText = 'First characters'
+  editor.childNodes = [{ nodeType: 3, textContent: 'First characters' }]
+  listeners.get('input')({ target: editor })
+  const afterTyping = context.__hantongComposeTarget.read()
+  assert.equal(afterTyping.targetId, result.targetId)
+  assert.equal(afterTyping.snapshot.body, 'First characters')
+  assert.deepEqual(
+    plain(
+      context.__hantongComposeTarget.replace(
+        result.targetId,
+        'First characters',
+        'Only intended compose'
+      )
+    ),
+    { status: 'applied' }
+  )
+  assert.equal(editor.innerText, 'Only intended compose')
+  assert.equal(unrelatedEditor.innerText, 'Search')
+  editor.innerText = 'x'.repeat(20_001)
+  editor.childNodes = [{ nodeType: 3, textContent: editor.innerText }]
+  const oversized = context.__hantongComposeTarget.read()
+  assert.equal(oversized.snapshot.supported, false)
+  assert.equal(oversized.snapshot.body, '')
+  const metadata = context.__hantongComposeTarget.listTargets()[0]
+  assert.equal(metadata.title, 'New message')
+  assert.equal(Object.hasOwn(metadata, 'body'), false)
+  editor.isConnected = false
+  assert.equal(context.__hantongComposeTarget.read().targetId, null)
+  assert.equal(
+    context.__hantongComposeTarget.replace('target-1', '', 'Must not write').status,
+    'stale_target'
+  )
+  context.__hantongComposeTarget.revoke()
+})
+
+test('initial compose activity is unknown and later same-batch opens tie until user focus', () => {
+  const fixture = composeProbeFixture()
+  fixture.addCompose('Initial A')
+  fixture.addCompose('Initial B')
+  const initial = fixture.probe.listTargets()
+  assert.deepEqual(plain(initial.map(({ title, lastUsedAt }) => ({ title, lastUsedAt }))), [
+    { title: 'Initial A', lastUsedAt: 0 },
+    { title: 'Initial B', lastUsedAt: 0 }
+  ])
+
+  fixture.setNow(500)
+  const laterA = fixture.addCompose('Opened A')
+  fixture.addCompose('Opened B')
+  fixture.discoverLater()
+  const later = fixture.probe.listTargets().filter(({ title }) => title.startsWith('Opened'))
+  assert.deepEqual(plain(later.map(({ title, lastUsedAt }) => ({ title, lastUsedAt }))), [
+    { title: 'Opened A', lastUsedAt: 500 },
+    { title: 'Opened B', lastUsedAt: 500 }
+  ])
+
+  fixture.setNow(750)
+  fixture.focus(laterA.editor)
+  assert.equal(
+    fixture.probe.listTargets().find(({ title }) => title === 'Opened A').lastUsedAt,
+    750
+  )
+  fixture.setNow(900)
+  const laterBId = fixture.probe.listTargets().find(({ title }) => title === 'Opened B').targetId
+  assert.equal(fixture.probe.selectTarget(laterBId), true)
+  assert.equal(
+    fixture.probe.listTargets().find(({ title }) => title === 'Opened B').lastUsedAt,
+    500
+  )
+})
+
+test('evicted and stale target IDs are harmless and do not hide remaining candidates', () => {
+  const fixture = composeProbeFixture()
+  const first = Array.from({ length: 32 }, (_, index) => fixture.addCompose(`Draft ${index + 1}`))
+  const initial = fixture.probe.listTargets()
+  const stale = initial.find(({ title }) => title === 'Draft 1')
+  assert.ok(stale)
+  fixture.setNow(400)
+  fixture.focus(first[0].editor)
+  assert.equal(fixture.probe.selectTarget(stale.targetId), true)
+
+  fixture.setNow(600)
+  fixture.addCompose('Draft 33')
+  fixture.discoverLater()
+  assert.equal(fixture.probe.readTarget(stale.targetId), null)
+  const afterEviction = fixture.probe.listTargets()
+  assert.equal(afterEviction.length, 32)
+  assert.ok(afterEviction.some(({ title }) => title === 'Draft 33'))
+  assert.equal(
+    afterEviction.some(({ title }) => title === 'Draft 1'),
+    false
+  )
+  const refreshed = fixture.probe.read()
+  assert.equal(refreshed.targetId, null)
+  assert.equal(refreshed.targets.length, 32)
+  assert.ok(refreshed.targets.some(({ title }) => title === 'Draft 33'))
+
+  fixture.setNow(800)
+  fixture.focus(first[0].editor)
+  const refocused = fixture.probe.listTargets().find(({ title }) => title === 'Draft 1')
+  assert.ok(refocused)
+  assert.notEqual(refocused.targetId, stale.targetId)
+  assert.equal(refocused.lastUsedAt, 800)
 })
 
 test('an unrelated reply marker in a shared ancestor cannot classify the editor as a reply', () => {
@@ -958,7 +1588,18 @@ test('an unrelated reply marker in a shared ancestor cannot classify the editor 
   runInNewContext(gmailComposeTargetPageSource('synthetic-shared-ancestor'), context)
   listeners.get('click')({ target: editor })
   const result = context.__hantongComposeTarget.read()
-  assert.deepEqual(plain(result), { targetId: 'unsupported', unsupported: true, snapshot: null })
+  assert.deepEqual(plain(result), {
+    targetId: null,
+    snapshot: null,
+    targets: [],
+    discovery: {
+      editorCount: 0,
+      candidateCount: 0,
+      rejectedNoMatch: 0,
+      rejectedNotVisible: 0,
+      capacityEvictions: 0
+    }
+  })
 })
 
 test('snapshot IPC rejects a ready result whose Main target lease changed before delivery', async () => {
@@ -970,9 +1611,12 @@ test('snapshot IPC rejects a ready result whose Main target lease changed before
     nativeTheme: {},
     webContents: { getAllWebContents: () => [] }
   }
-  const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
-    electron
-  })
+  const { registerMainIpc } = loadTypeScript(
+    new URL('../src/main/ipc/main-ipc.ts', import.meta.url),
+    {
+      electron
+    }
+  )
   let activeAccountId = 'account-a'
   const ownerContents = {
     send() {
@@ -1064,9 +1708,12 @@ test('snapshot IPC rejects a renderer that navigates while the snapshot is pendi
     nativeTheme: {},
     webContents: { getAllWebContents: () => [] }
   }
-  const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
-    electron
-  })
+  const { registerMainIpc } = loadTypeScript(
+    new URL('../src/main/ipc/main-ipc.ts', import.meta.url),
+    {
+      electron
+    }
+  )
   const mainFrame = { url: renderer }
   const ownerContents = {
     mainFrame,

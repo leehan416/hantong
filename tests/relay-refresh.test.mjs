@@ -3,10 +3,15 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const relayClientModule = loadTypeScript(new URL('../src/main/relay-client.ts', import.meta.url))
-const runtimeModule = loadTypeScript(new URL('../src/main/relay-runtime.ts', import.meta.url), {
-  './relay-client': relayClientModule
-})
+const relayClientModule = loadTypeScript(
+  new URL('../src/main/relay/relay-client.ts', import.meta.url)
+)
+const runtimeModule = loadTypeScript(
+  new URL('../src/main/relay/relay-runtime.ts', import.meta.url),
+  {
+    './relay-client': relayClientModule
+  }
+)
 const account = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
 const turn = () => new Promise((resolve) => setImmediate(resolve))
 

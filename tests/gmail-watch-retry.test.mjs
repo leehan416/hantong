@@ -10,7 +10,7 @@ class GmailMetadataFailure extends Error {
   }
 }
 
-const sourceUrl = new URL('../src/main/gmail-watch-manager.ts', import.meta.url)
+const sourceUrl = new URL('../src/main/gmail/gmail-watch-manager.ts', import.meta.url)
 const { createGmailWatchManager } = loadTypeScript(sourceUrl, {
   './gmail-metadata': { GmailMetadataFailure }
 })

@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate } = loadTypeScript(
-  new URL('../src/main/app-menu.ts', import.meta.url)
+  new URL('../src/main/app/app-menu.ts', import.meta.url)
 )
 const allFlags = {
   canUndo: true,

@@ -3,9 +3,13 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const config = loadTypeScript(new URL('../src/main/google-oauth-config.ts', import.meta.url))
-const exchange = loadTypeScript(new URL('../src/main/google-token-exchange.ts', import.meta.url))
-const connection = loadTypeScript(new URL('../src/main/google-connection.ts', import.meta.url))
+const config = loadTypeScript(new URL('../src/main/google/google-oauth-config.ts', import.meta.url))
+const exchange = loadTypeScript(
+  new URL('../src/main/google/google-token-exchange.ts', import.meta.url)
+)
+const connection = loadTypeScript(
+  new URL('../src/main/google/google-connection.ts', import.meta.url)
+)
 
 const clientId = 'desktop-client.apps.googleusercontent.com'
 const configWithSecret = { clientId, clientSecret: 'local-test-secret' }

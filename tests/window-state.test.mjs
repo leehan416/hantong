@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createWindowStateStore, fitWindowBounds, parseWindowState } = loadTypeScript(
-  new URL('../src/main/window-state.ts', import.meta.url)
+  new URL('../src/main/app/window-state.ts', import.meta.url)
 )
 const laptop = { x: 0, y: 25, width: 1440, height: 875 }
 const external = { x: 1440, y: 0, width: 2560, height: 1415 }
@@ -34,6 +34,22 @@ test('oversized and undersized windows are clamped to the display and the minimu
   assert.deepEqual(
     { ...fitWindowBounds({ x: 10, y: 30, width: 100, height: 100 }, [laptop]) },
     { x: 10, y: 30, width: 640, height: 480 }
+  )
+})
+
+test('resizing a partly visible window keeps the resized window grabbable', () => {
+  assert.deepEqual(
+    {
+      ...fitWindowBounds({ x: -1000, y: 30, width: 1200, height: 550 }, [
+        {
+          x: 0,
+          y: 0,
+          width: 800,
+          height: 600
+        }
+      ])
+    },
+    { x: -720, y: 30, width: 800, height: 550 }
   )
 })
 

@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createNotificationConnectionController, notificationRelayFailureCode } = loadTypeScript(
-  new URL('../src/main/notification-connection-controller.ts', import.meta.url)
+  new URL('../src/main/notifications/notification-connection-controller.ts', import.meta.url)
 )
 
 const accountId = '11111111-1111-4111-8111-111111111111'

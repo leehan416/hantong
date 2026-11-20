@@ -69,7 +69,7 @@ function fixture({
     }
   }
   const { createGmailView } = loadTypeScript(
-    new URL('../src/main/gmail-view.ts', import.meta.url),
+    new URL('../src/main/gmail/gmail-view.ts', import.meta.url),
     {
       electron: { WebContentsView: View, app: { isPackaged: !development } }
     }

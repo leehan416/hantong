@@ -24,6 +24,12 @@ export interface AppSettings {
   hideStoragePromo: boolean
   accountSelectorPosition: (typeof ACCOUNT_SELECTOR_POSITION_OPTIONS)[number]
   sidebarCollapsed: boolean
+  aiMailProvider: 'codex' | 'ollama'
+  ollamaModel: string | null
+  codexModel: string | null
+  ollamaMode: 'local' | 'remote'
+  ollamaRemoteEndpoint: string
+  ollamaRemoteModel: string | null
 }
 
 export type AppSettingsPatch = Partial<Omit<AppSettings, 'version'>>
@@ -38,5 +44,11 @@ export const DEFAULT_SETTINGS: AppSettings = Object.freeze({
   hideSidePanel: false,
   hideStoragePromo: false,
   accountSelectorPosition: 'top',
-  sidebarCollapsed: false
+  sidebarCollapsed: false,
+  aiMailProvider: 'codex',
+  ollamaModel: null,
+  codexModel: null,
+  ollamaMode: 'local',
+  ollamaRemoteEndpoint: 'https://ollama.com/v1',
+  ollamaRemoteModel: null
 })

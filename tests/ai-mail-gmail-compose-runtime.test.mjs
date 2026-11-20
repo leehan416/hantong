@@ -10,10 +10,10 @@ import {
 } from './helpers/account-view-fixture.mjs'
 
 const { createGmailComposeProbeRuntime } = loadTypeScript(
-  new URL('../src/main/gmail-compose-probe.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-compose-probe.ts', import.meta.url)
 )
 const { createAccountAccessController } = loadTypeScript(
-  new URL('../src/main/account-access-controller.ts', import.meta.url)
+  new URL('../src/main/accounts/account-access-controller.ts', import.meta.url)
 )
 
 function createRuntimeFixture(options = {}) {

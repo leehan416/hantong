@@ -5,7 +5,7 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 import { firstId, secondId, fixture } from './helpers/account-view-fixture.mjs'
 
 const { createAccountAccessController } = loadTypeScript(
-  new URL('../src/main/account-access-controller.ts', import.meta.url)
+  new URL('../src/main/accounts/account-access-controller.ts', import.meta.url)
 )
 
 test('views are created only when visited, reused on switch, and removed when inactive', async () => {
@@ -784,7 +784,7 @@ test('inactive main-frame document and account-slot changes invalidate verificat
 
 test('same-document account-slot invalidation precedes ready revalidation', async () => {
   const { createAccountAccessController } = loadTypeScript(
-    new URL('../src/main/account-access-controller.ts', import.meta.url)
+    new URL('../src/main/accounts/account-access-controller.ts', import.meta.url)
   )
   let access
   let profileReads = 0

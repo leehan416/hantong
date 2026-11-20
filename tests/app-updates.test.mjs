@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createAppUpdateController } = loadTypeScript(
-  new URL('../src/main/app-updates.ts', import.meta.url)
+  new URL('../src/main/app/app-updates.ts', import.meta.url)
 )
 
 function fixture(options = {}) {

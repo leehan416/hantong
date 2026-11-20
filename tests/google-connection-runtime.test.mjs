@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const runtimeModule = loadTypeScript(
-  new URL('../src/main/google-connection-runtime.ts', import.meta.url)
+  new URL('../src/main/google/google-connection-runtime.ts', import.meta.url)
 )
 const accountId = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
 const code = { code: 'code', verifier: 'verifier', redirectUri: 'http://127.0.0.1:12345/' }

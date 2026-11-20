@@ -1,0 +1,1259 @@
+/*
+ * AI mail panel — follows DESIGN.md: quiet Notion-like chrome, neutral surfaces, one accent.
+ * Scale: type 11 (captions) / 12 (secondary) / 13 (body) / 15 (title);
+ * radius 4 (chips, code) / 6 (controls) / 8 (cards, composer). No decorative shadow or motion.
+ */
+
+/* The AI toggle is a plain icon button like settings; open = selected surface + accent icon. */
+.ai-mail-toggle[aria-pressed='true'] {
+  background: var(--color-selected);
+  color: var(--color-accent);
+}
+
+.ai-mail-panel {
+  position: fixed;
+  z-index: 3;
+  display: grid;
+  width: var(--ai-mail-panel-width, 360px);
+  min-width: 0;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-background);
+  color: var(--color-text);
+  pointer-events: auto;
+}
+
+.ai-mail-panel-top {
+  top: calc(var(--account-chrome-height, 72px) - 32px + var(--account-status-strip-height, 32px));
+  right: 0;
+  bottom: 0;
+}
+
+.ai-mail-panel-bottom {
+  top: 0;
+  right: 0;
+  bottom: calc(
+    var(--account-chrome-height, 72px) - 32px + var(--account-status-strip-height, 32px)
+  );
+}
+
+.ai-mail-panel-left,
+.ai-mail-panel-right {
+  top: var(--account-status-strip-height, 32px);
+  bottom: 0;
+}
+
+.ai-mail-panel-left {
+  right: 0;
+}
+
+.ai-mail-panel-right {
+  right: var(--account-sidebar-width, 248px);
+}
+
+.ai-mail-chat-layout {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ai-mail-chat-header {
+  flex: 0 0 auto;
+}
+
+.ai-mail-chat-context {
+  min-width: 0;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 10px 20px;
+}
+
+.ai-mail-chat-messages {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 24px 20px 28px;
+  scrollbar-gutter: stable;
+}
+
+.ai-mail-chat-composer {
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 12px 20px max(16px, env(safe-area-inset-bottom));
+  background: var(--color-background);
+}
+
+.ai-mail-confirm-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(80dvh, 760px);
+  overflow: hidden;
+  color: var(--color-text);
+}
+
+.ai-mail-confirm-content {
+  display: flex;
+  min-height: 0;
+  max-height: min(80dvh, 760px);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 24px 24px 0;
+}
+
+.ai-mail-confirm-dialog h2 {
+  flex: 0 0 auto;
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ai-mail-confirm-dialog p {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+.ai-mail-apply-review {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 3px 16px 0;
+}
+.ai-mail-apply-review > p {
+  margin: 4px 0;
+}
+.ai-mail-apply-review fieldset {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.ai-mail-apply-review fieldset label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-mail-apply-review section {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  padding: 12px;
+}
+.ai-mail-apply-review h3 {
+  grid-column: 1 / -1;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.ai-mail-review-column {
+  min-width: 0;
+}
+.ai-mail-review-column p {
+  margin: 2px 0 6px;
+  font-size: 12px;
+}
+.ai-mail-apply-review pre,
+.ai-mail-confirm-content > pre {
+  max-height: min(18vh, 140px);
+  overflow: auto;
+  margin: 0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ai-mail-confirm-actions {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--color-rule);
+  margin: 0 -24px;
+  padding: 12px 24px max(16px, env(safe-area-inset-bottom));
+  background: var(--color-background);
+}
+
+@media (max-width: 560px) {
+  .ai-mail-confirm-dialog {
+    width: calc(100vw - 20px);
+    max-height: 86dvh;
+  }
+
+  .ai-mail-confirm-content {
+    max-height: 86dvh;
+    padding: 16px 16px 0;
+  }
+
+  .ai-mail-confirm-actions {
+    margin-right: -16px;
+    margin-left: -16px;
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}
+
+.ai-mail-chat-composer .ai-mail-compose {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+/* One rounded field with a round send button; it grows with the text up to max-height. */
+.ai-mail-input-pill {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  gap: 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 20px;
+  padding: 5px 5px 5px 16px;
+  background: var(--color-surface);
+}
+
+.ai-mail-input-pill:focus-within {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-chat-composer .ai-mail-input-pill textarea {
+  min-height: 28px;
+  max-height: min(28vh, 160px);
+  flex: 1 1 auto;
+  field-sizing: content;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ai-mail-chat-composer .ai-mail-input-pill textarea:focus-visible {
+  outline: none;
+}
+
+.ai-mail-send {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  cursor: pointer;
+}
+
+.ai-mail-send:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.ai-mail-send:disabled {
+  background: var(--color-rule);
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
+.ai-mail-chat-composer .ai-mail-compose .ai-mail-privacy {
+  margin: 6px 4px 0;
+}
+
+.ai-mail-chat-composer-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ai-mail-data-sharing {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ai-mail-chat-composer-actions .ai-mail-primary {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 420px) {
+  .ai-mail-chat-composer-actions {
+    align-items: flex-start;
+  }
+  .ai-mail-data-sharing {
+    flex-basis: 100%;
+  }
+}
+
+.ai-mail-context-chips {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-mail-context-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 24px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 8px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ai-mail-context-chip strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-mail-context-chip button {
+  min-height: 22px;
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ai-mail-context-chip button:hover {
+  text-decoration: underline;
+}
+
+.ai-mail-context-chip button:focus-visible {
+  border-radius: 4px;
+  outline-offset: 1px;
+}
+
+.ai-mail-heading {
+  display: flex;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 8px 12px 8px 20px;
+}
+
+.ai-mail-heading h1 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-mail-heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+/* Icons only, Notion-style: no fill or border in any state; hover and "open" only darken the icon. */
+.ai-mail-heading-actions .icon-action-button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.ai-mail-heading-actions .icon-action-button:hover:not(:disabled),
+.ai-mail-heading-actions .icon-action-button[aria-expanded='true'] {
+  background: transparent;
+  color: var(--color-text);
+}
+
+.ai-mail-heading-actions .icon-action-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Earlier conversations: a quiet list under the heading, like a Notion sidebar page list. */
+.ai-mail-history {
+  max-height: min(40vh, 280px);
+  overflow-y: auto;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 6px 8px;
+}
+
+.ai-mail-history ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-mail-history button {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-mail-history button:hover {
+  background: var(--color-hover);
+}
+
+.ai-mail-history p {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+/* The mail being read sits above the field like an attached file. */
+.ai-mail-working-with {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.ai-mail-working-with .ai-mail-captured {
+  margin: 0;
+}
+
+.ai-mail-working-with .ai-mail-context-chip {
+  max-width: 100%;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ai-mail-working-with .ai-mail-context-chip::-webkit-details-marker {
+  display: none;
+}
+
+.ai-mail-working-with .ai-mail-context-chip svg {
+  flex: 0 0 auto;
+  color: var(--color-muted);
+}
+
+.ai-mail-working-with pre {
+  max-height: 120px;
+  margin: 6px 0 0;
+}
+
+.ai-mail-connection {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 12px 20px;
+}
+
+.ai-mail-provider {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 12px 20px;
+}
+
+.ai-mail-provider .ai-mail-choice-group {
+  margin: 0;
+}
+
+.ai-mail-provider .ai-mail-choice-group legend,
+.ai-mail-model-label {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ai-mail-provider select {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ai-mail-provider select:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-accent-soft);
+  outline-offset: 1px;
+}
+
+.ai-mail-provider-status {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ai-mail-provider-status .ai-mail-connection-dot {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.ai-mail-provider-status .ai-mail-text-button {
+  margin-left: auto;
+}
+
+.ai-mail-provider-note {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ai-mail-connection-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--color-muted);
+}
+
+.ai-mail-state-connected {
+  background: var(--color-success);
+}
+
+.ai-mail-state-connecting {
+  background: var(--color-warning);
+}
+
+.ai-mail-state-error,
+.ai-mail-state-unsupported {
+  background: var(--color-danger);
+}
+
+.ai-mail-connection-copy {
+  min-width: 0;
+}
+
+.ai-mail-connection-copy strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.ai-mail-connection-copy p {
+  margin: 2px 0 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ai-mail-text-button,
+.ai-mail-secondary {
+  min-height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-mail-secondary {
+  border-color: var(--color-rule);
+  color: var(--color-text);
+}
+
+.ai-mail-text-button:hover:not(:disabled),
+.ai-mail-secondary:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.ai-mail-target {
+  min-width: 0;
+  border-bottom: 1px solid var(--color-rule);
+  padding: 12px 20px;
+}
+
+.ai-mail-chat-context .ai-mail-target {
+  border: 0;
+  padding: 0;
+}
+
+.ai-mail-chat-context .ai-mail-target > h2 {
+  margin-bottom: 4px;
+}
+
+.ai-mail-chat-context .ai-mail-target-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.ai-mail-chat-context .ai-mail-target-card > .ai-mail-text-button {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  margin: 0;
+}
+
+.ai-mail-target h2,
+.ai-mail-proposal h2 {
+  margin: 0 0 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ai-mail-target-card {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ai-mail-target-card strong,
+.ai-mail-target-card span {
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-target-card strong {
+  font-weight: 600;
+}
+
+.ai-mail-target-recipients {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.ai-mail-empty-target,
+.ai-mail-inline-status {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-mail-target-card > .ai-mail-text-button {
+  justify-self: start;
+  margin: 4px 0 0 -8px;
+}
+
+.ai-mail-captured {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.ai-mail-captured summary,
+.ai-mail-conflict summary {
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.ai-mail-captured pre,
+.ai-mail-conflict pre,
+.ai-mail-proposal pre {
+  max-height: 150px;
+  overflow: auto;
+  border: 0;
+  border-radius: 6px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ai-mail-suggested-subject {
+  border-left: 2px solid var(--color-accent);
+  margin: 10px 0;
+  padding-left: 10px;
+}
+
+.ai-mail-suggested-subject strong {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.ai-mail-suggested-subject p {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-suggested-subject input {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ai-mail-conversation {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 20px 16px;
+}
+
+.ai-mail-chat-messages .ai-mail-conversation {
+  overflow: visible;
+  padding: 0;
+}
+
+.ai-mail-message {
+  max-width: 100%;
+  margin: 0 0 24px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ai-mail-message-user {
+  border-radius: 8px;
+  margin-left: 32px;
+  padding: 8px 12px;
+  background: var(--color-surface);
+}
+
+.ai-mail-message > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ai-mail-message-assistant {
+  padding: 1px 0;
+}
+
+.ai-mail-message-assistant > p {
+  line-height: 1.7;
+}
+
+.ai-mail-proposal {
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  margin-top: 8px;
+  padding: 14px;
+  background: var(--color-background);
+}
+
+.ai-mail-proposal textarea {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  max-height: none;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  resize: none;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ai-mail-proposal textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-proposal input {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ai-mail-proposal input:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-proposal label {
+  display: block;
+  margin: 10px 0 4px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ai-mail-proposal pre {
+  max-height: min(34vh, 260px);
+  font-size: 13px;
+}
+
+.ai-mail-proposal-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-mail-proposal-footer {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  border-top: 1px solid var(--color-rule);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.ai-mail-proposal-footer > p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ai-mail-target-menu {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  flex: 1 1 150px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-mail-target-menu:focus-visible {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-accent-soft);
+  outline-offset: 1px;
+}
+
+.ai-mail-target-menu:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-mail-proposal-actions .ai-mail-primary {
+  flex: 0 0 auto;
+}
+
+.ai-mail-proposal-actions .ai-mail-text-button {
+  min-height: 32px;
+  padding-right: 8px;
+  padding-left: 8px;
+}
+
+.ai-mail-markdown {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-markdown-error {
+  color: var(--color-danger);
+}
+
+.ai-mail-markdown > p,
+.ai-mail-markdown > h3,
+.ai-mail-markdown > h4,
+.ai-mail-markdown > blockquote {
+  margin: 0;
+}
+
+.ai-mail-markdown > h3 {
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ai-mail-markdown > h4 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-mail-markdown > ul,
+.ai-mail-markdown > ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.ai-mail-markdown li + li {
+  margin-top: 4px;
+}
+
+.ai-mail-markdown blockquote {
+  border-left: 2px solid var(--color-rule);
+  padding-left: 12px;
+  color: var(--color-muted);
+}
+
+.ai-mail-markdown code {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.ai-mail-markdown pre {
+  min-width: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 0;
+  border-radius: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-markdown pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+.ai-mail-conversation-status {
+  flex: 1 1 100%;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ai-mail-primary {
+  min-height: 32px;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  padding: 5px 12px;
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-mail-primary:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.ai-mail-conflict {
+  border-left: 2px solid var(--color-warning);
+  margin-top: 12px;
+  padding: 8px 0 2px 12px;
+}
+
+.ai-mail-conflict h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-mail-conflict p,
+.ai-mail-privacy {
+  margin: 0 0 8px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-mail-pending {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.ai-mail-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: ai-mail-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes ai-mail-pulse {
+  to {
+    opacity: 0.35;
+  }
+}
+
+.ai-mail-compose {
+  min-width: 0;
+  border-top: 1px solid var(--color-rule);
+  padding: 12px 20px 16px;
+  background: var(--color-background);
+}
+
+.ai-mail-chat-composer .ai-mail-compose > label {
+  display: none;
+}
+
+.ai-mail-compose > label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ai-mail-compose textarea {
+  display: block;
+  width: 100%;
+  min-height: 66px;
+  max-height: 120px;
+  resize: none;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.resize-none {
+  resize: none;
+}
+
+.ai-mail-compose textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.ai-mail-compose textarea:disabled {
+  background: var(--color-surface);
+}
+
+.ai-mail-privacy {
+  margin: 6px 0 10px;
+}
+
+.ai-mail-compose .ai-mail-primary {
+  width: 100%;
+}
+
+.ai-mail-choice-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border: 0;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.ai-mail-choice-group legend {
+  margin-bottom: 6px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ai-mail-choice-group label {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  margin: 0;
+  padding: 5px 8px;
+  background: var(--color-background);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-mail-choice-group label:hover {
+  background: var(--color-hover);
+}
+
+.ai-mail-choice-group label:has(input:checked) {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.ai-mail-choice-group label:focus-within {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.ai-mail-choice-group input {
+  flex: 0 0 auto;
+  accent-color: var(--color-accent);
+}
+
+.ai-mail-choice-group span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-mail-choice-group:disabled label {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-mail-primary:disabled,
+.ai-mail-secondary:disabled,
+.ai-mail-text-button:disabled,
+.ai-mail-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ai-mail-error {
+  color: var(--color-danger);
+}
+
+.ai-mail-layout-error {
+  position: fixed;
+  z-index: 4;
+  top: 76px;
+  right: 12px;
+  max-width: 360px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: var(--color-background);
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-mail-toggle,
+  .ai-mail-pulse {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .ai-mail-context-chip,
+  .ai-mail-proposal,
+  .ai-mail-input-pill {
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .ai-mail-apply-review section {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-mail-apply-review h3 {
+    grid-column: 1;
+  }
+
+  .ai-mail-target-menu {
+    flex-basis: 100%;
+  }
+
+  .ai-mail-chat-messages {
+    padding: 16px 12px 20px;
+  }
+
+  .ai-mail-chat-context,
+  .ai-mail-chat-composer {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .ai-mail-message-user {
+    margin-left: 16px;
+  }
+}
+
+@media (max-height: 560px) {
+  .ai-mail-heading {
+    padding-top: 10px;
+    padding-bottom: 8px;
+  }
+
+  .ai-mail-connection,
+  .ai-mail-target {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .ai-mail-compose {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .ai-mail-compose textarea {
+    min-height: 46px;
+  }
+
+  .ai-mail-proposal pre {
+    max-height: 96px;
+  }
+}

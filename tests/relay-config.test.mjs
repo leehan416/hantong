@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const config = loadTypeScript(new URL('../src/main/relay-config.ts', import.meta.url))
+const config = loadTypeScript(new URL('../src/main/relay/relay-config.ts', import.meta.url))
 
 test('relay config gives launcher values precedence and reads local env only in development', () => {
   assert.deepEqual(

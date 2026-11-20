@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const runtimeConfig = loadTypeScript(
-  new URL('../src/main/google-oauth-runtime-config.ts', import.meta.url)
+  new URL('../src/main/google/google-oauth-runtime-config.ts', import.meta.url)
 )
 
 const clientId = 'desktop-client.apps.googleusercontent.com'

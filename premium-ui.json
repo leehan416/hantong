@@ -1,0 +1,7 @@
+{
+  "profile": "electron-desktop",
+  "sourceRoots": ["src/renderer/src"],
+  "ownership": {
+    "Select/Listbox": "native"
+  }
+}

@@ -59,11 +59,59 @@ for (const [identity, item] of [...packages].sort(([a], [b]) => a.localeCompare(
   const licenseFiles = entries
     .filter(
       (entry) =>
-        entry.isFile() && /^(license|licence|copying|notice)(?:[._-].*)?$/i.test(entry.name)
+        entry.isFile() &&
+        !/\.d\.ts$/i.test(entry.name) &&
+        /^(license|licence|copying|notice)(?:[._-].*)?$/i.test(entry.name)
     )
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b))
   if (!licenseFiles.length) {
+    if (item.installed.license === 'MIT' && item.installed.repository?.url) {
+      const repository = item.installed.repository.url.replace(/^git\+/, '').replace(/\.git$/, '')
+      sections.push(`## ${identity} (MIT)
+
+The installed package metadata declares MIT, but the package does not include a top-level license file.
+
+Package metadata: [${identity}](https://www.npmjs.com/package/${item.installed.name}/v/${item.installed.version})
+
+Upstream repository: [${repository}](${repository})
+
+Standard MIT permission and warranty terms, from [SPDX MIT](https://spdx.org/licenses/MIT.html). These are standard terms, not a copyright notice supplied by the package:
+
+${fence}
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+${fence}`)
+      continue
+    }
+    if (
+      item.installed.name === '@ai-sdk/provider-utils' &&
+      item.installed.license === 'Apache-2.0' &&
+      item.installed.repository?.url === 'https://github.com/vercel/ai' &&
+      item.installed.repository?.directory === 'packages/provider-utils'
+    ) {
+      const upstreamLicensePath = 'node_modules/@ai-sdk/openai-compatible/LICENSE'
+      const upstreamLicense = (await readFile(path.join(root, upstreamLicensePath), 'utf8')).trim()
+      sections.push(`## ${identity} (Apache-2.0)
+
+The locked package metadata declares Apache-2.0 and identifies the upstream package directory. Its published file list omits the repository-root license. The same repository license is included with the installed OpenAI-compatible package.
+
+Package metadata: [${identity}](https://www.npmjs.com/package/@ai-sdk/provider-utils/v/${item.installed.version})
+
+Upstream repository license: [vercel/ai LICENSE](https://github.com/vercel/ai/blob/main/LICENSE)
+
+Source: \`${upstreamLicensePath}\`
+
+\`\`\`
+${upstreamLicense}
+\`\`\``)
+      continue
+    }
     if (
       item.installed.name === 'lazy-val' &&
       item.installed.version === '1.0.5' &&
@@ -102,11 +150,25 @@ ${fence}`)
   }
 }
 
+sections.push(`## OpenAI Codex CLI 0.167.1 (Apache-2.0)
+
+The Apple Silicon runtime is provisioned from the official OpenAI release at
+<https://github.com/openai/codex/releases/tag/rust-v0.167.1>. The release's
+Apache License 2.0 is included at \`resources/codex-runtime/LICENSE\` and shipped
+inside the application. The runtime binary is downloaded and verified during
+\`npm run provision:codex-runtime\`; archive and executable SHA-256 pins are
+recorded in \`scripts/provision-codex-runtime.mjs\` and
+\`src/main/ai/codex/codex-runtime-pin.ts\`.`)
+
 const header = `# Third-Party Notices
 
 Hantong ships the following third-party software. Electron and Chromium notices are
 shipped alongside the app as \`LICENSE.electron.txt\` and \`LICENSES.chromium.html\`.
 
 `
-await writeFile(path.join(root, 'THIRD_PARTY_NOTICES.md'), header + sections.join('\n\n') + '\n')
+const generated = header + sections.join('\n\n') + '\n'
+await writeFile(
+  path.join(root, 'THIRD_PARTY_NOTICES.md'),
+  generated.replace(/\r\n?/g, '\n').replace(/[ \t]+(?=\n|$)/g, '')
+)
 console.log(`Wrote notices for ${packages.size} packages (${sections.length} license files).`)

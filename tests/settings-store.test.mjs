@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createSettingsStore, isSettingsPatch, parseSettings } = loadTypeScript(
-  new URL('../src/main/settings-store.ts', import.meta.url)
+  new URL('../src/main/app/settings-store.ts', import.meta.url)
 )
 const defaults = {
   version: 1,
@@ -19,7 +19,13 @@ const defaults = {
   hideSidePanel: false,
   hideStoragePromo: false,
   accountSelectorPosition: 'top',
-  sidebarCollapsed: false
+  sidebarCollapsed: false,
+  aiMailProvider: 'codex',
+  ollamaModel: null,
+  codexModel: null,
+  ollamaMode: 'local',
+  ollamaRemoteEndpoint: 'https://ollama.com/v1',
+  ollamaRemoteModel: null
 }
 
 function withDirectory(run) {
@@ -151,4 +157,31 @@ test('a saved hideGemini choice carries over to the top-bar extras toggle', () =
     parseSettings({ version: 1, hideGemini: true, hideHeaderButtons: false }).hideHeaderButtons,
     false
   )
+})
+
+test('AI mail provider and Ollama model default safely and persist as strict settings', () => {
+  withDirectory((directory) => {
+    const store = createSettingsStore(directory)
+    assert.equal(store.get().aiMailProvider, 'codex')
+    assert.equal(store.get().ollamaModel, null)
+    store.update({ codexModel: 'gpt-6-luna', ollamaModel: 'qwen3:8b' })
+    store.update({ aiMailProvider: 'ollama' })
+    store.update({ aiMailProvider: 'codex' })
+    assert.deepEqual(
+      { ...createSettingsStore(directory).get() },
+      { ...defaults, aiMailProvider: 'codex', codexModel: 'gpt-6-luna', ollamaModel: 'qwen3:8b' }
+    )
+  })
+  for (const patch of [
+    { aiMailProvider: 'other' },
+    { ollamaModel: '' },
+    { ollamaModel: 'model name' },
+    { ollamaModel: 'x'.repeat(257) },
+    { codexModel: 'model name' },
+    { ollamaModel: null, extra: true }
+  ]) {
+    assert.equal(isSettingsPatch(patch), false)
+  }
+  assert.equal(isSettingsPatch({ aiMailProvider: 'codex' }), true)
+  assert.equal(isSettingsPatch({ ollamaModel: null }), true)
 })

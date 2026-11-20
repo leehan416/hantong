@@ -52,10 +52,13 @@ function fixture(nativeResult = 'error', enabled = true) {
       }
     }
   }
-  const runtime = loadTypeScript(new URL('../src/main/app-update-runtime.ts', import.meta.url), {
-    electron,
-    'electron-updater': { autoUpdater: updater }
-  })
+  const runtime = loadTypeScript(
+    new URL('../src/main/app/app-update-runtime.ts', import.meta.url),
+    {
+      electron,
+      'electron-updater': { autoUpdater: updater }
+    }
+  )
   let cleanups = 0
   const instance = runtime.createAppUpdateRuntime({
     enabled,

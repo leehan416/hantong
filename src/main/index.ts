@@ -7,55 +7,67 @@ import {
   nativeImage,
   Tray,
   nativeTheme,
-  shell
+  shell,
+  safeStorage
 } from 'electron'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { createAccountStore } from './account-store'
-import { createAccountViewManager } from './account-view-manager'
-import { createAccountAccessController } from './account-access-controller'
-import { createMainWindowRuntime } from './main-window-runtime'
-import { registerMainIpc } from './main-ipc'
-import { createAccountRemovalController } from './account-removal'
-import { clearAccountSession } from './account-session-cleanup'
-import { createGoogleConnectionManager } from './google-connection-manager'
-import { createGoogleConnectionRuntime } from './google-connection-runtime'
-import { loadRuntimeGoogleOAuthConfig } from './google-oauth-runtime-config'
-import { createRelayRuntime } from './relay-runtime'
-import { createSettingsStore } from './settings-store'
-import { buildAppMenuTemplate, buildContextMenuTemplate, buildTrayMenuTemplate } from './app-menu'
+import { createAccountStore } from '~/main/accounts/account-store'
+import { createAccountViewManager } from '~/main/accounts/account-view-manager'
+import { createAccountAccessController } from '~/main/accounts/account-access-controller'
+import { createMainWindowRuntime } from '~/main/app/main-window-runtime'
+import { registerMainIpc } from '~/main/ipc/main-ipc'
+import { createAccountRemovalController } from '~/main/accounts/account-removal'
+import { clearAccountSession } from '~/main/accounts/account-session-cleanup'
+import { createGoogleConnectionManager } from '~/main/google/google-connection-manager'
+import { createGoogleConnectionRuntime } from '~/main/google/google-connection-runtime'
+import { loadRuntimeGoogleOAuthConfig } from '~/main/google/google-oauth-runtime-config'
+import { createRelayRuntime } from '~/main/relay/relay-runtime'
+import { createSettingsStore } from '~/main/app/settings-store'
+import {
+  buildAppMenuTemplate,
+  buildContextMenuTemplate,
+  buildTrayMenuTemplate
+} from '~/main/app/app-menu'
 import trayIconPath from '../../resources/icon.png?asset'
-import { createWindowStateStore } from './window-state'
-import { createGmailCleanupRuntime } from './gmail-cleanup-runtime'
-import { createAppUpdateRuntime } from './app-update-runtime'
-import type { AccountState } from '../shared/accounts'
-import type { AccountRemovalOutcome } from '../shared/ipc'
-import { createGmailRelaySync } from './gmail-relay-sync'
-import { createNotificationConnectionController } from './notification-connection-controller'
-import { createMainDiagnostics, createRotatingDiagnosticsSink } from './main-diagnostics'
-import { createNativeMailNotifications } from './native-mail-notifications'
-import { createNotificationRecoveryRuntime } from './notification-recovery-runtime'
-import { createMainMailRuntime } from './main-mail-runtime'
+import { createWindowStateStore } from '~/main/app/window-state'
+import { createGmailCleanupRuntime } from '~/main/gmail/gmail-cleanup-runtime'
+import { createAppUpdateRuntime } from '~/main/app/app-update-runtime'
+import type { AccountState } from '~/shared/accounts'
+import type { AccountRemovalOutcome } from '~/shared/ipc'
+import { createGmailRelaySync } from '~/main/gmail/gmail-relay-sync'
+import { createNotificationConnectionController } from '~/main/notifications/notification-connection-controller'
+import {
+  createMainDiagnostics,
+  createRotatingDiagnosticsSink
+} from '~/main/diagnostics/main-diagnostics'
+import { createNativeMailNotifications } from '~/main/notifications/native-mail-notifications'
+import { createNotificationRecoveryRuntime } from '~/main/notifications/notification-recovery-runtime'
+import { createMainMailRuntime } from '~/main/mail/main-mail-runtime'
 import { is } from '@electron-toolkit/utils'
 import {
   ACCOUNT_STATE_EVENT,
   SETTINGS_OPEN_EVENT,
   ACCOUNT_VIEW_STATUS_EVENT,
   AI_MAIL_CODEX_STATUS_EVENT
-} from '../shared/ipc'
-import { isAllowedExternalUrl } from './security-policy'
-import { createNotificationPauseStore } from './notification-pause-store'
-import { createLoginLaunchPromptStore } from './login-launch-prompt-store'
-import { createLoginLaunchController } from './login-launch'
-import { createLoginLaunchStartupController } from './login-launch-startup'
-import { createAiMailCodexService } from './ai-mail-codex-service'
-import type { createGmailComposeTargetService } from './gmail-compose-target'
-import type { createGmailReadTargetService } from './gmail-read-target'
+} from '~/shared/ipc'
+import { isAllowedExternalUrl } from '~/main/security/security-policy'
+import { createNotificationPauseStore } from '~/main/notifications/notification-pause-store'
+import { createLoginLaunchPromptStore } from '~/main/app/login-launch-prompt-store'
+import { createLoginLaunchController } from '~/main/app/login-launch'
+import { createLoginLaunchStartupController } from '~/main/app/login-launch-startup'
+import { createAiMailCodexService } from '~/main/ai/codex/ai-mail-codex-service'
+import { createOllamaService } from '~/main/ai/ollama/ollama-service'
+import { createAiMailOllamaGenerationService } from '~/main/ai/ollama/ai-mail-ollama-service'
+import { createMastraOllamaProvider } from '~/main/ai/ollama/mastra-ollama-provider'
+import { createOllamaCredentialStore } from '~/main/ai/ollama/ollama-credential-store'
+import type { createGmailComposeTargetService } from '~/main/gmail/gmail-compose-target'
+import type { createGmailReadTargetService } from '~/main/gmail/gmail-read-target'
 import {
   createNotificationPauseController,
   createNotificationPauseMenuActions
-} from './notification-pause'
-import { configureIsolatedGmailComposeProbeProfile } from './gmail-compose-probe'
+} from '~/main/notifications/notification-pause'
+import { configureIsolatedGmailComposeProbeProfile } from '~/main/gmail/gmail-compose-probe'
 
 configureIsolatedGmailComposeProbeProfile({
   app,
@@ -128,6 +140,17 @@ const aiMailCodex = createAiMailCodexService({
     if (window && !window.isDestroyed()) window.webContents.send(AI_MAIL_CODEX_STATUS_EVENT, status)
   }
 })
+const ollama = createOllamaService()
+const ollamaCredentials = createOllamaCredentialStore({
+  directory: app.getPath('userData'),
+  safeStorage
+})
+const aiModel = createMastraOllamaProvider({ local: ollama })
+const aiMailOllama = createAiMailOllamaGenerationService({
+  provider: aiModel,
+  settings: () => settingsStore?.get() ?? null,
+  remoteCredential: (endpoint) => ollamaCredentials.get(endpoint)
+})
 const loginLaunch = createLoginLaunchController({
   supported: process.platform === 'darwin' && app.isPackaged,
   getLoginItemSettings: () => app.getLoginItemSettings(),
@@ -172,6 +195,8 @@ function prepareApplicationShutdown(): Promise<void> {
   notificationRecoveryRuntime.resolveAll()
   const cleanup = Promise.all([
     aiMailCodex.dispose(),
+    Promise.resolve(aiMailOllama.dispose()),
+    Promise.resolve(ollama.dispose()),
     googleConnectionRuntime?.cancelAll() ?? Promise.resolve(),
     relayRuntime?.dispose() ?? Promise.resolve()
   ]).then(() => undefined)
@@ -435,6 +460,7 @@ const mainWindowRuntime = createMainWindowRuntime({
   preloadFile: join(__dirname, '../preload/index.js'),
   window: () => mainWindow,
   setWindow: (window, current) => {
+    if (current) aiMailOllama.cancelOwner(current)
     if (window) mainWindow = window
     else if (mainWindow === current) mainWindow = null
   },
@@ -636,6 +662,9 @@ void app
       access: () => accountAccessController,
       notifications: () => notificationConnectionController,
       settings: () => settingsStore,
+      writeClipboardText: (text) => clipboard.writeText(text),
+      aiModel,
+      ollamaCredentials,
       isQuitting: () => appQuitting,
       requireAccountStore,
       requireAccountRemoval,
@@ -650,7 +679,11 @@ void app
       createWindow,
       loginLaunch,
       aiMailCodex,
+      aiMailOllama,
+      ollama,
       composeTarget: () => composeTargetService,
+      recordComposeDiagnostic: (accountId, event) =>
+        mainDiagnostics?.record({ type: 'ai_mail.compose', accountId, ...event }),
       readTarget: () => readTargetService
     })
     loginLaunchStartup.start(wasOpenedAtLogin)

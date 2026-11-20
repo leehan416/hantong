@@ -27,19 +27,40 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     TextEncoder,
     process: overrides.process ?? process,
     window: overrides.window,
+    document: overrides.document ?? {
+      activeElement: null,
+      body: {},
+      querySelectorAll: () => []
+    },
+    HTMLElement: overrides.HTMLElement ?? class HTMLElement {},
+    Image:
+      overrides.Image ??
+      class Image {
+        set src(value) {
+          this.value = value
+        }
+        decode() {
+          return Promise.resolve()
+        }
+      },
     Uint8Array,
+    Response: overrides.Response,
+    Request: overrides.Request,
+    Headers: overrides.Headers,
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     setInterval,
     clearInterval,
     require(name) {
       if (Object.hasOwn(overrides, name)) return overrides[name]
-      if (name.startsWith('.')) {
-        const jsonUrl = new URL(name, fileUrl)
+      if (name.startsWith('.') || name.startsWith('~/')) {
+        const baseUrl = name.startsWith('~/') ? new URL('../../src/', import.meta.url) : fileUrl
+        const importPath = name.startsWith('~/') ? name.slice(2) : name
+        const jsonUrl = new URL(importPath, baseUrl)
         if (jsonUrl.pathname.endsWith('.json'))
           return { default: JSON.parse(readFileSync(jsonUrl, 'utf8')) }
-        const tsUrl = new URL(`${name}.ts`, fileUrl)
-        const tsxUrl = new URL(`${name}.tsx`, fileUrl)
+        const tsUrl = new URL(`${importPath}.ts`, baseUrl)
+        const tsxUrl = new URL(`${importPath}.tsx`, baseUrl)
         let sourceUrl
         try {
           readFileSync(tsUrl, 'utf8')

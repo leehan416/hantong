@@ -3,7 +3,7 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createLoginLaunchStartupController } = loadTypeScript(
-  new URL('../src/main/login-launch-startup.ts', import.meta.url)
+  new URL('../src/main/app/login-launch-startup.ts', import.meta.url)
 )
 
 test('early reveal wins over hidden login startup and later reveal opens the window', () => {

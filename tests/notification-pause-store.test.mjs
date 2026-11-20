@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const sourceUrl = new URL('../src/main/notification-pause-store.ts', import.meta.url)
+const sourceUrl = new URL('../src/main/notifications/notification-pause-store.ts', import.meta.url)
 const defaults = { version: 1, pausedUntil: null, notifyAfter: 0 }
 
 function withDirectory(run) {

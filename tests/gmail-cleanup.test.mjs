@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { buildGmailCleanupCss } = loadTypeScript(
-  new URL('../src/main/gmail-cleanup.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-cleanup.ts', import.meta.url)
 )
 const off = {
   hideGmailLogo: false,

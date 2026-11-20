@@ -4,15 +4,18 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const handlers = new Map()
-const { registerMainIpc } = loadTypeScript(new URL('../src/main/main-ipc.ts', import.meta.url), {
-  electron: {
-    app: { getName: () => 'Hantong', getVersion: () => '1.0', getLocale: () => 'en-US' },
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    nativeTheme: {},
-    webContents: { getAllWebContents: () => [] }
+const { registerMainIpc } = loadTypeScript(
+  new URL('../src/main/ipc/main-ipc.ts', import.meta.url),
+  {
+    electron: {
+      app: { getName: () => 'Hantong', getVersion: () => '1.0', getLocale: () => 'en-US' },
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+      nativeTheme: {},
+      webContents: { getAllWebContents: () => [] }
+    }
   }
-})
+)
 const accountId = '550e8400-e29b-41d4-a716-446655440000'
 
 function deferred() {
@@ -27,6 +30,7 @@ function fixture(overrides = {}) {
   handlers.clear()
   const owner = { webContents: { send: () => undefined }, isDestroyed: () => false }
   const account = { id: accountId }
+  const composeDiagnostics = []
   const dependencies = {
     rendererUrl: 'file:///app/index.html',
     window: () => owner,
@@ -66,10 +70,41 @@ function fixture(overrides = {}) {
         status: enabled ? 'enabled' : 'disabled'
       })
     },
+    aiMailCodex: {
+      getStatus: () => ({ state: 'connected' }),
+      getModels: async () => ({
+        state: 'available',
+        models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+      }),
+      connect: async () => ({ state: 'connected' }),
+      disconnect: async () => ({ state: 'disconnected' }),
+      generate: async () => ({ ok: false, error: 'unsupported', reason: 'not_ready' }),
+      cancel: async () => ({ cancelled: false }),
+      dispose: async () => undefined
+    },
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [{ name: 'qwen3:8b', size: 100 }],
+      validateModel: async () => undefined,
+      dispose: () => undefined
+    },
+    aiModel: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => ['qwen3:8b'],
+      generate: async () => ({ kind: 'answer', text: 'ready' }),
+      dispose: async () => undefined
+    },
+    ollamaCredentials: {
+      has: async () => false,
+      get: async () => null,
+      set: async () => undefined,
+      clear: async () => undefined
+    },
+    recordComposeDiagnostic: (...args) => composeDiagnostics.push(args),
     ...overrides
   }
   registerMainIpc(dependencies)
-  return { owner, account }
+  return { owner, account, composeDiagnostics }
 }
 
 function invokeEvent(owner, sender = owner.webContents) {
@@ -77,6 +112,516 @@ function invokeEvent(owner, sender = owner.webContents) {
   sender.mainFrame = frame
   return { sender, senderFrame: frame }
 }
+
+test('failed account removal restores only the still-active account view', async (t) => {
+  await t.test('active account view is recreated and cleanup error is reported', async () => {
+    const statuses = []
+    const activations = []
+    const { owner } = fixture({
+      views: () => ({
+        disposeAccount: async () => undefined,
+        activate: (id) => {
+          activations.push(id)
+          statuses.push(['hantong:account-view-status', { accountId: id, status: 'loading' }])
+        },
+        forgetLogoutLock: () => undefined
+      }),
+      requireAccountRemoval: () => ({
+        isBusy: () => false,
+        assertIdle: () => undefined,
+        remove: async (id, context) => {
+          await context.disposeView(id)
+          return {
+            outcome: 'failed',
+            state: { accounts: [{ id: accountId }], activeAccountId: accountId }
+          }
+        }
+      })
+    })
+    owner.webContents.send = (...args) => statuses.push(args)
+
+    await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+    assert.deepEqual(activations, [accountId])
+    assert.deepEqual(JSON.parse(JSON.stringify(statuses)), [
+      ['hantong:account-view-status', { accountId, status: 'error' }],
+      ['hantong:account-view-status', { accountId, status: 'loading' }]
+    ])
+  })
+
+  await t.test('inactive account cleanup failure does not switch the current view', async () => {
+    const activations = []
+    const { owner } = fixture({
+      requireAccountStore: () => ({
+        getState: () => ({
+          accounts: [{ id: accountId }, { id: '660e8400-e29b-41d4-a716-446655440000' }],
+          activeAccountId: '660e8400-e29b-41d4-a716-446655440000'
+        })
+      }),
+      views: () => ({
+        disposeAccount: async () => undefined,
+        activate: (id) => activations.push(id)
+      }),
+      requireAccountRemoval: () => ({
+        isBusy: () => false,
+        assertIdle: () => undefined,
+        remove: async (id, context) => {
+          await context.disposeView(id)
+          return {
+            outcome: 'failed',
+            state: {
+              accounts: [{ id: accountId }, { id: '660e8400-e29b-41d4-a716-446655440000' }],
+              activeAccountId: '660e8400-e29b-41d4-a716-446655440000'
+            }
+          }
+        }
+      })
+    })
+
+    await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+    assert.deepEqual(activations, [])
+  })
+
+  await t.test('closed owner does not restore the view or receive status', async () => {
+    const activations = []
+    const statuses = []
+    const { owner } = fixture({
+      views: () => ({
+        disposeAccount: async () => undefined,
+        activate: (id) => activations.push(id)
+      }),
+      requireAccountRemoval: () => ({
+        isBusy: () => false,
+        assertIdle: () => undefined,
+        remove: async (id, context) => {
+          await context.disposeView(id)
+          owner.destroyed = true
+          return {
+            outcome: 'failed',
+            state: { accounts: [{ id: accountId }], activeAccountId: accountId }
+          }
+        }
+      })
+    })
+    owner.isDestroyed = () => owner.destroyed === true
+    owner.webContents.send = (...args) => statuses.push(args)
+
+    await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+    assert.deepEqual(activations, [])
+    assert.deepEqual(statuses, [])
+  })
+})
+
+test('failed account removal before view disposal does not recreate the account view', async () => {
+  const activations = []
+  const { owner } = fixture({
+    views: () => ({ activate: (id) => activations.push(id) }),
+    requireAccountRemoval: () => ({
+      isBusy: () => false,
+      assertIdle: () => undefined,
+      remove: async () => ({
+        outcome: 'failed',
+        state: { accounts: [{ id: accountId }], activeAccountId: accountId }
+      })
+    })
+  })
+
+  await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+  assert.deepEqual(activations, [])
+})
+
+test('provider model IPC is owner-frame only and Codex returns the live catalog contract', async () => {
+  const { owner } = fixture()
+  const event = invokeEvent(owner)
+  const status = handlers.get('hantong:ollama-status')
+  const models = handlers.get('hantong:ollama-models')
+  const codexModels = handlers.get('hantong:codex-models')
+  assert.deepEqual(JSON.parse(JSON.stringify(await status(event))), {
+    state: 'available',
+    cloudDisabled: true
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(await models(event))), [
+    { name: 'qwen3:8b', size: null }
+  ])
+  assert.deepEqual(JSON.parse(JSON.stringify(await codexModels(event))), {
+    state: 'available',
+    models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+  })
+  await assert.rejects(status(event, 'http://127.0.0.1'), /Request rejected/)
+  await assert.rejects(models(invokeEvent(owner, {})), /Request rejected/)
+})
+
+test('clipboard IPC writes bounded text only from the owner frame', () => {
+  const writes = []
+  const { owner } = fixture({ writeClipboardText: (value) => writes.push(value) })
+  const copy = handlers.get('hantong:clipboard-write-text')
+  const event = invokeEvent(owner)
+
+  copy(event, 'revision text')
+  assert.deepEqual(writes, ['revision text'])
+  assert.throws(() => copy(event, 'x'.repeat(140_000)), /Request rejected/)
+  assert.throws(() => copy(invokeEvent(owner, {}), 'untrusted'), /Request rejected/)
+  assert.throws(() => copy(event, { text: 'not a string' }), /Request rejected/)
+})
+
+test('compose diagnostics accept only bounded allowlisted owner-frame events', () => {
+  const { owner, composeDiagnostics } = fixture()
+  const record = handlers.get('hantong:ai-mail-compose-diagnostic')
+  const event = invokeEvent(owner)
+  const payload = {
+    correlationId: '550e8400-e29b-41d4-a716-446655440000',
+    stage: 'fresh_status',
+    outcome: 'ready',
+    candidateCount: 2,
+    discovery: {
+      editorCount: 3,
+      candidateCount: 2,
+      rejectedNoMatch: 1,
+      rejectedNotVisible: 0,
+      capacityEvictions: 0
+    },
+    reason: 'multiple_candidates'
+  }
+  record(event, payload)
+  assert.equal(composeDiagnostics.length, 1)
+  assert.equal(composeDiagnostics[0][0], accountId)
+  assert.deepEqual(JSON.parse(JSON.stringify(composeDiagnostics[0][1])), payload)
+  assert.throws(
+    () => record(event, { ...payload, email: 'private@example.test' }),
+    /Request rejected/
+  )
+  assert.throws(() => record(event, { ...payload, candidateCount: 34 }), /Request rejected/)
+  assert.throws(
+    () => record(event, { ...payload, discovery: { ...payload.discovery, body: 'private' } }),
+    /Request rejected/
+  )
+  assert.throws(() => record(invokeEvent(owner, {}), payload), /Request rejected/)
+  const structure = {
+    editableCount: 2,
+    subjectBoxCount: 1,
+    focusedEditable: true,
+    replyMarkerMatch: false,
+    sharedBranch: false,
+    subjectValidity: [],
+    ancestors: [
+      {
+        depth: 0,
+        tag: 'container',
+        childCount: 1,
+        editableCount: 1,
+        subjectBoxCount: 0,
+        replyMarkerCount: 0,
+        visible: true,
+        replyMarkerMatch: false,
+        sharedBranch: false
+      }
+    ]
+  }
+  record(event, { ...payload, discovery: { ...payload.discovery, structure } })
+  assert.equal(composeDiagnostics.length, 2)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(composeDiagnostics[1][1])).discovery.structure,
+    structure
+  )
+})
+
+test('compose target selection uses owner-frame IPC and returns a freshly checked snapshot', async () => {
+  let selectedRequest
+  const snapshot = {
+    status: 'ready',
+    accountId,
+    composeId: 'opaque-compose-id',
+    accountLabel: 'Account',
+    documentVersion: 'document-version',
+    snapshotId: 'snapshot-id',
+    subject: 'Current subject',
+    recipients: [],
+    body: 'Current body',
+    candidates: [{ composeId: 'opaque-compose-id', label: 'Current subject', lastUsedAt: 10 }]
+  }
+  const { owner } = fixture({
+    composeTarget: () => ({
+      selectTarget: async (request) => {
+        selectedRequest = request
+        return snapshot
+      },
+      isResultCurrent: () => true,
+      isResultTargetCurrent: async () => true
+    })
+  })
+  const select = handlers.get('hantong:ai-mail-compose-select-target')
+  const event = invokeEvent(owner)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await select(event, { accountId, composeId: 'opaque-compose-id' }))),
+    snapshot
+  )
+  assert.deepEqual(selectedRequest, { accountId, composeId: 'opaque-compose-id' })
+  await assert.rejects(
+    select(invokeEvent(owner, {}), { accountId, composeId: 'opaque-compose-id' }),
+    /Request rejected/
+  )
+})
+
+test('settings IPC validates local Ollama model selection before persistence', async () => {
+  const updates = []
+  let modelChecks = 0
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates.push(patch)
+      Object.assign(saved, patch)
+      return { ...saved, ...patch }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async (name) => {
+        modelChecks++
+        if (name !== 'qwen3:8b') throw new Error('Ollama model is not available as a local model')
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  await assert.rejects(
+    update(event, { aiMailProvider: 'ollama' }),
+    /Select an available Ollama model first/
+  )
+  await assert.rejects(
+    update(event, { ollamaModel: 'remote:latest' }),
+    /not available as a local model/
+  )
+  assert.deepEqual(updates, [])
+  await update(event, { ollamaModel: 'qwen3:8b' })
+  await update(event, { aiMailProvider: 'ollama' })
+  await assert.rejects(
+    update(event, { ollamaModel: null }),
+    /Select an available Ollama model first/
+  )
+  assert.equal(modelChecks, 3)
+  assert.deepEqual(updates, [{ ollamaModel: 'qwen3:8b' }, { aiMailProvider: 'ollama' }])
+})
+
+test('concurrent settings updates validate against the latest persisted provider and model', async () => {
+  const validation = deferred()
+  const validationStarted = deferred()
+  const updates = []
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: 'qwen3:8b',
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates.push(patch)
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async () => {
+        validationStarted.resolve()
+        await validation.promise
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  const switchProvider = update(event, { aiMailProvider: 'ollama' })
+  await validationStarted.promise
+  const clearModel = update(event, { ollamaModel: null })
+  validation.resolve()
+
+  await switchProvider
+  await assert.rejects(clearModel, /Select an available Ollama model first/)
+  assert.deepEqual(saved, {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'ollama',
+    ollamaModel: 'qwen3:8b',
+    codexModel: null
+  })
+  assert.deepEqual(updates, [{ aiMailProvider: 'ollama' }])
+})
+
+test('settings update rejects when its owner window is replaced during model validation', async () => {
+  const validation = deferred()
+  const validationStarted = deferred()
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  let owner = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  fixture({
+    window: () => owner,
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async () => {
+        validationStarted.resolve()
+        await validation.promise
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  const pending = update(event, { ollamaModel: 'qwen3:8b' })
+  await validationStarted.promise
+  owner = { webContents: { send: () => undefined }, isDestroyed: () => false }
+  validation.resolve()
+
+  await assert.rejects(pending, /Request rejected/)
+  assert.equal(saved.ollamaModel, null)
+})
+
+test('settings update rejects when its owner frame navigates during model validation', async () => {
+  const validation = deferred()
+  const validationStarted = deferred()
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'available', cloudDisabled: true }),
+      getModels: async () => [],
+      validateModel: async () => {
+        validationStarted.resolve()
+        await validation.promise
+      },
+      dispose: () => undefined
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  const pending = update(event, { ollamaModel: 'qwen3:8b' })
+  await validationStarted.promise
+  event.senderFrame.url = 'file:///untrusted/index.html'
+  validation.resolve()
+
+  await assert.rejects(pending, /Request rejected/)
+  assert.equal(saved.ollamaModel, null)
+})
+
+test('non-provider settings remain editable when selected Ollama is offline', async () => {
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'ollama',
+    ollamaModel: 'qwen3:8b',
+    codexModel: null
+  }
+  let updates = 0
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates++
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    ollama: {
+      getStatus: async () => ({ state: 'unavailable', cloudDisabled: false }),
+      getModels: async () => [],
+      validateModel: async () => {
+        throw new Error('Ollama is offline')
+      },
+      dispose: () => undefined
+    }
+  })
+
+  const result = await handlers.get('hantong:settings-update')(invokeEvent(owner), {
+    theme: 'dark'
+  })
+
+  assert.equal(result.theme, 'dark')
+  assert.equal(result.aiMailProvider, 'ollama')
+  assert.equal(updates, 1)
+})
+
+test('Codex model settings accept only entries from the connected app-server catalog', async () => {
+  const updates = []
+  const saved = {
+    version: 1,
+    theme: 'system',
+    aiMailProvider: 'codex',
+    ollamaModel: null,
+    codexModel: null
+  }
+  const settingsStore = {
+    get: () => ({ ...saved }),
+    update: (patch) => {
+      updates.push(patch)
+      Object.assign(saved, patch)
+      return { ...saved }
+    }
+  }
+  const { owner } = fixture({
+    settings: () => settingsStore,
+    aiMailCodex: {
+      getStatus: () => ({ state: 'connected' }),
+      getModels: async () => ({
+        state: 'available',
+        models: [{ id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT 6.1 Sol' }]
+      })
+    }
+  })
+  const update = handlers.get('hantong:settings-update')
+  const event = invokeEvent(owner)
+  await assert.rejects(
+    update(event, { codexModel: 'invented-model' }),
+    /Select an available Codex model first/
+  )
+  await update(event, { codexModel: 'gpt-6.1-sol' })
+  assert.deepEqual(updates, [{ codexModel: 'gpt-6.1-sol' }])
+})
 
 test('trusted URL from a foreign sender is rejected by IPC ownership checks', () => {
   const { owner } = fixture()

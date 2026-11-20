@@ -16,16 +16,16 @@ export default defineConfig(({ mode }) => {
   const bundled = Object.fromEntries(
     BUNDLED_KEYS.filter((key) => env[key]).map((key) => [key, env[key]])
   )
+  const aliases = { '~': resolve('src') }
   return {
     main: {
+      resolve: { alias: aliases },
       define: { __HANTONG_BUNDLED_ENV__: JSON.stringify(bundled) }
     },
-    preload: {},
+    preload: { resolve: { alias: aliases } },
     renderer: {
       resolve: {
-        alias: {
-          '@renderer': resolve('src/renderer/src')
-        }
+        alias: aliases
       },
       plugins: [react()]
     }

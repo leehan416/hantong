@@ -4,7 +4,10 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { NotificationRecoveryController } = loadTypeScript(
-  new URL('../src/renderer/src/notification-recovery-controller.ts', import.meta.url)
+  new URL(
+    '../src/renderer/src/shell/controllers/notification-recovery-controller.ts',
+    import.meta.url
+  )
 )
 
 function deferred() {

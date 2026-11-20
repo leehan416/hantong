@@ -4,16 +4,16 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createGmailMailAlerts } = loadTypeScript(
-  new URL('../src/main/gmail-mail-alerts.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-mail-alerts.ts', import.meta.url)
 )
 const { createMainMailDiagnostics } = loadTypeScript(
-  new URL('../src/main/main-mail-diagnostics.ts', import.meta.url)
+  new URL('../src/main/mail/main-mail-diagnostics.ts', import.meta.url)
 )
 const { createMainDiagnostics } = loadTypeScript(
-  new URL('../src/main/main-diagnostics.ts', import.meta.url)
+  new URL('../src/main/diagnostics/main-diagnostics.ts', import.meta.url)
 )
 const { createNotificationConnectionController } = loadTypeScript(
-  new URL('../src/main/notification-connection-controller.ts', import.meta.url)
+  new URL('../src/main/notifications/notification-connection-controller.ts', import.meta.url)
 )
 
 const accountId = '11111111-1111-4111-8111-111111111111'

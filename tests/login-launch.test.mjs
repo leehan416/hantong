@@ -3,7 +3,7 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { createLoginLaunchController } = loadTypeScript(
-  new URL('../src/main/login-launch.ts', import.meta.url)
+  new URL('../src/main/app/login-launch.ts', import.meta.url)
 )
 
 test('reads OS registration without mutating it and maps absent registration to disabled', async () => {

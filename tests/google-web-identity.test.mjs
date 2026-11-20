@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const identity = loadTypeScript(new URL('../src/main/google-web-identity.ts', import.meta.url))
+const identity = loadTypeScript(
+  new URL('../src/main/google/google-web-identity.ts', import.meta.url)
+)
 const accountId = 'a1b2c3d4-e5f6-4789-8abc-123456789abc'
 
 function makeView(overrides = {}) {

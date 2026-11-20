@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const firstId = '11111111-1111-4111-8111-111111111111'
-const sourceUrl = new URL('../src/main/gmail-history-sync.ts', import.meta.url)
+const sourceUrl = new URL('../src/main/gmail/gmail-history-sync.ts', import.meta.url)
 const { GmailMetadataFailure } = loadTypeScript(
-  new URL('../src/main/gmail-metadata.ts', import.meta.url)
+  new URL('../src/main/gmail/gmail-metadata.ts', import.meta.url)
 )
 
 function harness({

@@ -12,10 +12,14 @@ const {
   isAllowedSettingsRequest,
   isAllowedLoginLaunchRequest,
   isAllowedAiMailComposeMutationRequest,
+  isAllowedAiMailComposeSelectionRequest,
   isAllowedAiMailReadRequest,
   isAllowedAiMailSubjectMutationRequest,
+  isAllowedClipboardWriteRequest,
+  isAllowedOllamaCredentialRequest,
+  isAllowedAiMailOllamaRequest,
   isTrustedRendererUrl
-} = loadTypeScript(new URL('../src/main/security-policy.ts', import.meta.url))
+} = loadTypeScript(new URL('../src/main/security/security-policy.ts', import.meta.url))
 const policy = {
   isAllowedExternalUrl,
   isAllowedAppInfoRequest,
@@ -61,6 +65,70 @@ test('login launch IPC requires the owner main frame and exact boolean argument'
     isAllowedLoginLaunchRequest({ ...base, senderMatches: false, args: [true] }, 'set'),
     false
   )
+})
+
+test('Ollama credential IPC binds exact operation arguments to a valid HTTPS endpoint', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: ['https://ollama.com/v1']
+  }
+  assert.equal(isAllowedOllamaCredentialRequest(base, 'status'), true)
+  assert.equal(isAllowedOllamaCredentialRequest(base, 'clear'), true)
+  assert.equal(
+    isAllowedOllamaCredentialRequest(
+      { ...base, args: ['https://ollama.com/v1', 'key-123'] },
+      'set'
+    ),
+    true
+  )
+  assert.equal(isAllowedOllamaCredentialRequest({ ...base, args: [] }, 'status'), false)
+  assert.equal(
+    isAllowedOllamaCredentialRequest({ ...base, args: ['http://ollama.com/v1'] }, 'status'),
+    false
+  )
+  assert.equal(
+    isAllowedOllamaCredentialRequest(
+      { ...base, args: ['https://ollama.com/v1', 'key\r\nHeader: x'] },
+      'set'
+    ),
+    false
+  )
+  assert.equal(isAllowedOllamaCredentialRequest({ ...base, senderMatches: false }, 'status'), false)
+})
+
+test('Ollama generation requires a UUID conversation identity separate from compose identity', () => {
+  const request = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    operation: 'generate',
+    args: [
+      {
+        accountId: 'account-a',
+        composeId: 'compose-a',
+        conversationId: '4f7307bb-aee2-44f7-a218-11893a2cb88f',
+        requestId: 'request-a',
+        generation: 1,
+        prompt: 'Prompt'
+      }
+    ]
+  }
+  assert.equal(isAllowedAiMailOllamaRequest(request), true)
+  for (const conversationId of [undefined, 'compose-a', 'read-capture', 'not a UUID']) {
+    assert.equal(
+      isAllowedAiMailOllamaRequest({
+        ...request,
+        args: [{ ...request.args[0], conversationId }]
+      }),
+      false
+    )
+  }
 })
 
 test('compose mutation IPC accepts only bounded explicit apply and undo requests', () => {
@@ -130,6 +198,30 @@ test('compose mutation IPC accepts only bounded explicit apply and undo requests
     }),
     false
   )
+})
+
+test('compose candidate selection accepts only one bounded opaque identity from the trusted frame', () => {
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: [{ accountId: 'account-a', composeId: 'opaque-candidate-id' }]
+  }
+  assert.equal(isAllowedAiMailComposeSelectionRequest(base), true)
+  assert.equal(
+    isAllowedAiMailComposeSelectionRequest({ ...base, args: [{ accountId: 'account-a' }] }),
+    false
+  )
+  assert.equal(
+    isAllowedAiMailComposeSelectionRequest({
+      ...base,
+      args: [{ accountId: 'account-a', composeId: 'candidate', targetId: 'target-7' }]
+    }),
+    false
+  )
+  assert.equal(isAllowedAiMailComposeSelectionRequest({ ...base, mainFrameMatches: false }), false)
 })
 
 test('read-mail snapshot is read-only and subject IPC requires explicit field mutation shapes', () => {
@@ -437,4 +529,27 @@ test('settings IPC allows get with no args and update with one valid patch from 
   ]) {
     assert.equal(isAllowedSettingsRequest(request), false)
   }
+})
+
+test('clipboard writes require owner-frame text bounded by UTF-8 bytes', () => {
+  const rendererUrl = 'file:///app/out/renderer/index.html'
+  const base = {
+    ownerAlive: true,
+    senderMatches: true,
+    mainFrameMatches: true,
+    senderUrl: rendererUrl,
+    rendererUrl,
+    args: ['short revision']
+  }
+  assert.equal(isAllowedClipboardWriteRequest(base), true)
+  for (const request of [
+    { ...base, args: [] },
+    { ...base, args: [42] },
+    { ...base, args: ['x'.repeat(140_000)] },
+    { ...base, senderMatches: false },
+    { ...base, mainFrameMatches: false },
+    { ...base, ownerAlive: false },
+    { ...base, senderUrl: 'https://mail.google.com/' }
+  ])
+    assert.equal(isAllowedClipboardWriteRequest(request), false)
 })

@@ -8,7 +8,7 @@ const secondId = '22222222-2222-4222-8222-222222222222'
 test('account sessions are requested lazily using separate stable persistent partitions', () => {
   const requested = []
   const { getAccountSession } = loadTypeScript(
-    new URL('../src/main/account-session.ts', import.meta.url),
+    new URL('../src/main/accounts/account-session.ts', import.meta.url),
     {
       electron: {
         session: {

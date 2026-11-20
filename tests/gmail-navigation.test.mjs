@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const policy = loadTypeScript(new URL('../src/main/gmail-navigation.ts', import.meta.url))
+const policy = loadTypeScript(new URL('../src/main/gmail/gmail-navigation.ts', import.meta.url))
 
 test('Gmail and Google web sign-in stay within the account session', () => {
   for (const url of [

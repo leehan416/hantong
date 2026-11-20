@@ -4,10 +4,10 @@ import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { buildAppMenuTemplate, buildTrayMenuTemplate } = loadTypeScript(
-  new URL('../src/main/app-menu.ts', import.meta.url)
+  new URL('../src/main/app/app-menu.ts', import.meta.url)
 )
 const { createNotificationPauseController, createNotificationPauseMenuActions, nextLocalMidnight } =
-  loadTypeScript(new URL('../src/main/notification-pause.ts', import.meta.url))
+  loadTypeScript(new URL('../src/main/notifications/notification-pause.ts', import.meta.url))
 const BASE = 1_800_000_000_000
 
 function fixture({

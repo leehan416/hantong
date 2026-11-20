@@ -38,9 +38,19 @@ export const AI_MAIL_CODEX_CONNECT_CHANNEL = 'hantong:ai-mail-codex-connect'
 export const AI_MAIL_CODEX_DISCONNECT_CHANNEL = 'hantong:ai-mail-codex-disconnect'
 export const AI_MAIL_CODEX_GENERATE_CHANNEL = 'hantong:ai-mail-codex-generate'
 export const AI_MAIL_CODEX_CANCEL_CHANNEL = 'hantong:ai-mail-codex-cancel'
+export const AI_MAIL_OLLAMA_GENERATE_CHANNEL = 'hantong:ai-mail-ollama-generate'
+export const AI_MAIL_OLLAMA_CANCEL_CHANNEL = 'hantong:ai-mail-ollama-cancel'
+export const CLIPBOARD_WRITE_TEXT_CHANNEL = 'hantong:clipboard-write-text'
+export const OLLAMA_CREDENTIAL_STATUS_CHANNEL = 'hantong:ollama-credential-status'
+export const OLLAMA_CREDENTIAL_SET_CHANNEL = 'hantong:ollama-credential-set'
+export const OLLAMA_CREDENTIAL_CLEAR_CHANNEL = 'hantong:ollama-credential-clear'
 export const AI_MAIL_CODEX_STATUS_EVENT = 'hantong:ai-mail-codex-status-change'
+export const OLLAMA_STATUS_CHANNEL = 'hantong:ollama-status'
+export const OLLAMA_MODELS_CHANNEL = 'hantong:ollama-models'
+export const CODEX_MODELS_CHANNEL = 'hantong:codex-models'
 export const AI_MAIL_COMPOSE_TARGET_STATUS_CHANNEL = 'hantong:ai-mail-compose-target-status'
 export const AI_MAIL_COMPOSE_SNAPSHOT_CHANNEL = 'hantong:ai-mail-compose-snapshot'
+export const AI_MAIL_COMPOSE_SELECT_TARGET_CHANNEL = 'hantong:ai-mail-compose-select-target'
 export const AI_MAIL_COMPOSE_APPLY_CHANNEL = 'hantong:ai-mail-compose-apply'
 export const AI_MAIL_COMPOSE_UNDO_CHANNEL = 'hantong:ai-mail-compose-undo'
 export const AI_MAIL_READ_SNAPSHOT_CHANNEL = 'hantong:ai-mail-read-snapshot'
@@ -48,6 +58,7 @@ export const AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL = 'hantong:ai-mail-read-snaps
 export const AI_MAIL_SUBJECT_APPLY_CHANNEL = 'hantong:ai-mail-subject-apply'
 export const AI_MAIL_SUBJECT_UNDO_CHANNEL = 'hantong:ai-mail-subject-undo'
 export const AI_MAIL_COMPOSE_TARGET_EVENT = 'hantong:ai-mail-compose-target-change'
+export const AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL = 'hantong:ai-mail-compose-diagnostic'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
 export const NOTIFICATION_RECOVER_CHANNEL = 'hantong:notification-recover'
@@ -97,11 +108,83 @@ export type CodexConnectionStatus =
   | { state: 'unsupported'; reason: 'product_owned_executable_unavailable' }
   | { state: 'disconnected' | 'connecting' | 'connected' | 'error'; reason?: string }
 
+export type OllamaConnectionStatus =
+  { state: 'available'; cloudDisabled: boolean } | { state: 'unavailable'; cloudDisabled: false }
+
+export interface OllamaModel {
+  name: string
+  size: number | null
+}
+
+export interface CodexModel {
+  id: string
+  model: string
+  displayName: string
+}
+
+export type CodexModelInventory =
+  | { state: 'unavailable'; reason: 'not_connected' | 'discovery_failed' }
+  | { state: 'available'; models: CodexModel[] }
+
+export interface ComposeCandidate {
+  composeId: string
+  label: string
+  lastUsedAt: number
+}
+
+export interface ComposeDiscoverySummary {
+  editorCount: number
+  candidateCount: number
+  rejectedNoMatch: number
+  rejectedNotVisible: number
+  capacityEvictions: number
+  structure?: ComposeStructureSummary
+}
+
+export interface ComposeStructureSummary {
+  editableCount: number
+  subjectBoxCount: number
+  focusedEditable: boolean
+  replyMarkerMatch: boolean
+  sharedBranch: boolean
+  subjectValidity: Array<{
+    valid: boolean
+    willValidate: boolean
+    valueMissing: boolean
+    typeMismatch: boolean
+    patternMismatch: boolean
+    tooLong: boolean
+    tooShort: boolean
+    rangeUnderflow: boolean
+    rangeOverflow: boolean
+    stepMismatch: boolean
+    badInput: boolean
+    customError: boolean
+  }>
+  ancestors: Array<{
+    depth: number
+    tag: 'document' | 'container' | 'form' | 'input' | 'other'
+    childCount: number
+    editableCount: number
+    subjectBoxCount: number
+    replyMarkerCount: number
+    visible: boolean
+    replyMarkerMatch: boolean
+    sharedBranch: boolean
+  }>
+}
+
 export type ComposeTargetStatus =
-  | { status: 'none' | 'stale' | 'access_locked' }
+  | {
+      status: 'none' | 'stale' | 'access_locked'
+      candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
+    }
   | {
       status: 'unsupported'
       code: 'unsupported_compose' | 'unsupported_content' | 'unsupported_read_mail'
+      candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
   | {
       status: 'ready'
@@ -110,13 +193,21 @@ export type ComposeTargetStatus =
       accountLabel: string
       recipients: string[]
       subject: string
+      candidates: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
 
 export type ComposeSnapshotResult =
-  | { status: 'none' | 'stale' | 'access_locked' }
+  | {
+      status: 'none' | 'stale' | 'access_locked'
+      candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
+    }
   | {
       status: 'unsupported'
       code: 'unsupported_compose' | 'unsupported_content' | 'unsupported_read_mail'
+      candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
   | {
       status: 'ready'
@@ -128,7 +219,24 @@ export type ComposeSnapshotResult =
       subject: string
       recipients: string[]
       body: string
+      candidates: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
+
+export interface ComposeCandidateSelectionRequest {
+  accountId: string
+  composeId: string
+}
+
+export type AiMailComposeDiagnostic = {
+  correlationId: string
+  stage: 'review_click' | 'fresh_status' | 'target_selection' | 'cover' | 'apply' | 'conflict'
+  outcome: 'started' | 'ready' | 'none' | 'stale' | 'unsupported' | 'failure' | 'applied'
+  candidateCount?: number
+  discovery?: ComposeDiscoverySummary
+  reason?:
+    'no_candidate' | 'multiple_candidates' | 'stale_target' | 'unsupported_content' | 'failed'
+}
 
 export interface AiMailComposeApplyRequest {
   accountId: string
@@ -201,6 +309,34 @@ export type CodexGenerationResult =
       reason: string
     }
 
+export interface OllamaGenerationRequest {
+  accountId: string
+  composeId: string
+  conversationId: string
+  requestId: string
+  generation: number
+  prompt: string
+  followUp?: string
+}
+
+export function isAiMailConversationId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  )
+}
+
+export type OllamaGenerationResult =
+  | {
+      ok: true
+      output:
+        | { kind: 'answer'; text: string }
+        | { kind: 'proposal'; subject: string; body: string }
+        | { kind: 'proposal'; field: 'body'; text: string }
+        | { kind: 'proposal'; field: 'subject'; text: string; subject: string }
+    }
+  | { ok: false; error: 'cancelled' | 'unavailable' | 'failed'; reason: string }
+
 export type AccountAccessState = {
   accountId: string
   status: 'sign_in' | 'checking' | 'required' | 'ready' | 'error'
@@ -223,21 +359,34 @@ export type NotificationConnectionState = {
 export type NotificationConnectionStates = Record<string, NotificationConnectionState>
 
 export interface HantongApi {
+  writeClipboardText: (text: string) => Promise<void>
+  getOllamaCredentialStatus: (endpoint: string) => Promise<boolean>
+  setOllamaCredential: (endpoint: string, credential: string) => Promise<void>
+  clearOllamaCredential: (endpoint: string) => Promise<void>
   getAiMailReadSnapshot: () => Promise<ReadMailSnapshotResult>
   isAiMailReadSnapshotCurrent: (captureId: string) => Promise<boolean>
   applyAiMailSubject: (request: AiMailSubjectApplyRequest) => Promise<AiMailComposeMutationResult>
   undoAiMailSubject: (request: AiMailSubjectUndoRequest) => Promise<AiMailComposeMutationResult>
   getAiMailComposeTargetStatus: () => Promise<ComposeTargetStatus>
   getAiMailComposeSnapshot: () => Promise<ComposeSnapshotResult>
+  selectAiMailComposeTarget: (
+    request: ComposeCandidateSelectionRequest
+  ) => Promise<ComposeSnapshotResult>
   applyAiMailDraft: (request: AiMailComposeApplyRequest) => Promise<AiMailComposeMutationResult>
   undoAiMailDraft: (request: AiMailComposeUndoRequest) => Promise<AiMailComposeMutationResult>
   onAiMailComposeTarget: (listener: (status: ComposeTargetStatus) => void) => () => void
+  recordAiMailComposeDiagnostic: (event: AiMailComposeDiagnostic) => Promise<void>
   getAiMailCodexStatus: () => Promise<CodexConnectionStatus>
   connectAiMailCodex: () => Promise<CodexConnectionStatus>
   disconnectAiMailCodex: () => Promise<CodexConnectionStatus>
   generateAiMailDraft: (request: CodexGenerationRequest) => Promise<CodexGenerationResult>
+  generateAiMailWithOllama: (request: OllamaGenerationRequest) => Promise<OllamaGenerationResult>
+  cancelAiMailOllamaGeneration: (requestId: string) => Promise<{ cancelled: boolean }>
   cancelAiMailGeneration: (requestId: string) => Promise<{ cancelled: boolean; reason?: string }>
   onAiMailCodexStatus: (listener: (status: CodexConnectionStatus) => void) => () => void
+  getOllamaStatus: () => Promise<OllamaConnectionStatus>
+  getOllamaModels: () => Promise<OllamaModel[]>
+  getCodexModels: () => Promise<CodexModelInventory>
   getLoginLaunchState: () => Promise<LoginLaunchState>
   setLoginLaunchEnabled: (enabled: boolean) => Promise<LoginLaunchState>
   getAppInfo: () => Promise<AppInfo>

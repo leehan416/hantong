@@ -5,9 +5,12 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 const nameSaveCalls = []
 const cancellationRefs = []
 const { AccountSettings } = loadTypeScript(
-  new URL('../src/renderer/src/AccountSettings.tsx', import.meta.url),
+  new URL(
+    '../src/renderer/src/components/settings/AccountSettings/AccountSettings.tsx',
+    import.meta.url
+  ),
   {
-    './SettingsDialog': { SettingsRow: () => null },
+    '../SettingsDialog/SettingsDialog': { SettingsRow: () => null },
     window: {
       api: {
         setAccountDisplayName(accountId, displayName) {

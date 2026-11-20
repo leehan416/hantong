@@ -7,12 +7,14 @@ import { test } from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
 const { sanitizeNavigationDiagnostic } = loadTypeScript(
-  new URL('../src/main/navigation-diagnostic.ts', import.meta.url)
+  new URL('../src/main/security/navigation-diagnostic.ts', import.meta.url)
 )
 
-const diagnostics = loadTypeScript(new URL('../src/main/main-diagnostics.ts', import.meta.url))
+const diagnostics = loadTypeScript(
+  new URL('../src/main/diagnostics/main-diagnostics.ts', import.meta.url)
+)
 const { isEvent } = loadTypeScript(
-  new URL('../src/main/main-diagnostics-validation.ts', import.meta.url)
+  new URL('../src/main/diagnostics/main-diagnostics-validation.ts', import.meta.url)
 )
 
 test('diagnostic records allowlisted fields and anonymous stable account aliases', () => {
@@ -40,6 +42,92 @@ test('diagnostic records allowlisted fields and anonymous stable account aliases
       readyAt: 123,
       lastFailure: 'unknown'
     }
+  )
+})
+
+test('compose diagnostics retain only bounded outcomes and ephemeral correlation', () => {
+  const lines = []
+  const recorder = diagnostics.createMainDiagnostics({
+    now: () => 456,
+    sink: { append: (line) => lines.push(JSON.parse(line)) }
+  })
+  recorder.record({
+    type: 'ai_mail.compose',
+    accountId: 'stable-account-id',
+    correlationId: '550e8400-e29b-41d4-a716-446655440000',
+    stage: 'fresh_status',
+    outcome: 'ready',
+    candidateCount: 2,
+    discovery: {
+      editorCount: 3,
+      candidateCount: 2,
+      rejectedNoMatch: 1,
+      rejectedNotVisible: 0,
+      capacityEvictions: 0
+    },
+    reason: 'multiple_candidates',
+    subject: 'PRIVATE SUBJECT',
+    body: 'PRIVATE BODY',
+    email: 'private@example.test'
+  })
+  assert.deepEqual(lines[0], {
+    at: 456,
+    type: 'ai_mail.compose',
+    account: 'account-1',
+    correlationId: '550e8400-e29b-41d4-a716-446655440000',
+    stage: 'fresh_status',
+    outcome: 'ready',
+    candidateCount: 2,
+    discovery: {
+      editorCount: 3,
+      candidateCount: 2,
+      rejectedNoMatch: 1,
+      rejectedNotVisible: 0,
+      capacityEvictions: 0
+    },
+    reason: 'multiple_candidates'
+  })
+  assert.doesNotMatch(JSON.stringify(lines), /stable-account-id|PRIVATE|private@example/)
+})
+
+test('compose diagnostics reject unbounded correlation, counts, and freeform categories', () => {
+  const base = {
+    type: 'ai_mail.compose',
+    accountId: 'account-id',
+    correlationId: '550e8400-e29b-41d4-a716-446655440000',
+    stage: 'review_click',
+    outcome: 'started'
+  }
+  assert.equal(isEvent(base), true)
+  assert.equal(isEvent({ ...base, correlationId: 'private-id' }), false)
+  assert.equal(isEvent({ ...base, candidateCount: 34 }), false)
+  assert.equal(isEvent({ ...base, reason: 'recipient@example.test' }), false)
+  assert.equal(
+    isEvent({
+      ...base,
+      discovery: {
+        editorCount: 5,
+        candidateCount: 2,
+        rejectedNoMatch: 1,
+        rejectedNotVisible: 1,
+        capacityEvictions: 1,
+        subject: 'private'
+      }
+    }),
+    false
+  )
+  assert.equal(
+    isEvent({
+      ...base,
+      discovery: {
+        editorCount: 1001,
+        candidateCount: 2,
+        rejectedNoMatch: 1,
+        rejectedNotVisible: 1,
+        capacityEvictions: 1
+      }
+    }),
+    false
   )
 })
 

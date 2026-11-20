@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { loadTypeScript } from './helpers/load-typescript.mjs'
 
-const sourceUrl = new URL('../src/main/login-launch-prompt-store.ts', import.meta.url)
+const sourceUrl = new URL('../src/main/app/login-launch-prompt-store.ts', import.meta.url)
 
 function withDirectory(run) {
   const directory = mkdtempSync(join(tmpdir(), 'hantong-login-prompt-'))
