@@ -27,7 +27,26 @@ export function loadTypeScript(fileUrl, overrides = {}) {
     TextEncoder,
     process: overrides.process ?? process,
     window: overrides.window,
+    document: overrides.document ?? {
+      activeElement: null,
+      body: {},
+      querySelectorAll: () => []
+    },
+    HTMLElement: overrides.HTMLElement ?? class HTMLElement {},
+    Image:
+      overrides.Image ??
+      class Image {
+        set src(value) {
+          this.value = value
+        }
+        decode() {
+          return Promise.resolve()
+        }
+      },
     Uint8Array,
+    Response: overrides.Response,
+    Request: overrides.Request,
+    Headers: overrides.Headers,
     setTimeout: overrides.setTimeout ?? setTimeout,
     clearTimeout: overrides.clearTimeout ?? clearTimeout,
     setInterval,
