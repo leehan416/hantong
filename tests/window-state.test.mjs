@@ -37,6 +37,22 @@ test('oversized and undersized windows are clamped to the display and the minimu
   )
 })
 
+test('resizing a partly visible window keeps the resized window grabbable', () => {
+  assert.deepEqual(
+    {
+      ...fitWindowBounds({ x: -1000, y: 30, width: 1200, height: 550 }, [
+        {
+          x: 0,
+          y: 0,
+          width: 800,
+          height: 600
+        }
+      ])
+    },
+    { x: -720, y: 30, width: 800, height: 550 }
+  )
+})
+
 test('window state round-trips and a corrupt file reads as no saved state', () => {
   const directory = mkdtempSync(join(tmpdir(), 'hantong-window-'))
   try {

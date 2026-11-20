@@ -41,10 +41,13 @@ export function fitWindowBounds(saved: Rect, workAreas: readonly Rect[]): Rect |
       Math.min(saved.x + saved.width, area.x + area.width) - Math.max(saved.x, area.x)
     const titleBarVisible = saved.y >= area.y && saved.y < area.y + area.height - MIN_VISIBLE / 2
     if (visibleWidth >= MIN_VISIBLE && titleBarVisible) {
+      const width = Math.max(MIN_WIDTH, Math.min(saved.width, area.width))
+      const minX = area.x + MIN_VISIBLE - width
+      const maxX = area.x + area.width - MIN_VISIBLE
       return {
-        x: saved.x,
+        x: Math.max(minX, Math.min(saved.x, maxX)),
         y: saved.y,
-        width: Math.max(MIN_WIDTH, Math.min(saved.width, area.width)),
+        width,
         height: Math.max(MIN_HEIGHT, Math.min(saved.height, area.height))
       }
     }
