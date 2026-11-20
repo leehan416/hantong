@@ -2,6 +2,7 @@ import type { OllamaGenerationRequest, OllamaGenerationResult } from '~/shared/i
 import type { AppSettings } from '~/shared/settings'
 import type { AiModelPort } from '~/main/ai/ai-model-port'
 import { isAiMailConversationId } from '~/shared/ipc'
+import { redactAiMailInput } from '../redact-ai-mail-input'
 
 const MAX_REQUESTS = 8
 const MAX_REQUEST_BYTES = 48 * 1024
@@ -134,12 +135,18 @@ export function createAiMailOllamaGenerationService(options: {
         return { ok: false, error: 'unavailable', reason: 'model_unavailable' }
       if (!current(entry, request, owner, isCurrent))
         return { ok: false, error: 'cancelled', reason: 'stale' }
+      let prompt: string
+      try {
+        prompt = redactAiMailInput(request.prompt)
+      } catch {
+        return { ok: false, error: 'failed', reason: 'input_redaction_failed' }
+      }
       const output = await options.provider.generate(
         {
           ...configuration,
           accountId: request.accountId,
           conversationId: request.conversationId,
-          prompt: request.prompt,
+          prompt,
           isCurrent: () => current(entry, request, owner, isCurrent)
         },
         entry.controller.signal

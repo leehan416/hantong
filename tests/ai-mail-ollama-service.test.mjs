@@ -6,6 +6,9 @@ import { loadTypeScript } from './helpers/load-typescript.mjs'
 const { createAiMailOllamaGenerationService } = loadTypeScript(
   new URL('../src/main/ai/ollama/ai-mail-ollama-service.ts', import.meta.url)
 )
+const { redactAiMailInput } = loadTypeScript(
+  new URL('../src/main/ai/redact-ai-mail-input.ts', import.meta.url)
+)
 
 const request = {
   accountId: 'account-a',
@@ -71,6 +74,165 @@ test('remote generation uses the remote model and conversation identifier', asyn
     request.conversationId
   )
   assert.equal(h.calls.find(([name]) => name === 'generate')[1].apiKey, 'secret-key')
+})
+
+test('both local and remote provider calls receive redacted synthetic input', async () => {
+  for (const mode of ['local', 'remote']) {
+    const h = harness()
+    if (mode === 'remote')
+      h.setSettings({ ...settingsBase, ollamaMode: 'remote', ollamaRemoteModel: 'cloud-model' })
+    const sensitive = {
+      ...request,
+      prompt: 'Contact ada@example.test at https://example.test/?token=abc123'
+    }
+    await h.service.generate(sensitive, {}, () => true)
+    const input = h.calls.find(([name]) => name === 'generate')[1].prompt
+    assert.equal(input.includes('ada@example.test'), false)
+    assert.equal(input.includes('abc123'), false)
+    assert.match(input, /\[EMAIL\]/)
+    assert.match(input, /\[LINK\]/)
+  }
+})
+
+test('redaction masks synthetic sensitive values and preserves ordinary references', () => {
+  const input = [
+    'Password: sample-pass-42; API key=sample_api_key_value_123456789',
+    'OTP: 123456 and account number 1234-5678-9012-3456 CVC: 321',
+    'Identity 900101-1234567, email ada@example.test, phone +1 212-555-0100',
+    'Visit https://example.test/path?token=synthetic-token and [portal](https://example.test/private)',
+    'Order 2026-11-20, tracking 123456789012, shipment ETA 2026-11-21'
+  ].join('\n')
+  const result = redactAiMailInput(input)
+  for (const secret of [
+    'sample-pass-42',
+    'sample_api_key_value_123456789',
+    'OTP: 123456',
+    'CVC: 321',
+    '900101-1234567',
+    'ada@example.test',
+    '+1 212-555-0100',
+    'https://example.test'
+  ])
+    assert.equal(result.includes(secret), false, secret)
+  assert.match(result, /2026-11-20/)
+  assert.match(result, /123456789012/)
+  assert.match(result, /\[portal\]\(\[LINK\]\)/)
+})
+
+test('redaction handles URL email and token before contact patterns without leaking the suffix', () => {
+  const result = redactAiMailInput(
+    'https://mail.example.test/ada@example.test?token=synthetic-token, then contact ada@example.test'
+  )
+  assert.doesNotMatch(result, /mail\.example|ada@example\.test|synthetic-token/)
+  assert.match(result, /^\[LINK\]/)
+  assert.match(result, /\[EMAIL\]$/)
+})
+
+test('redaction hides formatted link destinations with balanced punctuation and angle form', () => {
+  const result = redactAiMailInput(
+    '[account](https://internal.example.test/a_(b)?token=sample), [internal](<custom://host/private?key=synthetic>)'
+  )
+  assert.doesNotMatch(result, /internal\.example|custom:\/\/|synthetic/)
+  assert.match(result, /\[account\]\(\[LINK\]\)/)
+  assert.match(result, /\[internal\]\(\[LINK\]\)/)
+})
+
+test('redaction covers Korean context labels and contiguous domestic phone numbers', () => {
+  const input = [
+    '비밀번호: sample-pass-42 인증번호 123456 계좌번호 110123456789',
+    '이름: 홍길동 주소: 서울시 종로구 생년월일: 1990년 1월 2일',
+    '연락처: 01012345678'
+  ].join('\n')
+  const result = redactAiMailInput(input)
+  for (const value of [
+    'sample-pass-42',
+    '123456',
+    '110123456789',
+    '홍길동',
+    '서울시 종로구',
+    '1990년 1월 2일',
+    '01012345678'
+  ])
+    assert.equal(result.includes(value), false, value)
+})
+
+test('redaction preserves ordinary ordering and tracking identifiers', () => {
+  const input = 'Order 2026-11-20, order number 123456789012, tracking 12345678901234567890'
+  assert.equal(redactAiMailInput(input), input)
+})
+
+test('redaction recognizes bare intranet, FTP and Slack links', () => {
+  const input =
+    'Fetch intranet.local/download?token=abc, ftp://files.example.test/path, slack://channel?id=abc'
+  const result = redactAiMailInput(input)
+  assert.doesNotMatch(result, /intranet\.local|files\.example|slack:\/\/|token=abc|id=abc/)
+  assert.equal((result.match(/\[LINK\]/g) ?? []).length, 3)
+})
+
+test('redaction consumes balanced parentheses in markdown destinations', () => {
+  const result = redactAiMailInput('[label](custom:abc(def)SECRET)')
+  assert.equal(result, '[label]([LINK])')
+  assert.doesNotMatch(result, /SECRET|custom:/)
+})
+
+test('redaction masks a contextual 15-digit card number', () => {
+  const result = redactAiMailInput('Card number: 123456789012345')
+  assert.doesNotMatch(result, /123456789012345/)
+  assert.match(result, /\[FINANCIAL ID\]/)
+})
+
+test('redaction consumes bare host queries and ports as complete links before token masks', () => {
+  const result = redactAiMailInput(
+    'example.test?token=demo-secret example.test:8443/path?token=port-secret'
+  )
+  assert.doesNotMatch(result, /example\.test|demo-secret|8443|port-secret/)
+  assert.equal((result.match(/\[LINK\]/g) ?? []).length, 2)
+})
+
+test('redaction recognizes JWT-like segments before bare-host matching', () => {
+  const token = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjo0Mn0.signature_part_123'
+  const result = redactAiMailInput(`https://auth.example.test/${token}`)
+  assert.doesNotMatch(result, /eyJ|user_x5F|signature_part_123/)
+  assert.match(result, /\[LINK\]/)
+})
+
+test('redaction preserves explicitly labeled 16-digit order and waybill identifiers', () => {
+  const input = 'Order number: 1234567890123456; waybill: 9876543210987654'
+  assert.equal(redactAiMailInput(input), input)
+})
+
+test('redaction masks quoted multiword passwords and Korean OTPs with particles', () => {
+  const result = redactAiMailInput(
+    'password: "correct horse battery staple" 인증번호는 123456입니다'
+  )
+  assert.doesNotMatch(result, /correct horse battery staple|123456/)
+  assert.equal((result.match(/\[PASSWORD\]/g) ?? []).length, 1)
+  assert.equal((result.match(/\[AUTH CODE\]/g) ?? []).length, 1)
+})
+
+test('redaction masks short-header JWTs even when a bare domain matcher is active', () => {
+  const token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'
+  const result = redactAiMailInput(`Token ${token} example.test`)
+  assert.doesNotMatch(result, /eyJhbGci|eyJzdWIi|\.sig/)
+  assert.equal(result, 'Token [TOKEN] [LINK]')
+})
+
+test('redaction masks a complete multi-label URL and its sensitive suffix', () => {
+  const result = redactAiMailInput('https://docs.team.example/path?token=synthetic')
+  assert.equal(result, '[LINK]')
+  assert.doesNotMatch(result, /docs\.team\.example|synthetic/)
+})
+
+test('redaction masks scheme-less IPv4 links with ports, paths and queries', () => {
+  const result = redactAiMailInput('Visit 203.0.113.42:8443/path?token=synthetic')
+  assert.doesNotMatch(result, /203\.0\.113\.42|8443|synthetic/)
+})
+
+test('redaction masks case-insensitive Markdown reference definitions with custom destinations', () => {
+  const result = redactAiMailInput('[Portal]: custom://internal.example/private?key=synthetic')
+  assert.doesNotMatch(result, /internal\.example|synthetic|custom:/)
+  assert.match(result, /^\[Portal\]: \[LINK\]$/)
+  assert.equal(redactAiMailInput('[portal]: custom:private/path'), '[portal]: [LINK]')
 })
 
 test('invalid conversation identity is rejected before the provider sees the prompt', async () => {
