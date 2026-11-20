@@ -1159,6 +1159,8 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
       throw new Error('Request rejected')
     }
     const ownerIsAlive = (): boolean => dependencies.window() === owner && !owner.isDestroyed()
+    const wasActive = dependencies.requireAccountStore().getState().activeAccountId === accountId
+    let viewDisposed = false
     const result = await dependencies.requireAccountRemoval().remove(accountId, {
       ownerIsAlive,
       async confirm(): Promise<boolean> {
@@ -1178,7 +1180,10 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
         })
         return response.response === 1
       },
-      disposeView: (id) => viewManager.disposeAccount(id),
+      async disposeView(id): Promise<void> {
+        await viewManager.disposeAccount(id)
+        viewDisposed = true
+      },
       activate: (id) => {
         dependencies.composeTarget()?.onAccountSwitch()
         if (!ownerIsAlive()) return
@@ -1200,6 +1205,18 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     }
     if (result.outcome === 'failed' && ownerIsAlive()) {
       owner.webContents.send(ACCOUNT_VIEW_STATUS_EVENT, { accountId, status: 'error' })
+      if (
+        viewDisposed &&
+        wasActive &&
+        result.state.accounts.some((account) => account.id === accountId) &&
+        result.state.activeAccountId === accountId
+      ) {
+        try {
+          viewManager.activate(accountId)
+        } catch {
+          // Preserve the cleanup failure status if the account view cannot be restored.
+        }
+      }
     }
     return result
   })

@@ -113,6 +113,126 @@ function invokeEvent(owner, sender = owner.webContents) {
   return { sender, senderFrame: frame }
 }
 
+test('failed account removal restores only the still-active account view', async (t) => {
+  await t.test('active account view is recreated and cleanup error is reported', async () => {
+    const statuses = []
+    const activations = []
+    const { owner } = fixture({
+      views: () => ({
+        disposeAccount: async () => undefined,
+        activate: (id) => {
+          activations.push(id)
+          statuses.push(['hantong:account-view-status', { accountId: id, status: 'loading' }])
+        },
+        forgetLogoutLock: () => undefined
+      }),
+      requireAccountRemoval: () => ({
+        isBusy: () => false,
+        assertIdle: () => undefined,
+        remove: async (id, context) => {
+          await context.disposeView(id)
+          return {
+            outcome: 'failed',
+            state: { accounts: [{ id: accountId }], activeAccountId: accountId }
+          }
+        }
+      })
+    })
+    owner.webContents.send = (...args) => statuses.push(args)
+
+    await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+    assert.deepEqual(activations, [accountId])
+    assert.deepEqual(JSON.parse(JSON.stringify(statuses)), [
+      ['hantong:account-view-status', { accountId, status: 'error' }],
+      ['hantong:account-view-status', { accountId, status: 'loading' }]
+    ])
+  })
+
+  await t.test('inactive account cleanup failure does not switch the current view', async () => {
+    const activations = []
+    const { owner } = fixture({
+      requireAccountStore: () => ({
+        getState: () => ({
+          accounts: [{ id: accountId }, { id: '660e8400-e29b-41d4-a716-446655440000' }],
+          activeAccountId: '660e8400-e29b-41d4-a716-446655440000'
+        })
+      }),
+      views: () => ({
+        disposeAccount: async () => undefined,
+        activate: (id) => activations.push(id)
+      }),
+      requireAccountRemoval: () => ({
+        isBusy: () => false,
+        assertIdle: () => undefined,
+        remove: async (id, context) => {
+          await context.disposeView(id)
+          return {
+            outcome: 'failed',
+            state: {
+              accounts: [{ id: accountId }, { id: '660e8400-e29b-41d4-a716-446655440000' }],
+              activeAccountId: '660e8400-e29b-41d4-a716-446655440000'
+            }
+          }
+        }
+      })
+    })
+
+    await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+    assert.deepEqual(activations, [])
+  })
+
+  await t.test('closed owner does not restore the view or receive status', async () => {
+    const activations = []
+    const statuses = []
+    const { owner } = fixture({
+      views: () => ({
+        disposeAccount: async () => undefined,
+        activate: (id) => activations.push(id)
+      }),
+      requireAccountRemoval: () => ({
+        isBusy: () => false,
+        assertIdle: () => undefined,
+        remove: async (id, context) => {
+          await context.disposeView(id)
+          owner.destroyed = true
+          return {
+            outcome: 'failed',
+            state: { accounts: [{ id: accountId }], activeAccountId: accountId }
+          }
+        }
+      })
+    })
+    owner.isDestroyed = () => owner.destroyed === true
+    owner.webContents.send = (...args) => statuses.push(args)
+
+    await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+    assert.deepEqual(activations, [])
+    assert.deepEqual(statuses, [])
+  })
+})
+
+test('failed account removal before view disposal does not recreate the account view', async () => {
+  const activations = []
+  const { owner } = fixture({
+    views: () => ({ activate: (id) => activations.push(id) }),
+    requireAccountRemoval: () => ({
+      isBusy: () => false,
+      assertIdle: () => undefined,
+      remove: async () => ({
+        outcome: 'failed',
+        state: { accounts: [{ id: accountId }], activeAccountId: accountId }
+      })
+    })
+  })
+
+  await handlers.get('hantong:accounts-remove')(invokeEvent(owner), accountId)
+
+  assert.deepEqual(activations, [])
+})
+
 test('provider model IPC is owner-frame only and Codex returns the live catalog contract', async () => {
   const { owner } = fixture()
   const event = invokeEvent(owner)
