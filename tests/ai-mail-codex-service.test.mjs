@@ -685,6 +685,7 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
   toolFeatures.push('unified_exec')
   toolFeatures.push('skip_host_skill_discovery')
   let finishTurn
+  let captureInput
   let nextDelta = '한국어 답변'
   let interruptBehavior = 'ack'
   let deferTurnStart = false
@@ -716,6 +717,7 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
       }
     if (packet.method === 'turn/start') {
       result = { turn: { id: 'turn_safe' } }
+      if (captureInput) captureInput(packet.params.input[0].text)
       if (deferTurnStart) {
         deferTurnStart = false
         deferredTurnStartId = packet.id
@@ -762,7 +764,15 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
   })
   await service.connect()
   await new Promise((resolve) => setTimeout(resolve, 20))
-  const generation = service.generate(request)
+  let capturedInput
+  captureInput = (value) => {
+    capturedInput = value
+  }
+  const generation = service.generate({
+    ...request,
+    prompt: 'Mail to ada@example.test https://example.test/?token=abc123',
+    followUp: 'Use recovery code: 987654 and reply to followup@example.test'
+  })
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(
     spawned[0].writes.some((packet) => packet.method === 'turn/start'),
@@ -774,6 +784,10 @@ test('verified synthetic policy permits bounded app-server turns and fences canc
     text: '한국어 답변',
     usage: { inputTokens: 12, outputTokens: 4 }
   })
+  assert.doesNotMatch(capturedInput, /ada@example\.test|abc123|987654|followup@example\.test/)
+  assert.match(capturedInput, /\[EMAIL\]/)
+  assert.match(capturedInput, /\[LINK\]/)
+  captureInput = undefined
   deferTurnStart = true
   const pending = service.generate({ ...request, requestId: 'request_cancel', generation: 2 })
   for (let attempt = 0; attempt < 50 && deferredTurnStartId === undefined; attempt += 1)

@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import type { CodexGenerationRequest, CodexGenerationResult } from '~/shared/ipc'
 import type { AppServerTransport } from './app-server-transport'
 import { AppServerRpcError } from './app-server-transport'
+import { redactAiMailInput } from '../redact-ai-mail-input'
 
 const MAX_GENERATION_OUTPUT_BYTES = 20_000
 const INTERRUPT_TIMEOUT_MS = 1_000
@@ -323,9 +324,14 @@ export function createGenerationController(options: ControllerOptions): {
         processState.threads.set(key, threadId)
         conversationByCompose.set(request.composeId, request.accountId)
       }
-      const inputText = request.followUp
-        ? `${request.prompt}\n\n${request.followUp}`
-        : request.prompt
+      let inputText: string
+      try {
+        inputText = redactAiMailInput(
+          request.followUp ? `${request.prompt}\n\n${request.followUp}` : request.prompt
+        )
+      } catch {
+        return { ok: false, error: 'failed', reason: 'input_redaction_failed' }
+      }
       const resultPromise = new Promise<CodexGenerationResult>((resolvePromise) => {
         let resolveTurnStart!: (turnId?: string) => void
         const turnStartReady = new Promise<string | undefined>((resolve) => {
