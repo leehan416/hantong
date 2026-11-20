@@ -1,3 +1,5 @@
+import type { ComposeStructureSummary } from '../shared/ipc'
+
 export type MainDiagnosticType =
   | 'gmail.load.failure'
   | 'gmail.load.timeout'
@@ -25,6 +27,7 @@ export type MainDiagnosticType =
   | 'unread.applied'
   | 'unread.stale'
   | 'login.launch'
+  | 'ai_mail.compose'
 
 export type MainDiagnosticEvent =
   | { readonly type: 'gmail.load.failure'; readonly accountId: string; readonly errorCode?: number }
@@ -117,6 +120,26 @@ export type MainDiagnosticEvent =
   | { readonly type: 'unread.applied'; readonly accountId: string; readonly count: number }
   | { readonly type: 'unread.stale'; readonly accountId: string }
   | LoginLaunchDiagnosticEvent
+  | {
+      readonly type: 'ai_mail.compose'
+      readonly accountId: string
+      readonly correlationId: string
+      readonly stage:
+        'review_click' | 'fresh_status' | 'target_selection' | 'cover' | 'apply' | 'conflict'
+      readonly outcome:
+        'started' | 'ready' | 'none' | 'stale' | 'unsupported' | 'failure' | 'applied'
+      readonly candidateCount?: number
+      readonly discovery?: {
+        readonly editorCount: number
+        readonly candidateCount: number
+        readonly rejectedNoMatch: number
+        readonly rejectedNotVisible: number
+        readonly capacityEvictions: number
+        readonly structure?: ComposeStructureSummary
+      }
+      readonly reason?:
+        'no_candidate' | 'multiple_candidates' | 'stale_target' | 'unsupported_content' | 'failed'
+    }
 
 export interface LoginLaunchDiagnosticEvent {
   readonly type: 'login.launch'
@@ -223,6 +246,11 @@ export interface MainDiagnosticRecord {
     | 'skipped'
     | 'mismatch'
     | 'returned'
+    | 'ready'
+    | 'none'
+    | 'stale'
+    | 'unsupported'
+    | 'applied'
   readonly code?: RelayDiagnosticCode | OAuthDiagnosticCode
   readonly errorCode?: number
   readonly context?: 'main' | 'popup'
@@ -234,6 +262,11 @@ export interface MainDiagnosticRecord {
     | 'oauth_endpoint'
     | 'unsafe_url'
     | 'mail_access_denied'
+    | 'no_candidate'
+    | 'multiple_candidates'
+    | 'stale_target'
+    | 'unsupported_content'
+    | 'failed'
   readonly source?: 'redirect' | 'navigation' | 'popup' | 'external_open_failure'
   readonly kind?: 'baseline' | 'changes'
   readonly expiresAt?: number
@@ -241,6 +274,15 @@ export interface MainDiagnosticRecord {
   readonly count?: number
   readonly stage?: string
   readonly operation?: 'startup_read' | 'read' | 'set' | 'readback'
+  readonly correlationId?: string
+  readonly candidateCount?: number
+  readonly discovery?: {
+    readonly editorCount: number
+    readonly candidateCount: number
+    readonly rejectedNoMatch: number
+    readonly rejectedNotVisible: number
+    readonly capacityEvictions: number
+  }
   readonly requestedEnabled?: boolean
   readonly openAtLogin?: boolean
   readonly status?:

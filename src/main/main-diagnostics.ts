@@ -135,6 +135,18 @@ export function createMainDiagnostics(options: MainDiagnosticsOptions): {
           ...(event.status !== undefined ? { status: event.status } : {}),
           outcome: event.outcome
         }
+      case 'ai_mail.compose':
+        return {
+          at,
+          type: event.type,
+          ...(account ? { account } : {}),
+          correlationId: event.correlationId,
+          stage: event.stage,
+          outcome: event.outcome,
+          ...(event.candidateCount !== undefined ? { candidateCount: event.candidateCount } : {}),
+          ...(event.discovery ? { discovery: event.discovery } : {}),
+          ...(event.reason ? { reason: event.reason } : {})
+        }
       default:
         return { at, type: event.type, ...(account ? { account } : {}) }
     }

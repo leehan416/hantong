@@ -7,6 +7,7 @@ import type {
   AiMailComposeUndoRequest,
   ComposeCandidate,
   ComposeCandidateSelectionRequest,
+  ComposeDiscoverySummary,
   ComposeSnapshotResult,
   ComposeTargetStatus
 } from '../shared/ipc'
@@ -41,6 +42,7 @@ interface PageResult {
     lastUsedAt: number
   }>
   unsupported?: boolean
+  discovery?: ComposeDiscoverySummary
   snapshot: {
     subject: string
     recipients: string[]
@@ -76,16 +78,22 @@ export function gmailComposeTargetPageSource(documentId: string): string {
     const lastUsedAt = new Map();
     let sequence = 0;
     let selected = null;
+    let lastFocusedEditor = null;
     let discoveryBaselineComplete = false;
     const candidateFor = (node) => {
       if (!(node instanceof Element)) return null;
       const editor = node.matches('[contenteditable="true"]') ? node : node.closest('[contenteditable="true"]');
       let root = editor || node;
-      for (let depth = 0; root && depth < 12; depth += 1, root = root.parentElement) {
+      // Gmail's compose puts the subject box more than 12 levels above the body editor.
+      // The one-editor / at-most-one-subject checks below keep a deeper walk from
+      // spanning a second compose or another editable.
+      for (let depth = 0; root && depth < 32; depth += 1, root = root.parentElement) {
         const editors = Array.from(root.querySelectorAll('[contenteditable="true"]'));
         const subjects = Array.from(root.querySelectorAll('input[name="subjectbox"]'));
         if (editors.length !== 1 || (editor && editors[0] !== editor) || subjects.length > 1) continue;
-        if (subjects.length === 1 && subjects[0] instanceof HTMLInputElement) return { root, editor: editors[0], subject: subjects[0] };
+        // Inline replies keep a hidden subjectbox; treat it like a reply (no editable subject)
+        // instead of rejecting the whole compose as not visible.
+        if (subjects.length === 1 && subjects[0] instanceof HTMLInputElement) return { root, editor: editors[0], subject: eligible(subjects[0]) ? subjects[0] : null };
         const replyMarker = root.querySelector('button[aria-label*="Reply"], [role="button"][aria-label*="Reply"], button[data-tooltip*="Reply"], [role="button"][data-tooltip*="Reply"], button[aria-label*="답장"], [role="button"][aria-label*="답장"], button[data-tooltip*="답장"], [role="button"][data-tooltip*="답장"]');
         if (replyMarker) {
           let editorBranch = editors[0];
@@ -118,6 +126,11 @@ export function gmailComposeTargetPageSource(documentId: string): string {
     };
     const remember = (event) => {
       const item = candidateFor(event.target);
+      const eventNode = event.target;
+      if (eventNode instanceof Element) {
+        const focusedEditor = eventNode.matches('[contenteditable="true"]') ? eventNode : eventNode.closest('[contenteditable="true"]');
+        if (focusedEditor) lastFocusedEditor = focusedEditor;
+      }
       if (!item) {
         const node = event.target;
         if (node instanceof Element && (node.matches('[contenteditable="true"]') || node.closest('[contenteditable="true"]'))) selected = 'unsupported';
@@ -156,6 +169,39 @@ export function gmailComposeTargetPageSource(documentId: string): string {
       }
       return true;
     };
+    const structureSummary = () => {
+      const editors = Array.from(document.querySelectorAll('[contenteditable="true"]'));
+      const subjects = Array.from(document.querySelectorAll('input[name="subjectbox"]'));
+      const active = document.activeElement;
+      const activeEditor = active instanceof Element ? (active.matches('[contenteditable="true"]') ? active : active.closest('[contenteditable="true"]')) : null;
+      const editor = activeEditor && activeEditor.isConnected ? activeEditor : (lastFocusedEditor?.isConnected ? lastFocusedEditor : null);
+      const root = editor || document.body || document.documentElement;
+      const replySelectors = 'button[aria-label*="Reply"], [role="button"][aria-label*="Reply"], button[data-tooltip*="Reply"], [role="button"][data-tooltip*="Reply"], button[aria-label*="답장"], [role="button"][aria-label*="답장"], button[data-tooltip*="답장"], [role="button"][data-tooltip*="답장"]';
+      const branchMatch = (ancestor) => {
+        if (!editor || !ancestor) return { match: false, shared: false };
+        const markers = Array.from(ancestor.querySelectorAll(replySelectors));
+        for (const marker of markers) {
+          let editorBranch = editor;
+          while (editorBranch && editorBranch.parentElement !== ancestor) editorBranch = editorBranch.parentElement;
+          let markerBranch = marker;
+          while (markerBranch && markerBranch.parentElement !== ancestor) markerBranch = markerBranch.parentElement;
+          if (editorBranch && editorBranch === markerBranch) return { match: true, shared: true };
+        }
+        return { match: markers.length > 0, shared: false };
+      };
+      const validity = subjects.slice(0, 12).filter((item) => item instanceof HTMLInputElement).map((item) => {
+        const state = item.validity;
+        return { valid: state.valid, willValidate: item.willValidate, valueMissing: state.valueMissing, typeMismatch: state.typeMismatch, patternMismatch: state.patternMismatch, tooLong: state.tooLong, tooShort: state.tooShort, rangeUnderflow: state.rangeUnderflow, rangeOverflow: state.rangeOverflow, stepMismatch: state.stepMismatch, badInput: state.badInput, customError: state.customError };
+      });
+      const ancestors = [];
+      for (let node = root, depth = 0; node && depth < 12; node = node.parentElement, depth += 1) {
+        const branch = branchMatch(node);
+        const tag = node === document ? 'document' : node.tagName === 'FORM' ? 'form' : node.tagName === 'INPUT' ? 'input' : ['BODY', 'HTML', 'DIV', 'TABLE', 'SECTION', 'MAIN'].includes(node.tagName) ? 'container' : 'other';
+        ancestors.push({ depth, tag, childCount: Math.min(node.children?.length || 0, 1000), editableCount: Math.min(node.querySelectorAll?.('[contenteditable="true"]').length || 0, 1000), subjectBoxCount: Math.min(node.querySelectorAll?.('input[name="subjectbox"]').length || 0, 1000), replyMarkerCount: Math.min(node.querySelectorAll?.(replySelectors).length || 0, 1000), visible: eligible(node), replyMarkerMatch: branch.match, sharedBranch: branch.shared });
+      }
+      const match = branchMatch(root);
+      return { editableCount: Math.min(editors.length, 1000), subjectBoxCount: Math.min(subjects.length, 1000), focusedEditable: Boolean(editor && eligible(editor)), replyMarkerMatch: match.match, sharedBranch: match.shared, subjectValidity: validity, ancestors };
+    };
     const describe = (id) => {
       const item = targets.get(id);
       if (!item || !eligible(item.root) || !eligible(item.editor) || (item.subject && !eligible(item.subject))) return null;
@@ -169,21 +215,50 @@ export function gmailComposeTargetPageSource(documentId: string): string {
       const title = item.root.querySelector('[aria-label]')?.getAttribute('aria-label') || subject || recipients[0] || 'New message';
       return { targetId: id, title: String(title).slice(0, 160), subject, recipients, supported: !unsupported, lastUsedAt: lastUsedAt.get(id) || 0 };
     };
+    let discovery = { editorCount: 0, candidateCount: 0, rejectedNoMatch: 0, rejectedNotVisible: 0, capacityEvictions: 0 };
     const discoverOpenComposes = () => {
       if (typeof document.querySelectorAll !== 'function') return;
       const candidates = new Map();
-      for (const editor of document.querySelectorAll('[contenteditable="true"]')) {
-        if (!(editor instanceof Element)) continue;
+      const editors = Array.from(document.querySelectorAll('[contenteditable="true"]'));
+      let rejectedNoMatch = 0;
+      let rejectedNotVisible = 0;
+      let capacityEvictions = 0;
+      for (const editor of editors) {
+        if (!(editor instanceof Element)) {
+          rejectedNoMatch += 1;
+          continue;
+        }
         const item = candidateFor(editor);
-        if (!item || !eligible(item.root) || !eligible(editor) || (item.subject && !eligible(item.subject))) continue;
+        if (!item) {
+          rejectedNoMatch += 1;
+          continue;
+        }
+        if (!eligible(item.root) || !eligible(editor) || (item.subject && !eligible(item.subject))) {
+          rejectedNotVisible += 1;
+          continue;
+        }
         candidates.set(item.editor, item);
       }
       const newlyDiscoveredIds = [];
       for (const item of candidates.values()) {
         const hadIdentity = ids.has(item.editor);
+        const existingId = ids.get(item.editor);
+        if (
+          (existingId && !targets.has(existingId)) ||
+          (!hadIdentity && targets.size >= 32)
+        )
+          capacityEvictions += 1;
         const id = rememberTarget(item);
         if (id && discoveryBaselineComplete && !hadIdentity) newlyDiscoveredIds.push(id);
       }
+      discovery = {
+        editorCount: Math.min(editors.length, 1000),
+        candidateCount: Math.min(candidates.size, 1000),
+        rejectedNoMatch: Math.min(rejectedNoMatch, 1000),
+        rejectedNotVisible: Math.min(rejectedNotVisible, 1000),
+        capacityEvictions: Math.min(capacityEvictions, 1000),
+        structure: structureSummary()
+      };
       if (!discoveryBaselineComplete) {
         discoveryBaselineComplete = true;
       } else if (newlyDiscoveredIds.length) {
@@ -229,7 +304,7 @@ export function gmailComposeTargetPageSource(documentId: string): string {
           snapshot = selected ? inspect(selected) : null;
         }
         discoverOpenComposes();
-        return { targetId: snapshot ? selected : null, snapshot, targets: Array.from(targets.keys()).map(describe).filter(Boolean).sort((a, b) => b.lastUsedAt - a.lastUsedAt) };
+        return { targetId: snapshot ? selected : null, snapshot, targets: Array.from(targets.keys()).map(describe).filter(Boolean).sort((a, b) => b.lastUsedAt - a.lastUsedAt), discovery };
       },
       listTargets() {
         if (!active) return [];
@@ -291,6 +366,30 @@ function execute(contents: WebContents, code: string): Promise<unknown> {
 function validPageResult(value: unknown): value is PageResult {
   if (!value || typeof value !== 'object') return false
   const result = value as Record<string, unknown>
+  if (result.discovery !== undefined) {
+    if (!result.discovery || typeof result.discovery !== 'object') return false
+    const discovery = result.discovery as Record<string, unknown>
+    const fields = [
+      'editorCount',
+      'candidateCount',
+      'rejectedNoMatch',
+      'rejectedNotVisible',
+      'capacityEvictions'
+    ]
+    if (
+      fields.some((field) => !(field in discovery)) ||
+      Object.keys(discovery).some((field) => ![...fields, 'structure'].includes(field)) ||
+      fields.some(
+        (field) =>
+          !Number.isSafeInteger(discovery[field]) ||
+          Number(discovery[field]) < 0 ||
+          Number(discovery[field]) > 1000
+      )
+    )
+      return false
+    if (discovery.structure !== undefined && !validStructureSummary(discovery.structure))
+      return false
+  }
   const validCandidates =
     result.targets === undefined ||
     (Array.isArray(result.targets) &&
@@ -337,6 +436,80 @@ function validPageResult(value: unknown): value is PageResult {
     typeof snapshot.body === 'string' &&
     snapshot.body.length <= MAX_BODY_LENGTH &&
     typeof snapshot.supported === 'boolean'
+  )
+}
+
+function validStructureSummary(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  const bools = ['focusedEditable', 'replyMarkerMatch', 'sharedBranch']
+  const counts = ['editableCount', 'subjectBoxCount']
+  const validityFields = [
+    'valid',
+    'willValidate',
+    'valueMissing',
+    'typeMismatch',
+    'patternMismatch',
+    'tooLong',
+    'tooShort',
+    'rangeUnderflow',
+    'rangeOverflow',
+    'stepMismatch',
+    'badInput',
+    'customError'
+  ]
+  const ancestorFields = [
+    'depth',
+    'tag',
+    'childCount',
+    'editableCount',
+    'subjectBoxCount',
+    'replyMarkerCount',
+    'visible',
+    'replyMarkerMatch',
+    'sharedBranch'
+  ]
+  return (
+    Object.keys(item).length === 7 &&
+    bools.every((key) => typeof item[key] === 'boolean') &&
+    counts.every(
+      (key) =>
+        Number.isSafeInteger(item[key]) && Number(item[key]) >= 0 && Number(item[key]) <= 1000
+    ) &&
+    Array.isArray(item.subjectValidity) &&
+    item.subjectValidity.length <= 12 &&
+    item.subjectValidity.every((entry) =>
+      Boolean(
+        entry &&
+        typeof entry === 'object' &&
+        !Array.isArray(entry) &&
+        Object.keys(entry).length === validityFields.length &&
+        validityFields.every((key) => typeof (entry as Record<string, unknown>)[key] === 'boolean')
+      )
+    ) &&
+    Array.isArray(item.ancestors) &&
+    item.ancestors.length <= 12 &&
+    item.ancestors.every((entry, index) =>
+      Boolean(
+        entry &&
+        typeof entry === 'object' &&
+        !Array.isArray(entry) &&
+        Object.keys(entry).length === ancestorFields.length &&
+        Number((entry as Record<string, unknown>).depth) === index &&
+        ['document', 'container', 'form', 'input', 'other'].includes(
+          String((entry as Record<string, unknown>).tag)
+        ) &&
+        ['childCount', 'editableCount', 'subjectBoxCount', 'replyMarkerCount'].every(
+          (key) =>
+            Number.isSafeInteger((entry as Record<string, unknown>)[key]) &&
+            Number((entry as Record<string, unknown>)[key]) >= 0 &&
+            Number((entry as Record<string, unknown>)[key]) <= 1000
+        ) &&
+        ['visible', 'replyMarkerMatch', 'sharedBranch'].every(
+          (key) => typeof (entry as Record<string, unknown>)[key] === 'boolean'
+        )
+      )
+    )
   )
 }
 
@@ -593,10 +766,15 @@ export function createGmailComposeTargetService(options: {
         return {
           status: 'unsupported',
           code: 'unsupported_content',
-          ...(captured.result ? { candidates: candidatesFor(captured.result) } : {})
+          ...(captured.result ? { candidates: candidatesFor(captured.result) } : {}),
+          ...(captured.result?.discovery ? { discovery: captured.result.discovery } : {})
         }
       if (captured.status === 'none') {
-        return { status: 'none', candidates: candidatesFor(captured.result) }
+        return {
+          status: 'none',
+          candidates: candidatesFor(captured.result),
+          ...(captured.result?.discovery ? { discovery: captured.result.discovery } : {})
+        }
       }
       return { status: captured.status }
     }
@@ -631,7 +809,12 @@ export function createGmailComposeTargetService(options: {
       probeDocumentId: documentId ?? ''
     }
     if (!snapshot) {
-      const status = { status: 'ready' as const, ...metadata, candidates }
+      const status = {
+        status: 'ready' as const,
+        ...metadata,
+        candidates,
+        ...(capturedResult.discovery ? { discovery: capturedResult.discovery } : {})
+      }
       resultLeases.set(status, lease)
       return status
     }
@@ -645,7 +828,8 @@ export function createGmailComposeTargetService(options: {
       recipients: metadata.recipients,
       subject: metadata.subject,
       body: capturedResult.snapshot.body,
-      candidates
+      candidates,
+      ...(capturedResult.discovery ? { discovery: capturedResult.discovery } : {})
     }
     resultLeases.set(snapshotResult, lease)
     snapshotLeases.set(snapshotResult.snapshotId, {

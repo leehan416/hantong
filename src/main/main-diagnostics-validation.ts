@@ -38,6 +38,72 @@ export function safeOutcome(value: unknown): 'success' | 'failure' | 'retry' | '
     : 'failure'
 }
 
+export function validComposeStructureSummary(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  const booleans = ['focusedEditable', 'replyMarkerMatch', 'sharedBranch']
+  const validityFields = [
+    'valid',
+    'willValidate',
+    'valueMissing',
+    'typeMismatch',
+    'patternMismatch',
+    'tooLong',
+    'tooShort',
+    'rangeUnderflow',
+    'rangeOverflow',
+    'stepMismatch',
+    'badInput',
+    'customError'
+  ]
+  const ancestorFields = [
+    'depth',
+    'tag',
+    'childCount',
+    'editableCount',
+    'subjectBoxCount',
+    'replyMarkerCount',
+    'visible',
+    'replyMarkerMatch',
+    'sharedBranch'
+  ]
+  const countValid = (candidate: unknown): boolean =>
+    Number.isSafeInteger(candidate) && Number(candidate) >= 0 && Number(candidate) <= 1000
+  return (
+    Object.keys(item).length === 7 &&
+    booleans.every((key) => typeof item[key] === 'boolean') &&
+    ['editableCount', 'subjectBoxCount'].every((key) => countValid(item[key])) &&
+    Array.isArray(item.subjectValidity) &&
+    item.subjectValidity.length <= 12 &&
+    item.subjectValidity.every((entry) =>
+      Boolean(
+        entry &&
+        typeof entry === 'object' &&
+        !Array.isArray(entry) &&
+        Object.keys(entry).length === validityFields.length &&
+        validityFields.every((key) => typeof (entry as Record<string, unknown>)[key] === 'boolean')
+      )
+    ) &&
+    Array.isArray(item.ancestors) &&
+    item.ancestors.length <= 12 &&
+    item.ancestors.every((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+      const ancestor = entry as Record<string, unknown>
+      return (
+        Object.keys(ancestor).length === ancestorFields.length &&
+        ancestor.depth === index &&
+        ['document', 'container', 'form', 'input', 'other'].includes(String(ancestor.tag)) &&
+        ['childCount', 'editableCount', 'subjectBoxCount', 'replyMarkerCount'].every((key) =>
+          countValid(ancestor[key])
+        ) &&
+        ['visible', 'replyMarkerMatch', 'sharedBranch'].every(
+          (key) => typeof ancestor[key] === 'boolean'
+        )
+      )
+    })
+  )
+}
+
 export function isEvent(value: unknown): value is MainDiagnosticEvent {
   if (typeof value !== 'object' || value === null || !('type' in value)) return false
   const event = value as {
@@ -61,6 +127,9 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     requestedEnabled?: unknown
     openAtLogin?: unknown
     status?: unknown
+    correlationId?: unknown
+    candidateCount?: unknown
+    discovery?: unknown
   }
   const types: readonly string[] = [
     'gmail.load.failure',
@@ -88,9 +157,67 @@ export function isEvent(value: unknown): value is MainDiagnosticEvent {
     'unread.failure',
     'unread.applied',
     'unread.stale',
-    'login.launch'
+    'login.launch',
+    'ai_mail.compose'
   ]
   if (typeof event.type !== 'string' || !types.includes(event.type)) return false
+  if (
+    event.type === 'ai_mail.compose' &&
+    (typeof event.correlationId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        event.correlationId
+      ) ||
+      typeof event.stage !== 'string' ||
+      !['review_click', 'fresh_status', 'target_selection', 'cover', 'apply', 'conflict'].includes(
+        event.stage
+      ) ||
+      typeof event.outcome !== 'string' ||
+      !['started', 'ready', 'none', 'stale', 'unsupported', 'failure', 'applied'].includes(
+        event.outcome
+      ) ||
+      (event.candidateCount !== undefined &&
+        (!Number.isSafeInteger(event.candidateCount) ||
+          Number(event.candidateCount) < 0 ||
+          Number(event.candidateCount) > 33)) ||
+      (event.discovery !== undefined &&
+        (!event.discovery ||
+          typeof event.discovery !== 'object' ||
+          Array.isArray(event.discovery) ||
+          Object.keys(event.discovery).some(
+            (key) =>
+              ![
+                'editorCount',
+                'candidateCount',
+                'rejectedNoMatch',
+                'rejectedNotVisible',
+                'capacityEvictions',
+                'structure'
+              ].includes(key)
+          ) ||
+          ![
+            'editorCount',
+            'candidateCount',
+            'rejectedNoMatch',
+            'rejectedNotVisible',
+            'capacityEvictions'
+          ].every((key) => {
+            const count = (event.discovery as Record<string, unknown>)[key]
+            return Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1000
+          }) ||
+          ((event.discovery as Record<string, unknown>).structure !== undefined &&
+            !validComposeStructureSummary(
+              (event.discovery as Record<string, unknown>).structure
+            )))) ||
+      (event.reason !== undefined &&
+        ![
+          'no_candidate',
+          'multiple_candidates',
+          'stale_target',
+          'unsupported_content',
+          'failed'
+        ].includes(String(event.reason))))
+  )
+    return false
   if (
     event.type === 'login.launch' &&
     (typeof event.operation !== 'string' ||

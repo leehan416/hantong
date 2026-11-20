@@ -58,6 +58,7 @@ export const AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL = 'hantong:ai-mail-read-snaps
 export const AI_MAIL_SUBJECT_APPLY_CHANNEL = 'hantong:ai-mail-subject-apply'
 export const AI_MAIL_SUBJECT_UNDO_CHANNEL = 'hantong:ai-mail-subject-undo'
 export const AI_MAIL_COMPOSE_TARGET_EVENT = 'hantong:ai-mail-compose-target-change'
+export const AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL = 'hantong:ai-mail-compose-diagnostic'
 export const NOTIFICATION_CONNECTIONS_CHANNEL = 'hantong:notification-connections-get'
 export const NOTIFICATION_CONNECTIONS_EVENT = 'hantong:notification-connections-change'
 export const NOTIFICATION_RECOVER_CHANNEL = 'hantong:notification-recover'
@@ -131,12 +132,59 @@ export interface ComposeCandidate {
   lastUsedAt: number
 }
 
+export interface ComposeDiscoverySummary {
+  editorCount: number
+  candidateCount: number
+  rejectedNoMatch: number
+  rejectedNotVisible: number
+  capacityEvictions: number
+  structure?: ComposeStructureSummary
+}
+
+export interface ComposeStructureSummary {
+  editableCount: number
+  subjectBoxCount: number
+  focusedEditable: boolean
+  replyMarkerMatch: boolean
+  sharedBranch: boolean
+  subjectValidity: Array<{
+    valid: boolean
+    willValidate: boolean
+    valueMissing: boolean
+    typeMismatch: boolean
+    patternMismatch: boolean
+    tooLong: boolean
+    tooShort: boolean
+    rangeUnderflow: boolean
+    rangeOverflow: boolean
+    stepMismatch: boolean
+    badInput: boolean
+    customError: boolean
+  }>
+  ancestors: Array<{
+    depth: number
+    tag: 'document' | 'container' | 'form' | 'input' | 'other'
+    childCount: number
+    editableCount: number
+    subjectBoxCount: number
+    replyMarkerCount: number
+    visible: boolean
+    replyMarkerMatch: boolean
+    sharedBranch: boolean
+  }>
+}
+
 export type ComposeTargetStatus =
-  | { status: 'none' | 'stale' | 'access_locked'; candidates?: ComposeCandidate[] }
+  | {
+      status: 'none' | 'stale' | 'access_locked'
+      candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
+    }
   | {
       status: 'unsupported'
       code: 'unsupported_compose' | 'unsupported_content' | 'unsupported_read_mail'
       candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
   | {
       status: 'ready'
@@ -146,14 +194,20 @@ export type ComposeTargetStatus =
       recipients: string[]
       subject: string
       candidates: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
 
 export type ComposeSnapshotResult =
-  | { status: 'none' | 'stale' | 'access_locked'; candidates?: ComposeCandidate[] }
+  | {
+      status: 'none' | 'stale' | 'access_locked'
+      candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
+    }
   | {
       status: 'unsupported'
       code: 'unsupported_compose' | 'unsupported_content' | 'unsupported_read_mail'
       candidates?: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
   | {
       status: 'ready'
@@ -166,11 +220,22 @@ export type ComposeSnapshotResult =
       recipients: string[]
       body: string
       candidates: ComposeCandidate[]
+      discovery?: ComposeDiscoverySummary
     }
 
 export interface ComposeCandidateSelectionRequest {
   accountId: string
   composeId: string
+}
+
+export type AiMailComposeDiagnostic = {
+  correlationId: string
+  stage: 'review_click' | 'fresh_status' | 'target_selection' | 'cover' | 'apply' | 'conflict'
+  outcome: 'started' | 'ready' | 'none' | 'stale' | 'unsupported' | 'failure' | 'applied'
+  candidateCount?: number
+  discovery?: ComposeDiscoverySummary
+  reason?:
+    'no_candidate' | 'multiple_candidates' | 'stale_target' | 'unsupported_content' | 'failed'
 }
 
 export interface AiMailComposeApplyRequest {
@@ -310,6 +375,7 @@ export interface HantongApi {
   applyAiMailDraft: (request: AiMailComposeApplyRequest) => Promise<AiMailComposeMutationResult>
   undoAiMailDraft: (request: AiMailComposeUndoRequest) => Promise<AiMailComposeMutationResult>
   onAiMailComposeTarget: (listener: (status: ComposeTargetStatus) => void) => () => void
+  recordAiMailComposeDiagnostic: (event: AiMailComposeDiagnostic) => Promise<void>
   getAiMailCodexStatus: () => Promise<CodexConnectionStatus>
   connectAiMailCodex: () => Promise<CodexConnectionStatus>
   disconnectAiMailCodex: () => Promise<CodexConnectionStatus>

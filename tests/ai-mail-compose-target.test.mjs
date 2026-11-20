@@ -203,7 +203,7 @@ function composeProbeFixture() {
       return this.matches(selector) ? this : (this.parentElement?.closest(selector) ?? null)
     }
     getClientRects() {
-      return this.isConnected ? [{ width: 120, height: 24 }] : []
+      return this.isConnected && this.visible !== false ? [{ width: 120, height: 24 }] : []
     }
     querySelectorAll(selector) {
       const matches = []
@@ -277,6 +277,19 @@ function composeProbeFixture() {
 
   return {
     probe: context.__hantongComposeTarget,
+    // Gmail nests the body editor more than 12 elements below the element it shares with
+    // the subject box (seen in live structure diagnostics).
+    addDeepCompose(label, depth) {
+      const root = new SyntheticElement('compose-root')
+      let parent = root
+      for (let level = 0; level < depth; level += 1) parent = new SyntheticElement('div', parent)
+      const editor = new SyntheticElement('[contenteditable="true"]', parent, 'Draft body')
+      const subject = new SyntheticInput('input[name="subjectbox"]', root)
+      subject.value = label
+      const item = { root, editor, subject }
+      composeItems.push(item)
+      return item
+    },
     addCompose(label) {
       const root = new SyntheticElement('compose-root')
       const editor = new SyntheticElement('[contenteditable="true"]', root, 'Draft body')
@@ -284,6 +297,16 @@ function composeProbeFixture() {
       subject.value = label
       const item = { root, editor, subject }
       composeItems.push(item)
+      return item
+    },
+    addUnmatchedEditor() {
+      const editor = new SyntheticElement('[contenteditable="true"]', null, 'Unmatched')
+      composeItems.push({ editor })
+      return editor
+    },
+    addHiddenCompose(label) {
+      const item = this.addCompose(label)
+      item.editor.visible = false
       return item
     },
     setNow(value) {
@@ -302,6 +325,65 @@ function composeProbeFixture() {
 }
 
 const plain = (value) => JSON.parse(JSON.stringify(value))
+
+test('an inline reply with Gmail hidden subject box is discovered without a subject', () => {
+  const fixture = composeProbeFixture()
+  const reply = fixture.addDeepCompose('Re: kept by Gmail', 20)
+  reply.subject.visible = false
+  const result = plain(fixture.probe.read())
+  assert.equal(result.discovery.candidateCount, 1)
+  assert.equal(result.discovery.rejectedNotVisible, 0)
+  assert.equal(result.targets.length, 1)
+  assert.equal(result.targets[0].subject, '')
+})
+
+test('a compose whose body sits deep below the subject box is still discovered', () => {
+  const fixture = composeProbeFixture()
+  fixture.addDeepCompose('Deep draft', 20)
+  const result = plain(fixture.probe.read())
+  assert.equal(result.discovery.candidateCount, 1)
+  assert.equal(result.discovery.rejectedNoMatch, 0)
+  assert.equal(result.targets.length, 1)
+})
+
+test('two deep composes stay separate targets', () => {
+  const fixture = composeProbeFixture()
+  fixture.addDeepCompose('First deep draft', 20)
+  fixture.addDeepCompose('Second deep draft', 20)
+  const result = plain(fixture.probe.read())
+  assert.equal(result.discovery.candidateCount, 2)
+  assert.equal(result.targets.length, 2)
+})
+
+test('DOM discovery reports bounded editor and fixed rejection counts without DOM content', () => {
+  const fixture = composeProbeFixture()
+  for (let index = 0; index < 33; index += 1) fixture.addCompose(`Draft ${index}`)
+  fixture.addHiddenCompose('Hidden draft')
+  fixture.addUnmatchedEditor()
+  const result = plain(fixture.probe.read())
+  const { structure, ...counts } = result.discovery
+  assert.deepEqual(counts, {
+    editorCount: 35,
+    candidateCount: 33,
+    rejectedNoMatch: 1,
+    rejectedNotVisible: 1,
+    capacityEvictions: 1
+  })
+  assert.doesNotMatch(JSON.stringify(counts), /Draft|Unmatched|subject|recipient|target-/i)
+  // Structure keys name DOM features (e.g. subjectBoxCount), so check its values instead:
+  // only counts, flags and the fixed tag categories may leave the page.
+  const leaves = (value) =>
+    value && typeof value === 'object' ? Object.values(value).flatMap(leaves) : [value]
+  assert.ok(structure && typeof structure === 'object')
+  for (const leaf of leaves(structure)) {
+    assert.ok(
+      typeof leaf === 'number' ||
+        typeof leaf === 'boolean' ||
+        ['document', 'container', 'form', 'input', 'other'].includes(leaf),
+      `unexpected structure value: ${String(leaf)}`
+    )
+  }
+})
 
 test('snapshot request returns only bounded current compose data and opaque identity', async () => {
   const f = fixture()
@@ -1506,7 +1588,18 @@ test('an unrelated reply marker in a shared ancestor cannot classify the editor 
   runInNewContext(gmailComposeTargetPageSource('synthetic-shared-ancestor'), context)
   listeners.get('click')({ target: editor })
   const result = context.__hantongComposeTarget.read()
-  assert.deepEqual(plain(result), { targetId: null, snapshot: null, targets: [] })
+  assert.deepEqual(plain(result), {
+    targetId: null,
+    snapshot: null,
+    targets: [],
+    discovery: {
+      editorCount: 0,
+      candidateCount: 0,
+      rejectedNoMatch: 0,
+      rejectedNotVisible: 0,
+      capacityEvictions: 0
+    }
+  })
 })
 
 test('snapshot IPC rejects a ready result whose Main target lease changed before delivery', async () => {

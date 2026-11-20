@@ -1,7 +1,7 @@
 import { app, dialog, ipcMain, nativeTheme, webContents, type BrowserWindow } from 'electron'
 import { isAccountColor, type AccountState } from '../shared/accounts'
 import type { AppSettingsPatch } from '../shared/settings'
-import type { AppInfo } from '../shared/ipc'
+import type { AiMailComposeDiagnostic, AppInfo } from '../shared/ipc'
 import type { createAccountStore } from './account-store'
 import type { createAccountRemovalController } from './account-removal'
 import type { createAccountViewManager } from './account-view-manager'
@@ -64,7 +64,8 @@ import {
   AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL,
   AI_MAIL_SUBJECT_APPLY_CHANNEL,
   AI_MAIL_SUBJECT_UNDO_CHANNEL,
-  AI_MAIL_COMPOSE_TARGET_EVENT
+  AI_MAIL_COMPOSE_TARGET_EVENT,
+  AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL
 } from '../shared/ipc'
 import {
   isAllowedAccountRequest,
@@ -94,6 +95,7 @@ import type { createOllamaCredentialStore } from './ollama-credential-store'
 import type { AiModelPort } from './ai-model-port'
 import type { createGmailComposeTargetService } from './gmail-compose-target'
 import type { createGmailReadTargetService } from './gmail-read-target'
+import { isEvent } from './main-diagnostics-validation'
 
 export interface MainIpcDependencies {
   readonly rendererUrl: string
@@ -122,6 +124,7 @@ export interface MainIpcDependencies {
   readonly aiModel: AiModelPort
   readonly ollamaCredentials: ReturnType<typeof createOllamaCredentialStore>
   readonly composeTarget: () => ReturnType<typeof createGmailComposeTargetService> | null
+  readonly recordComposeDiagnostic: (accountId: string, event: AiMailComposeDiagnostic) => void
   readonly readTarget: () => ReturnType<typeof createGmailReadTargetService> | null
 }
 
@@ -185,6 +188,39 @@ export function registerMainIpc(dependencies: MainIpcDependencies): void {
     )
       throw new Error('Request rejected')
     return stillCurrent ? result : { status: 'stale' }
+  })
+  ipcMain.handle(AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL, (event, ...args: unknown[]) => {
+    const owner = dependencies.window()
+    const trusted = isAllowedAiMailComposeTargetRequest({
+      ownerAlive: Boolean(owner && !owner.isDestroyed()),
+      senderMatches: Boolean(owner && event.sender === owner.webContents),
+      mainFrameMatches: event.senderFrame !== null && event.senderFrame === event.sender.mainFrame,
+      senderUrl: event.senderFrame?.url ?? '',
+      rendererUrl: dependencies.rendererUrl,
+      args: []
+    })
+    const value = args[0]
+    if (
+      !trusted ||
+      args.length !== 1 ||
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value)
+    )
+      throw new Error('Request rejected')
+    const diagnostic = value as Record<string, unknown>
+    const keys = ['correlationId', 'stage', 'outcome', 'candidateCount', 'discovery', 'reason']
+    if (Object.keys(diagnostic).some((key) => !keys.includes(key)))
+      throw new Error('Request rejected')
+    const currentOwner = dependencies.window()
+    if (!owner || currentOwner !== owner || owner.isDestroyed()) throw new Error('Request rejected')
+    const accountId = dependencies.requireAccountStore().getState().activeAccountId
+    if (!accountId) return
+    // The persisted-diagnostics validator is the single rule set for these fields
+    // (including discovery.structure); a second copy here drifted and rejected valid events.
+    if (!isEvent({ type: 'ai_mail.compose', accountId, ...diagnostic }))
+      throw new Error('Request rejected')
+    dependencies.recordComposeDiagnostic(accountId, diagnostic as AiMailComposeDiagnostic)
   })
   for (const [channel, operation] of [
     [AI_MAIL_SUBJECT_APPLY_CHANNEL, 'apply'],

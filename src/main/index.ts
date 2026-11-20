@@ -675,6 +675,8 @@ void app
       aiMailOllama,
       ollama,
       composeTarget: () => composeTargetService,
+      recordComposeDiagnostic: (accountId, event) =>
+        mainDiagnostics?.record({ type: 'ai_mail.compose', accountId, ...event }),
       readTarget: () => readTargetService
     })
     loginLaunchStartup.start(wasOpenedAtLogin)

@@ -27,6 +27,7 @@ function fixture(overrides = {}) {
   handlers.clear()
   const owner = { webContents: { send: () => undefined }, isDestroyed: () => false }
   const account = { id: accountId }
+  const composeDiagnostics = []
   const dependencies = {
     rendererUrl: 'file:///app/index.html',
     window: () => owner,
@@ -96,10 +97,11 @@ function fixture(overrides = {}) {
       set: async () => undefined,
       clear: async () => undefined
     },
+    recordComposeDiagnostic: (...args) => composeDiagnostics.push(args),
     ...overrides
   }
   registerMainIpc(dependencies)
-  return { owner, account }
+  return { owner, account, composeDiagnostics }
 }
 
 function invokeEvent(owner, sender = owner.webContents) {
@@ -140,6 +142,67 @@ test('clipboard IPC writes bounded text only from the owner frame', () => {
   assert.throws(() => copy(event, 'x'.repeat(140_000)), /Request rejected/)
   assert.throws(() => copy(invokeEvent(owner, {}), 'untrusted'), /Request rejected/)
   assert.throws(() => copy(event, { text: 'not a string' }), /Request rejected/)
+})
+
+test('compose diagnostics accept only bounded allowlisted owner-frame events', () => {
+  const { owner, composeDiagnostics } = fixture()
+  const record = handlers.get('hantong:ai-mail-compose-diagnostic')
+  const event = invokeEvent(owner)
+  const payload = {
+    correlationId: '550e8400-e29b-41d4-a716-446655440000',
+    stage: 'fresh_status',
+    outcome: 'ready',
+    candidateCount: 2,
+    discovery: {
+      editorCount: 3,
+      candidateCount: 2,
+      rejectedNoMatch: 1,
+      rejectedNotVisible: 0,
+      capacityEvictions: 0
+    },
+    reason: 'multiple_candidates'
+  }
+  record(event, payload)
+  assert.equal(composeDiagnostics.length, 1)
+  assert.equal(composeDiagnostics[0][0], accountId)
+  assert.deepEqual(JSON.parse(JSON.stringify(composeDiagnostics[0][1])), payload)
+  assert.throws(
+    () => record(event, { ...payload, email: 'private@example.test' }),
+    /Request rejected/
+  )
+  assert.throws(() => record(event, { ...payload, candidateCount: 34 }), /Request rejected/)
+  assert.throws(
+    () => record(event, { ...payload, discovery: { ...payload.discovery, body: 'private' } }),
+    /Request rejected/
+  )
+  assert.throws(() => record(invokeEvent(owner, {}), payload), /Request rejected/)
+  const structure = {
+    editableCount: 2,
+    subjectBoxCount: 1,
+    focusedEditable: true,
+    replyMarkerMatch: false,
+    sharedBranch: false,
+    subjectValidity: [],
+    ancestors: [
+      {
+        depth: 0,
+        tag: 'container',
+        childCount: 1,
+        editableCount: 1,
+        subjectBoxCount: 0,
+        replyMarkerCount: 0,
+        visible: true,
+        replyMarkerMatch: false,
+        sharedBranch: false
+      }
+    ]
+  }
+  record(event, { ...payload, discovery: { ...payload.discovery, structure } })
+  assert.equal(composeDiagnostics.length, 2)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(composeDiagnostics[1][1])).discovery.structure,
+    structure
+  )
 })
 
 test('compose target selection uses owner-frame IPC and returns a freshly checked snapshot', async () => {

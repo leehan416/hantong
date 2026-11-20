@@ -50,6 +50,7 @@ import {
   AI_MAIL_COMPOSE_APPLY_CHANNEL,
   AI_MAIL_COMPOSE_UNDO_CHANNEL,
   AI_MAIL_COMPOSE_TARGET_EVENT,
+  AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL,
   AI_MAIL_READ_SNAPSHOT_CHANNEL,
   AI_MAIL_READ_SNAPSHOT_CURRENT_CHANNEL,
   AI_MAIL_SUBJECT_APPLY_CHANNEL,
@@ -97,6 +98,8 @@ const api: HantongApi = Object.freeze({
     ipcRenderer.on(AI_MAIL_COMPOSE_TARGET_EVENT, handler)
     return () => ipcRenderer.removeListener(AI_MAIL_COMPOSE_TARGET_EVENT, handler)
   },
+  recordAiMailComposeDiagnostic: (event) =>
+    ipcRenderer.invoke(AI_MAIL_COMPOSE_DIAGNOSTIC_CHANNEL, event),
   getAiMailCodexStatus: () => ipcRenderer.invoke(AI_MAIL_CODEX_STATUS_CHANNEL),
   connectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_CONNECT_CHANNEL),
   disconnectAiMailCodex: () => ipcRenderer.invoke(AI_MAIL_CODEX_DISCONNECT_CHANNEL),

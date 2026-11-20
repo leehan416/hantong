@@ -13,6 +13,7 @@ export const ALLOWED_API_OPERATIONS = Object.freeze([
   'applyAiMailDraft',
   'undoAiMailDraft',
   'onAiMailComposeTarget',
+  'recordAiMailComposeDiagnostic',
   'getAiMailCodexStatus',
   'connectAiMailCodex',
   'disconnectAiMailCodex',
