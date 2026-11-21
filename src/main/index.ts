@@ -117,6 +117,31 @@ let cleanupPromise: Promise<void> | undefined
 let wasOpenedAtLogin = false
 let mainDiagnostics: ReturnType<typeof createMainDiagnostics> | null = null
 let loginLaunchPromptStore: ReturnType<typeof createLoginLaunchPromptStore> | null = null
+let gmailExternalPromptOpen = false
+
+async function confirmGmailExternalNavigation(url: string): Promise<void> {
+  const owner = mainWindow
+  if (gmailExternalPromptOpen || !owner || owner.isDestroyed() || appQuitting) return
+
+  gmailExternalPromptOpen = true
+  try {
+    const korean = uiLocale() === 'ko'
+    const { response } = await dialog.showMessageBox(owner, {
+      type: 'question',
+      message: korean ? '외부 브라우저에서 링크를 열까요?' : 'Open this link in your browser?',
+      detail: new URL(url).origin,
+      buttons: korean ? ['취소', '열기'] : ['Cancel', 'Open'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (response === 1 && mainWindow === owner && !owner.isDestroyed() && !appQuitting) {
+      await shell.openExternal(url)
+    }
+  } finally {
+    gmailExternalPromptOpen = false
+  }
+}
 
 const notificationRecoveryRuntime = createNotificationRecoveryRuntime({
   window: () => mainWindow,
@@ -497,7 +522,7 @@ const mainWindowRuntime = createMainWindowRuntime({
       bundled: __HANTONG_BUNDLED_ENV__
     }),
   publishAccountState,
-  openExternal: (url) => shell.openExternal(url),
+  openExternal: confirmGmailExternalNavigation,
   openValidatedExternal: openExternal,
   reportIdentityDiagnostic: (reason, accountId) => {
     mainDiagnostics?.record({
